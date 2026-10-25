@@ -19,14 +19,8 @@ impl ProtocolHarness {
         let mut harness = Self::new_uninitialized();
         let initialize = harness.read_message();
         assert_eq!(initialize["method"], "initialize");
-        assert_eq!(
-            initialize["params"]["clientInfo"]["name"],
-            "aivs"
-        );
-        assert_eq!(
-            initialize["params"]["clientInfo"]["title"],
-            "AIVS"
-        );
+        assert_eq!(initialize["params"]["clientInfo"]["name"], "aivs");
+        assert_eq!(initialize["params"]["clientInfo"]["title"], "AIVS");
         handle_app_server_message(
             &mut harness.protocol,
             json!({"id": initialize["id"], "result": {}}),
@@ -203,10 +197,7 @@ fn initialization_starts_queued_chat_and_defers_cancel_until_turn_id_arrives() {
     assert_eq!(harness.read_message()["method"], "account/read");
     let thread_start = harness.read_message();
     assert_eq!(thread_start["method"], "thread/start");
-    assert_eq!(
-        thread_start["params"]["serviceName"],
-        "aivs"
-    );
+    assert_eq!(thread_start["params"]["serviceName"], "aivs");
     assert_eq!(
         thread_start["params"]["cwd"],
         std::env::temp_dir().to_string_lossy().as_ref()
@@ -448,4 +439,95 @@ fn worker_starts_fake_app_server_and_reaps_it_on_shutdown() {
         .unwrap()
         .success();
     assert!(!still_running, "fake Codex child was left running");
+}
+
+#[cfg(unix)]
+#[test]
+fn default_turn_uses_configured_model_and_rejects_unsupported_server_requests() {
+    let mut harness = ProtocolHarness::new();
+    harness.protocol.thread_id = Some("thread-1".into());
+    harness
+        .protocol
+        .queue_chat_message("Hello".into(), String::new(), String::new())
+        .unwrap();
+    let turn = harness.read_message();
+    assert!(turn["params"]["model"].is_null());
+    assert!(turn["params"]["effort"].is_null());
+    handle_app_server_message(
+        &mut harness.protocol,
+        json!({"id": "server-request-1", "method": "item/tool/requestUserInput", "params": {}}),
+        &harness.events_tx,
+    )
+    .unwrap();
+    let response = harness.read_message();
+    assert_eq!(response["id"], "server-request-1");
+    assert_eq!(response["error"]["code"], -32601);
+    assert!(harness.protocol.turn_active);
+}
+
+#[cfg(unix)]
+#[test]
+fn successful_login_refreshes_account_and_reports_completion() {
+    let mut harness = ProtocolHarness::new();
+    harness.protocol.login_active = true;
+    handle_app_server_message(
+        &mut harness.protocol,
+        json!({"method": "account/login/completed", "params": {"success": true}}),
+        &harness.events_tx,
+    )
+    .unwrap();
+    let read = harness.read_message();
+    assert_eq!(read["method"], "account/read");
+    handle_app_server_message(
+        &mut harness.protocol,
+        json!({"id": read["id"], "result": {"account": {
+            "type": "chatgpt", "email": "person@example.com", "planType": "plus"
+        }}}),
+        &harness.events_tx,
+    )
+    .unwrap();
+    assert!(
+        matches!(harness.events.try_recv().unwrap(), CodexEvent::LoginCompleted(account)
+        if account.email.as_deref() == Some("person@example.com"))
+    );
+    assert!(!harness.protocol.login_active);
+}
+
+#[test]
+#[ignore = "requires an installed Codex CLI, ChatGPT login, and a small inference request"]
+fn live_app_server_streams_a_complete_reply() {
+    let workspace = tempfile::tempdir().unwrap();
+    let client = CodexClient::new(workspace.path(), false).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut response = String::new();
+    let mut saw_delta = false;
+    loop {
+        let event = client
+            .events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("live Codex request timed out");
+        match event {
+            CodexEvent::AccountStatus(Some(_)) => client.open_chat().unwrap(),
+            CodexEvent::AccountStatus(None) => panic!("Sign in with ChatGPT in Codex first"),
+            CodexEvent::ChatReady => client
+                .send_chat_message(
+                    "Reply with exactly AIVS_OK. Do not use tools or change any files.".into(),
+                    String::new(),
+                    String::new(),
+                )
+                .unwrap(),
+            CodexEvent::AssistantDelta(delta) => {
+                saw_delta = true;
+                response.push_str(&delta);
+            }
+            CodexEvent::AssistantMessage(text) => response = text,
+            CodexEvent::ChatTurnCompleted => break,
+            CodexEvent::Error(error)
+            | CodexEvent::ChatError(error)
+            | CodexEvent::Unavailable(error) => panic!("Live Codex failed: {error}"),
+            _ => {}
+        }
+    }
+    assert!(saw_delta, "did not receive a streamed assistant delta");
+    assert_eq!(response.trim(), "AIVS_OK");
 }

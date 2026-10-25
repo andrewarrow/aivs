@@ -7,11 +7,12 @@ use std::{
     process::{Child, ChildStdin, Command as ProcessCommand, Stdio},
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const CODEX_PATH_ENV: &str = "AIVS_CODEX_PATH";
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatGptAccount {
@@ -253,8 +254,8 @@ impl ProtocolState {
             json!({
                 "threadId": thread_id,
                 "input": [{ "type": "text", "text": message.message }],
-                "model": optional_nonempty_string(Some(&Value::String(message.model))),
-                "effort": optional_nonempty_string(Some(&Value::String(message.reasoning_effort))),
+                "model": (!message.model.is_empty()).then_some(message.model),
+                "effort": (!message.reasoning_effort.is_empty()).then_some(message.reasoning_effort),
                 "cwd": cwd,
                 "approvalPolicy": "never",
                 "sandboxPolicy": {
@@ -343,9 +344,7 @@ impl CodexClient {
     pub fn begin_chatgpt_login(&self) -> Result<(), String> {
         self.commands
             .send(CodexCommand::BeginChatGptLogin)
-            .map_err(|_| {
-                "ChatGPT connection is unavailable. Reconnect and try again.".to_owned()
-            })
+            .map_err(|_| "ChatGPT connection is unavailable. Reconnect and try again.".to_owned())
     }
 
     pub fn open_chat(&self) -> Result<(), String> {
@@ -423,6 +422,7 @@ fn run_worker_with_executable(
             "Codex App Server did not provide an input stream.".to_owned(),
         ));
         let _ = child.kill();
+        let _ = child.wait();
         return;
     };
     let Some(stdout) = child.stdout.take() else {
@@ -430,23 +430,42 @@ fn run_worker_with_executable(
             "Codex App Server did not provide an output stream.".to_owned(),
         ));
         let _ = child.kill();
+        let _ = child.wait();
         return;
     };
 
     let (output_sender, output_receiver) = mpsc::channel();
-    let _reader = thread::Builder::new()
+    let reader = thread::Builder::new()
         .name("aivs-codex-output".to_owned())
         .spawn(move || read_app_server_output(stdout, output_sender));
+    if let Err(error) = reader {
+        let _ = events.send(CodexEvent::Unavailable(format!(
+            "Could not read Codex App Server output: {error}"
+        )));
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    }
 
     let mut protocol = ProtocolState::new(stdin, project_root.to_owned());
     protocol.network_access = network_access;
     if let Err(message) = protocol.initialize() {
         let _ = events.send(CodexEvent::Unavailable(message));
         let _ = child.kill();
+        let _ = child.wait();
         return;
     }
 
+    let started = Instant::now();
     loop {
+        if !protocol.initialized && started.elapsed() > INITIALIZE_TIMEOUT {
+            let _ = events.send(CodexEvent::Unavailable(
+                "Codex did not initialize within 20 seconds. Reconnect and try again.".to_owned(),
+            ));
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
         loop {
             match commands.try_recv() {
                 Ok(CodexCommand::BeginChatGptLogin) if protocol.initialized => {
@@ -650,6 +669,18 @@ fn handle_app_server_message(
     message: Value,
     events: &Sender<CodexEvent>,
 ) -> Result<(), String> {
+    // Requests from the server have both a method and an id. They must receive
+    // a response even when this minimal client does not implement the method.
+    if message.get("method").is_some()
+        && let Some(id) = message.get("id")
+    {
+        return write_message(
+            &mut protocol.stdin,
+            &json!({"id": id, "error": {
+                "code": -32601, "message": "This client does not support this request."
+            }}),
+        );
+    }
     if let Some(id) = message.get("id").and_then(Value::as_u64) {
         let Some(pending) = protocol.pending.remove(&id) else {
             return Ok(());

@@ -112,6 +112,9 @@ impl App {
             CodexEvent::AccountStatus(account) => {
                 self.checking = false;
                 self.account = account;
+                if self.chat_open && self.account.is_some() {
+                    self.open_chat();
+                }
             }
             CodexEvent::LoginCompleted(account) => {
                 self.checking = false;
@@ -144,7 +147,10 @@ impl App {
             }
             CodexEvent::AssistantDelta(delta) => {
                 if !self.streaming {
-                    self.messages.push(Message { user: false, text: String::new() });
+                    self.messages.push(Message {
+                        user: false,
+                        text: String::new(),
+                    });
                     self.streaming = true;
                 }
                 if let Some(message) = self.messages.last_mut() {
@@ -204,9 +210,10 @@ impl App {
         if self.client.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        if ui.ctx().input_mut(|input| {
-            input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q)
-        }) {
+        if ui
+            .ctx()
+            .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q))
+        {
             self.quit = true;
         }
         egui::Panel::top("menu").show(ui, |ui| {
@@ -256,7 +263,10 @@ impl App {
             if let Some(error) = &self.error {
                 ui.add(egui::Label::new(error).wrap());
             }
-            if ui.add_enabled(!self.busy, egui::Button::new("Reconnect")).clicked() {
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Reconnect"))
+                .clicked()
+            {
                 self.reconnect();
             }
         }
@@ -280,7 +290,12 @@ impl App {
         // Reserve the composer first so long transcripts and errors cannot push it offscreen.
         egui::Panel::bottom("composer").show(ui, |ui| {
             if let Some(error) = &self.error {
-                ui.add(egui::Label::new(format!("Error: {error}")).wrap());
+                egui::ScrollArea::vertical()
+                    .id_salt("chat_error")
+                    .max_height(64.0)
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(format!("Error: {error}")).wrap());
+                    });
             }
             if !self.status.is_empty() && (self.busy || self.status == "Stopped.") {
                 ui.label(&self.status);
@@ -291,24 +306,40 @@ impl App {
                 self.open_chat();
             }
             ui.label("Message");
-            let response = ui.add(
-                egui::TextEdit::multiline(&mut self.draft)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Ask Codex…"),
-            );
-            let shortcut = response.has_focus() && ui.input(|input| {
-                input.modifiers.command && input.key_pressed(egui::Key::Enter)
-            });
+            let response = egui::ScrollArea::vertical()
+                .id_salt("draft")
+                .max_height(88.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.draft)
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Ask Codex…"),
+                    )
+                })
+                .inner;
+            let shortcut = response.has_focus()
+                && ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter));
             ui.horizontal(|ui| {
                 let can_send = self.ready && !self.busy && !self.draft.trim().is_empty();
-                if ui.add_enabled(can_send, egui::Button::new("Send").min_size(egui::vec2(64.0, 44.0)))
-                    .on_hover_text("Send (⌘/Ctrl+Enter)").clicked() || (can_send && shortcut)
+                if ui
+                    .add_enabled(
+                        can_send,
+                        egui::Button::new("Send").min_size(egui::vec2(64.0, 44.0)),
+                    )
+                    .on_hover_text("Send (⌘/Ctrl+Enter)")
+                    .clicked()
+                    || (can_send && shortcut)
                 {
                     self.send();
                 }
-                if self.busy && ui.add_enabled(!self.cancelling, egui::Button::new("Stop")
-                    .min_size(egui::vec2(64.0, 44.0))).clicked()
+                if self.busy
+                    && ui
+                        .add_enabled(
+                            !self.cancelling,
+                            egui::Button::new("Stop").min_size(egui::vec2(64.0, 44.0)),
+                        )
+                        .clicked()
                     && let Some(client) = &self.client
                 {
                     match client.cancel_chat_message() {
@@ -337,7 +368,10 @@ impl App {
         // Empty overrides leave model and reasoning selection to the user's Codex config.
         match client.send_chat_message(message.clone(), String::new(), String::new()) {
             Ok(()) => {
-                self.messages.push(Message { user: true, text: message });
+                self.messages.push(Message {
+                    user: true,
+                    text: message,
+                });
                 self.draft.clear();
                 self.busy = true;
                 self.streaming = false;

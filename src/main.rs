@@ -142,7 +142,10 @@ struct Desktop {
 
 impl Desktop {
     fn schedule_repaint(&mut self, deadline: Instant) {
-        self.next_repaint = Some(self.next_repaint.map_or(deadline, |next| next.min(deadline)));
+        self.next_repaint = Some(
+            self.next_repaint
+                .map_or(deadline, |next| next.min(deadline)),
+        );
     }
 }
 
@@ -172,7 +175,11 @@ impl ApplicationHandler<Instant> for Desktop {
         let Some(desktop) = self.window.as_mut().filter(|w| w.window.id() == window_id) else {
             return;
         };
-        if desktop.input.on_window_event(&desktop.window, &event).repaint {
+        if desktop
+            .input
+            .on_window_event(&desktop.window, &event)
+            .repaint
+        {
             desktop.window.request_redraw();
         }
         match event {
@@ -181,7 +188,9 @@ impl ApplicationHandler<Instant> for Desktop {
                 if let (Some(width), Some(height)) =
                     (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
                 {
-                    desktop.painter.on_window_resized(ViewportId::ROOT, width, height);
+                    desktop
+                        .painter
+                        .on_window_resized(ViewportId::ROOT, width, height);
                     desktop.window.request_redraw();
                 }
             }
