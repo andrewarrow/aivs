@@ -75,6 +75,69 @@ fn setup_errors_and_missing_token_stay_locked_until_a_ready_event() {
 }
 
 #[test]
+fn render_progress_keeps_estimates_separate_from_logs_and_completes_only_on_success() {
+    let (sender, events) = mpsc::channel();
+    let stream = br#"AIVS_EVENT {"event":"render_progress","label":"Stage 1/2 denoising","fraction":0.35,"remaining_seconds":240}
+AIVS_EVENT {"event":"render_progress","label":"Stage 2/2 denoising","fraction":0.3,"remaining_seconds":300}
+AIVS_EVENT {"event":"render_progress","label":"Validating","fraction":1,"remaining_seconds":null}
+"#;
+    read_output(std::io::Cursor::new(stream.to_vec()), sender, true)
+        .join()
+        .unwrap();
+    let mut workspace = VideoWorkspace::ready_for_test(PathBuf::from("/workspace"));
+    workspace.rendering = true;
+    workspace.handle_event(events.recv().unwrap());
+    workspace.handle_event(Event::Log("a transformer diagnostic".into()));
+    assert_eq!(workspace.fraction, Some(0.35));
+    assert_eq!(workspace.status, "Stage 1/2 denoising");
+    assert_eq!(workspace.remaining_seconds, Some(240.0));
+    workspace.handle_event(events.recv().unwrap());
+    assert_eq!(workspace.fraction, Some(0.35));
+    workspace.handle_event(events.recv().unwrap());
+    assert_eq!(workspace.fraction, Some(0.99));
+    assert!(workspace.rendering);
+    assert!(workspace.output.is_none());
+    workspace.handle_event(Event::Complete(PathBuf::from("/workspace/video.mp4")));
+    assert_eq!(workspace.fraction, Some(1.0));
+    assert!(!workspace.rendering);
+    assert!(workspace.reveal_output);
+    assert!(workspace.remaining_seconds.is_none());
+}
+
+#[test]
+fn completed_video_has_a_visible_player_at_supported_sizes() {
+    for (width, height) in [
+        (390.0, 844.0),
+        (768.0, 1024.0),
+        (1280.0, 800.0),
+        (1440.0, 900.0),
+    ] {
+        let mut workspace = VideoWorkspace::ready_for_test(PathBuf::from("/workspace"));
+        let path = PathBuf::from("/workspace/folder with spaces/視訊 #1.mp4");
+        workspace.handle_event(Event::Complete(path.clone()));
+        let ctx = egui::Context::default();
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+        for _ in 0..4 {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(bounds),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| workspace.ui(ui));
+                    assert!(ui.min_rect().right() <= bounds.right() + 1.0);
+                },
+            );
+        }
+        let target = workspace.playback_target.as_ref().unwrap();
+        assert_eq!(target.path, path);
+        assert!(target.rect.intersects(target.clip_rect));
+        assert!(target.rect.right() <= bounds.right());
+        assert!(target.rect.height() >= 44.0);
+    }
+}
+
+#[test]
 fn startup_modal_and_render_states_fit_supported_sizes() {
     for (width, height) in [
         (390.0, 360.0),

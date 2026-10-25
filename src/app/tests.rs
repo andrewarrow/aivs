@@ -107,6 +107,8 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
             let (mut app, _commands) = app();
             app.account = Some(account());
             app.ready = true;
+            app.video
+                .output_for_test(PathBuf::from("/workspace/video.mp4"));
             app.chat_open = chat_open;
             app.draft = "A long draft that wraps naturally. ".repeat(40);
             app.messages.push(Message {
@@ -136,6 +138,10 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
                 (gallery.size().x - width * 0.30).abs() <= 1.0,
                 "gallery width at {width}x{height} should be 30%, got {}",
                 gallery.size().x
+            );
+            assert_eq!(
+                app.playback_target().is_some(),
+                !chat_open || width * 0.70 >= 680.0
             );
         }
     }

@@ -209,6 +209,9 @@ impl App {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        // Clear each frame so the native player hides when chat/setup replaces
+        // the workspace, and update its clipping rect after scrolling/resizing.
+        self.video.playback_target = None;
         if ui
             .ctx()
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q))
@@ -259,6 +262,14 @@ impl App {
         } else {
             egui::CentralPanel::default().show(ui, |ui| self.video.ui(ui));
         }
+    }
+
+    pub fn playback_target(&self) -> Option<&crate::playback::PlaybackTarget> {
+        self.video.playback_target.as_ref()
+    }
+
+    pub fn set_playback_error(&mut self, error: Option<String>) {
+        self.video.playback_error = error;
     }
 
     fn connection_ui(&mut self, ui: &mut egui::Ui) {

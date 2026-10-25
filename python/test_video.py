@@ -87,6 +87,22 @@ class RenderTests(unittest.TestCase):
                     with video.project_lock(".render.lock"):
                         pass
 
+    def test_success_forwards_render_estimates_and_saves_phase_timings(self):
+        def render(prompt, seed, frames, output, *, on_progress):
+            on_progress(label="Stage 2/2 denoising", fraction=0.7, remaining_seconds=120)
+            output.write_bytes(b"validated video")
+            return {"elapsed_seconds": 400, "phase_seconds": {"stage1": 100, "stage2": 200}}
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), patch.object(video, "check_environment"), patch.object(video, "render", side_effect=render), patch("sys.stdout", new_callable=io.StringIO) as out:
+            video.generate(42)
+            report = json.loads(next(Path(directory).glob("outputs/*/render.json")).read_text())
+            events = [json.loads(line.removeprefix("AIVS_EVENT ")) for line in out.getvalue().splitlines()]
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["runtime"]["phase_seconds"], {"stage1": 100, "stage2": 200})
+            self.assertEqual(events[-2]["event"], "render_progress")
+            self.assertEqual(events[-2]["remaining_seconds"], 120)
+            self.assertEqual(events[-1]["event"], "complete")
+
     def test_real_ffmpeg_validates_video_and_rejects_missing_audio(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "video.mp4"

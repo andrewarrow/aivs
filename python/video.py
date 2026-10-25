@@ -108,7 +108,8 @@ def generate(seed=None):
         save()
         emit("progress", label=f"Generating {timing['seconds']} seconds of talking video")
         try:
-            report["runtime"] = render(DEFAULT_PROMPT, seed, timing["seconds"] * FPS, output)
+            report["runtime"] = render(DEFAULT_PROMPT, seed, timing["seconds"] * FPS, output,
+                                       on_progress=lambda **data: emit("render_progress", **data))
             report.update(status="complete", sha256=hashlib.sha256(output.read_bytes()).hexdigest())
             save()
         except BaseException as exc:

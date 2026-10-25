@@ -126,9 +126,10 @@ def doctor():
         raise RuntimeError("The MLX Apple GPU calculation failed.")
 
 
-def render(prompt, seed, frames, output):
+def render(prompt, seed, frames, output, *, on_progress=None):
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
+    from render_estimate import RenderEstimate
     from validation import validate_video
 
     output = Path(output)
@@ -136,14 +137,16 @@ def render(prompt, seed, frames, output):
     partial = output.with_name("video.partial.mp4")
     inference_frames = math.ceil((frames - 1) / 8) * 8 + 1
     started = time.monotonic()
-    with RenderProgress(verbose=3) as progress:
-        with progress.phase("Loading MLX renderer"):
+    estimate = RenderEstimate.from_history(output.parent.parent, frames, WIDTH, HEIGHT,
+                                          RUNTIME_REVISION, on_progress)
+    with RenderProgress(verbose=3, estimate=estimate) as progress:
+        with progress.phase("Loading MLX renderer", "runtime"):
             import mlx.core as mx
             from ltx_pipelines_mlx.distilled import DistilledPipeline
-        with progress.phase("Checking cached model files"):
+        with progress.phase("Checking cached model files", "cache"):
             snapshot = model_path()
         mx.reset_peak_memory()
-        with progress.phase("Preparing disk-streamed pipeline"):
+        with progress.phase("Preparing disk-streamed pipeline", "pipeline"):
             pipeline = DistilledPipeline(model_dir=str(snapshot), low_memory=True, low_ram_streaming=True)
         pipeline.generate_audio = True
         with pipeline_activity(pipeline, progress):
@@ -153,7 +156,7 @@ def render(prompt, seed, frames, output):
             )
         decode_peak = mx.get_peak_memory() / 1024**3
         duration = frames / FPS
-        with progress.phase(f"Trimming and encoding {frames} frames with FFmpeg"):
+        with progress.phase(f"Trimming and encoding {frames} frames with FFmpeg", "encode"):
             with ffmpeg_output([
                 "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostdin", "-n",
                 "-i", str(native), "-map", "0:v:0", "-frames:v", str(frames),
@@ -163,7 +166,7 @@ def render(prompt, seed, frames, output):
                 "-movflags", "+faststart", str(partial),
             ], progress, stdin=subprocess.DEVNULL):
                 pass
-        with progress.phase("Validating decoded frames and audio/video timing"):
+        with progress.phase("Validating decoded frames and audio/video timing", "validate"):
             info = validate_video(partial, frames, WIDTH, HEIGHT, expect_audio=True)
         partial.replace(output)
         native.unlink()
@@ -173,6 +176,7 @@ def render(prompt, seed, frames, output):
         "stage1_steps": 8, "stage2_steps": 3, "quantization": "int8", "audio": "generated",
         "inference_frames": inference_frames, "output_frames": frames,
         "elapsed_seconds": round(time.monotonic() - started, 2),
+        "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()},
         "peak_decode_mlx_memory_gib": round(decode_peak, 2), "video": info,
         "software": {name: version(name) for name in (
             "mlx", "mlx-metal", "mlx-arsenal", "ltx-core-mlx", "ltx-pipelines-mlx", "transformers",

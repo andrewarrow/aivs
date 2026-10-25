@@ -42,7 +42,16 @@ Python process group, including FFmpeg. Closing AIVS also stops its active work.
 Each run saves its prompt, random seed, dialogue timing, runtime details, and
 status in `outputs/<timestamp>_<seed>/render.json`. Only a video that passes
 decoded-frame and audio/video timing checks is published as `video.mp4`.
-**Open video** and **Show files** open the completed result and its directory.
+The progress bar estimates overall completion and time remaining using measured
+transformer blocks, denoising steps, and decoder tiles, with time reserved for
+encoding and validation. Successful runs save phase timings so later estimates
+adapt to this Mac. Estimates can change with GPU load and cache performance;
+100% is reserved for a validated result.
+
+Completed videos appear inside AIVS with native macOS playback controls for
+play/pause, seeking, volume, and fullscreen, including the generated audio.
+**Show files** opens the output directory. Playback pauses when its preview is
+hidden, and previous results remain playable while another render runs.
 
 Character reference images appear in a scrollable gallery beside the workspace.
 The gallery reads the imported `characters/` data; generation does not yet use
@@ -71,7 +80,9 @@ On narrow windows chat fills the content area. Closing chat restores the video w
 `src/main.rs` owns the one-window native event/render loop. `src/app.rs` owns
 the setup gate, video workspace, and optional chat UI. `src/video.rs` runs
 setup/render processes on a worker thread and reads Python's prefixed JSON events
-and activity logs. `python/video.py` is the entry point; `quality_backend.py`,
+and activity logs. `src/playback.rs` embeds AVKit in the native window.
+`python/video.py` is the entry point; `render_estimate.py` learns phase budgets
+from successful reports. `quality_backend.py`,
 `quality_progress.py`, `dialogue_helpers.py`, and `validation.py` preserve the
 needed Hunter render, progress, timing, and validation behavior.
 `src/codex.rs` is the adapted Studio

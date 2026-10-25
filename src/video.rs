@@ -29,6 +29,11 @@ enum Event {
     Installing,
     NeedsToken,
     Progress(String, Option<f32>),
+    RenderProgress {
+        label: String,
+        fraction: f32,
+        remaining_seconds: Option<f64>,
+    },
     Log(String),
     Ready,
     Complete(PathBuf),
@@ -333,6 +338,19 @@ fn read_output(
                             .map(|value| value.clamp(0.0, 1.0) as f32);
                         let _ = sender.send(Event::Progress(label, fraction));
                     }
+                    "render_progress" => {
+                        if let Some(fraction) =
+                            value["fraction"].as_f64().filter(|value| value.is_finite())
+                        {
+                            let _ = sender.send(Event::RenderProgress {
+                                label: value["label"].as_str().unwrap_or_default().into(),
+                                fraction: fraction.clamp(0.0, 0.99) as f32,
+                                remaining_seconds: value["remaining_seconds"]
+                                    .as_f64()
+                                    .filter(|value| value.is_finite() && *value >= 0.0),
+                            });
+                        }
+                    }
                     "ready" => output.ready = true,
                     "needs_token" => output.needs_token = true,
                     "complete" => output.output = value["output"].as_str().map(PathBuf::from),
@@ -355,9 +373,13 @@ pub struct VideoWorkspace {
     stopping: bool,
     status: String,
     fraction: Option<f32>,
+    remaining_seconds: Option<f64>,
     logs: VecDeque<String>,
     error: Option<String>,
     output: Option<PathBuf>,
+    reveal_output: bool,
+    pub playback_target: Option<crate::playback::PlaybackTarget>,
+    pub playback_error: Option<String>,
 }
 
 impl VideoWorkspace {
@@ -376,9 +398,13 @@ impl VideoWorkspace {
             stopping: false,
             status: "Checking local setup…".into(),
             fraction: None,
+            remaining_seconds: None,
             logs: VecDeque::new(),
             error: None,
             output: None,
+            reveal_output: false,
+            playback_target: None,
+            playback_error: None,
         }
     }
 
@@ -389,6 +415,7 @@ impl VideoWorkspace {
         self.error = None;
         self.logs.clear();
         self.fraction = None;
+        self.remaining_seconds = None;
         self.stopping = false;
         self.rendering = matches!(task, Task::Render);
         if !self.rendering {
@@ -427,8 +454,17 @@ impl VideoWorkspace {
                 self.status = label;
                 self.fraction = fraction;
             }
+            Event::RenderProgress {
+                label,
+                fraction,
+                remaining_seconds,
+            } => {
+                self.status = label;
+                self.fraction = Some(self.fraction.unwrap_or(0.0).max(fraction));
+                self.remaining_seconds = remaining_seconds;
+            }
             Event::Log(line) => {
-                if self.rendering {
+                if self.rendering && self.fraction.is_none() {
                     self.status.clone_from(&line);
                 }
                 self.logs.push_back(line);
@@ -444,7 +480,11 @@ impl VideoWorkspace {
             }
             Event::Complete(path) => {
                 self.rendering = false;
+                self.fraction = Some(1.0);
+                self.remaining_seconds = None;
+                self.playback_error = None;
                 self.output = Some(path);
+                self.reveal_output = true;
                 self.status = "Video ready.".into();
                 return true;
             }
@@ -563,25 +603,33 @@ impl VideoWorkspace {
                         }
                         self.stopping = true;
                     }
-                    if let Some(path) = self.output.clone() {
-                        if ui
-                            .add(egui::Button::new("Open video").min_size(egui::vec2(96.0, 44.0)))
-                            .clicked()
-                        {
-                            self.open(&path);
-                        }
-                        if ui
+                    if let Some(path) = self.output.clone()
+                        && ui
                             .add(egui::Button::new("Show files").min_size(egui::vec2(96.0, 44.0)))
                             .clicked()
-                            && let Some(parent) = path.parent()
-                        {
-                            self.open(parent);
-                        }
+                        && let Some(parent) = path.parent()
+                    {
+                        self.open(parent);
                     }
                 });
                 ui.add_space(8.0);
                 if self.rendering {
-                    ui.add(egui::ProgressBar::new(0.0).animate(true));
+                    let fraction = self.fraction.unwrap_or(0.0).min(0.99);
+                    let text = self.remaining_seconds.map_or_else(
+                        || "Estimating time remaining…".into(),
+                        |seconds| {
+                            format!(
+                                "≈{:.0}% · About {} left",
+                                fraction * 100.0,
+                                remaining_time(seconds)
+                            )
+                        },
+                    );
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .animate(self.fraction.is_none())
+                            .text(text),
+                    );
                 }
                 if self.stopping && self.rendering {
                     ui.label("Stopping…");
@@ -589,6 +637,26 @@ impl VideoWorkspace {
                     ui.add(egui::Label::new(&self.status).wrap());
                 }
                 self.error_ui(ui);
+                if let Some(path) = &self.output {
+                    ui.add_space(8.0);
+                    let width = ui.available_width();
+                    let height = (width * 704.0 / 1280.0 + 40.0).min(460.0);
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                    if self.reveal_output {
+                        response.scroll_to_me(Some(egui::Align::Center));
+                        self.reveal_output = false;
+                    }
+                    ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+                    self.playback_target = Some(crate::playback::PlaybackTarget {
+                        path: path.clone(),
+                        rect,
+                        clip_rect: ui.clip_rect(),
+                    });
+                    if let Some(error) = &self.playback_error {
+                        ui.add(egui::Label::new(error).wrap());
+                    }
+                }
                 if let Some(path) = &self.output {
                     ui.add(
                         egui::Label::new(path.display().to_string())
@@ -629,10 +697,26 @@ impl VideoWorkspace {
     }
 
     #[cfg(test)]
+    pub(crate) fn output_for_test(&mut self, path: PathBuf) {
+        self.handle_event(Event::Complete(path));
+    }
+
+    #[cfg(test)]
     pub(crate) fn ready_for_test(root: PathBuf) -> Self {
         let mut workspace = Self::idle(root);
         workspace.setup = Setup::Ready;
         workspace
+    }
+}
+
+fn remaining_time(seconds: f64) -> String {
+    let seconds = seconds.ceil() as u64;
+    if seconds >= 3600 {
+        format!("{}h {}m", seconds / 3600, seconds % 3600 / 60)
+    } else if seconds >= 60 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
     }
 }
 

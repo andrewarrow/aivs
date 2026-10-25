@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 
 class RenderProgress:
-    def __init__(self, verbose=3, *, stream=None, heartbeat_seconds=15):
+    def __init__(self, verbose=3, *, stream=None, heartbeat_seconds=15, estimate=None):
         self.verbose = verbose
         self.stream = stream if stream is not None else sys.stderr
         self.heartbeat_seconds = heartbeat_seconds
@@ -23,6 +23,12 @@ class RenderProgress:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._last_message = time.monotonic()
+        self.estimate = estimate
+
+    def completed(self, fraction):
+        with self._lock:
+            if self.estimate is not None:
+                self.estimate.update(fraction)
 
     def log(self, message, *, level=1):
         if self.verbose < level:
@@ -37,10 +43,13 @@ class RenderProgress:
             self.log(message, level=level)
 
     @contextmanager
-    def phase(self, label):
+    def phase(self, label, key=None):
         previous = self.operation
         started = time.monotonic()
         self.activity(f"{label}: starting")
+        with self._lock:
+            if key is not None and self.estimate is not None:
+                self.estimate.start(key, label)
         try:
             yield
         except BaseException:
@@ -48,13 +57,18 @@ class RenderProgress:
             raise
         else:
             self.log(f"{label}: done in {time.monotonic() - started:.1f}s")
+            with self._lock:
+                if key is not None and self.estimate is not None:
+                    self.estimate.finish(key)
         finally:
             with self._lock:
                 self.operation = previous
 
     def _heartbeat(self):
-        while not self._stop.wait(self.heartbeat_seconds):
+        while not self._stop.wait(min(self.heartbeat_seconds, 1)):
             with self._lock:
+                if self.estimate is not None:
+                    self.estimate.tick()
                 elapsed = time.monotonic() - self._last_message
                 if elapsed >= self.heartbeat_seconds:
                     self.log(f"{self.operation} — waiting; {elapsed:.0f}s since last activity update")
@@ -157,6 +171,7 @@ def decoder_activity(progress):
                     yield tile
                     # The original loop has evaluated and blended this tile.
                     completed += 1
+                    progress.completed(completed / total * 0.95)
                     progress.activity(f"{label}: decoded and blended in {time.monotonic() - started:.1f}s", level=3)
 
         return [ObservedTiles(group) for group in groups]
@@ -230,6 +245,8 @@ def pipeline_activity(pipeline, progress):
             f"{label}: loading transformer block {idx + 1}/{streamer.block_count} "
             f"from disk ({idx} blocks completed)", level=3,
         )
+        if steps and streamer.block_count:
+            progress.completed((step - 1 + idx / streamer.block_count) / steps)
         result = original_bind(streamer, block, idx, *args, **kwargs)
         with progress._lock:
             progress.operation = f"{label}: running transformer block {idx + 1}/{streamer.block_count} on Apple GPU"
@@ -242,6 +259,9 @@ def pipeline_activity(pipeline, progress):
         steps = len(kwargs["sigmas"]) - 1
         stage_started = time.monotonic()
         progress.activity(f"Stage {stage}/2 denoising: 0% — {steps} steps")
+        with progress._lock:
+            if progress.estimate is not None:
+                progress.estimate.start(f"stage{stage}", f"Stage {stage}/2 denoising")
         video_tokens = kwargs["video_state"].latent.shape[1]
         audio_tokens = kwargs["audio_state"].latent.shape[1]
         progress.log(f"Stage {stage}/2: {video_tokens:,} video + {audio_tokens:,} audio tokens per step", level=2)
@@ -260,6 +280,7 @@ def pipeline_activity(pipeline, progress):
                 on_step(index, total, *args)
             elapsed = time.monotonic() - stage_started
             remaining = elapsed / (index + 1) * (total - index - 1)
+            progress.completed((index + 1) / total)
             progress.activity(
                 f"Stage {stage}/2 denoising: {(index + 1) / total:.0%} — "
                 f"step {index + 1}/{total} complete in {time.monotonic() - step_started:.1f}s; "
@@ -268,9 +289,9 @@ def pipeline_activity(pipeline, progress):
 
         return original_loop(**{**kwargs, "model": forward, "on_step": step_done})
 
-    def phase_wrapper(method, label):
+    def phase_wrapper(method, label, key):
         def wrapped(*args, **kwargs):
-            with progress.phase(label):
+            with progress.phase(label, key):
                 return method(*args, **kwargs)
         return wrapped
 
@@ -279,12 +300,12 @@ def pipeline_activity(pipeline, progress):
         stack.enter_context(patch.object(samplers, "tqdm", no_bar))
         stack.enter_context(patch.object(BlockStreamer, "bind", bind))
         stack.enter_context(patch.object(pipeline, "_run_denoise_loop", denoise_loop))
-        for name, label in (
-            ("_stage1", "Stage 1/2 — prompt encoding and initial video/audio generation"),
-            ("_upsample_latent", "Upscaling video latents 2×"),
-            ("_stage2", "Stage 2/2 — full-resolution refinement (larger GPU passes)"),
-            ("_load_decoders", "Loading video/audio decoders"),
-            ("_decode_and_save_video", "Decoding frames, generating audio, and writing native MP4"),
+        for name, label, key in (
+            ("_stage1", "Encoding prompt and preparing initial video/audio", "prompt"),
+            ("_upsample_latent", "Upscaling video latents 2×", "upscale"),
+            ("_stage2", "Preparing full-resolution refinement", "refine"),
+            ("_load_decoders", "Loading video/audio decoders", "decoders"),
+            ("_decode_and_save_video", "Decoding frames, generating audio, and writing native MP4", "decode"),
         ):
-            stack.enter_context(patch.object(pipeline, name, phase_wrapper(getattr(pipeline, name), label)))
+            stack.enter_context(patch.object(pipeline, name, phase_wrapper(getattr(pipeline, name), label, key)))
         yield
