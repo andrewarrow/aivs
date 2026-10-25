@@ -1,2 +1,9 @@
 /target/
 .DS_Store
+.venv/
+.env
+.cache/
+outputs/
+.setup.lock
+.render.lock
+__pycache__/

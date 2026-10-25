@@ -5,6 +5,8 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
     let (client, commands, _events) = CodexClient::test_channels();
     (
         App {
+            video: crate::video::VideoWorkspace::ready_for_test(PathBuf::from("/workspace")),
+            codex_started: true,
             root: PathBuf::from("/workspace"),
             client: Some(client),
             account: None,
@@ -92,7 +94,7 @@ fn stop_failure_keeps_turn_busy_and_disconnect_keeps_unsent_draft() {
 }
 
 #[test]
-fn blank_window_and_optional_chat_fit_supported_sizes() {
+fn video_workspace_and_optional_chat_fit_supported_sizes() {
     for (width, height) in [
         (390.0, 844.0),
         (768.0, 1024.0),

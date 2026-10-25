@@ -9,6 +9,8 @@ struct Message {
 
 pub struct App {
     root: PathBuf,
+    video: crate::video::VideoWorkspace,
+    codex_started: bool,
     client: Option<CodexClient>,
     account: Option<ChatGptAccount>,
     checking: bool,
@@ -28,7 +30,9 @@ pub struct App {
 
 impl App {
     pub fn new(root: PathBuf) -> Self {
-        let mut app = Self {
+        Self {
+            video: crate::video::VideoWorkspace::new(root.clone()),
+            codex_started: false,
             root,
             client: None,
             account: None,
@@ -45,9 +49,7 @@ impl App {
             status: String::new(),
             error: None,
             quit: false,
-        };
-        app.reconnect();
-        app
+        }
     }
 
     fn reconnect(&mut self) {
@@ -205,16 +207,25 @@ impl App {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        self.poll();
-        // Poll the worker without blocking native input or continuously repainting.
-        if self.client.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        }
         if ui
             .ctx()
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q))
         {
             self.quit = true;
+        }
+        self.video.poll(ui.ctx());
+        if !self.video.is_ready() {
+            self.video.setup_ui(ui);
+            return;
+        }
+        if !self.codex_started {
+            self.codex_started = true;
+            self.reconnect();
+        }
+        self.poll();
+        // Poll the worker without blocking native input or continuously repainting.
+        if self.client.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -236,10 +247,10 @@ impl App {
                     .max_size(ui.available_width() * 0.65)
                     .resizable(true)
                     .show(ui, |ui| self.chat_ui(ui));
-                egui::CentralPanel::default().show(ui, |_| {});
+                egui::CentralPanel::default().show(ui, |ui| self.video.ui(ui));
             }
         } else {
-            egui::CentralPanel::default().show(ui, |_| {});
+            egui::CentralPanel::default().show(ui, |ui| self.video.ui(ui));
         }
     }
 

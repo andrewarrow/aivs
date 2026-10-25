@@ -5,6 +5,7 @@
 
 mod app;
 mod codex;
+mod video;
 
 use std::{error::Error, num::NonZeroU32, sync::Arc, time::Instant};
 

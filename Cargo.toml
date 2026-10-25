@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.92"
 publish = false
 license = "GPL-3.0-only"
-description = "Minimal native Rust GUI with Codex app-server integration"
+description = "Native Rust workspace for local AI video generation and Codex"
 
 [dependencies]
 egui = "0.35"
