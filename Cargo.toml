@@ -1,0 +1,29 @@
+[package]
+name = "aivs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+license = "GPL-3.0-only"
+description = "Minimal native Rust GUI with Codex app-server integration"
+
+[dependencies]
+egui = "0.35"
+egui-wgpu = { version = "0.35", features = ["winit"] }
+egui-winit = "0.35"
+env_logger = "0.11"
+log = "0.4"
+pollster = "0.4"
+serde_json = "1"
+url = "2"
+webbrowser = "1"
+winit = "0.30"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
