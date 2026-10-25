@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "theo",
+  "name": "Theo",
+  "description": "An adult Latino man in his early thirties with warm tan skin, an angular face, brown eyes, thick eyebrows, wavy dark brown hair swept loosely back, and light stubble. He wears a sand-colored cotton Henley and has an alert, friendly expression.",
+  "voice_description": "Bright, agile masculine voice with a neutral American accent and expressive conversational delivery.",
+  "voice_id": "am_puck",
+  "image": {
+    "file": "reference.png",
+    "sha256": "a442a8b3369c75ea357d34b6be255e473bf1d1cdb2fcb0c788c0fcb6f6ef15a1"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "24b27e2135cac55265cf1a6749389f9b182b1300e58d9ae0fb5b3789bb2dac54"
+  }
+}

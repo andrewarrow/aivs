@@ -63,6 +63,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "env_logger",
+ "image",
  "log",
  "pollster",
  "serde_json",

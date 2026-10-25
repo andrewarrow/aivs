@@ -1,11 +1,13 @@
 use super::*;
 use crate::codex::CodexCommand;
+use std::path::Path;
 
 fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
     let (client, commands, _events) = CodexClient::test_channels();
     (
         App {
             video: crate::video::VideoWorkspace::ready_for_test(PathBuf::from("/workspace")),
+            characters: crate::characters::CharacterGallery::load(Path::new("/workspace")),
             codex_started: true,
             root: PathBuf::from("/workspace"),
             client: Some(client),
@@ -127,6 +129,14 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
                     },
                 );
             }
+            let gallery =
+                egui::containers::panel::PanelState::load(&ctx, egui::Id::new("characters"))
+                    .expect("characters panel should be present after setup");
+            assert!(
+                (gallery.size().x - width * 0.30).abs() <= 1.0,
+                "gallery width at {width}x{height} should be 30%, got {}",
+                gallery.size().x
+            );
         }
     }
 }

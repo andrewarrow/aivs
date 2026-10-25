@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "iris",
+  "name": "Iris",
+  "description": "An adult woman in her early sixties with light olive skin, fine smile lines, a long oval face, hazel eyes, and a short silver-gray pixie haircut. She wears a muted plum cardigan over a cream shirt, with a quietly amused, approachable expression.",
+  "voice_description": "Light, clear feminine voice with a neutral American accent and an easy conversational cadence.",
+  "voice_id": "af_sky",
+  "image": {
+    "file": "reference.png",
+    "sha256": "80430fc16895bb498cdac009404ac371e711fb007dffc4131a63fd2085cc81e2"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "c9c50fd2cf986f3c4a148760d5251d838396a88138b972d2793d5658ebf960ed"
+  }
+}

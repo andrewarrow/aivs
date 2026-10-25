@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "nora",
+  "name": "Nora",
+  "description": "An adult Black woman in her early forties with deep brown skin, high cheekbones, dark brown eyes, full lips, and a short natural coily hairstyle. She wears a rust-colored linen blouse and small silver hoop earrings, with a composed, thoughtful expression.",
+  "voice_description": "Soft, airy feminine voice with a neutral American accent and gentle, measured delivery.",
+  "voice_id": "af_nicole",
+  "image": {
+    "file": "reference.png",
+    "sha256": "a37ee92d0a02b383127b55027836a1750703b10f8f5eea33997c087511ac2916"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "08b686c5ea51eb66836fb0c66c39b504c84558b2608e26840585b3f5f62bc796"
+  }
+}

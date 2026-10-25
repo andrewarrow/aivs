@@ -9,6 +9,7 @@ struct Message {
 
 pub struct App {
     root: PathBuf,
+    characters: crate::characters::CharacterGallery,
     video: crate::video::VideoWorkspace,
     codex_started: bool,
     client: Option<CodexClient>,
@@ -32,6 +33,7 @@ impl App {
     pub fn new(root: PathBuf) -> Self {
         Self {
             video: crate::video::VideoWorkspace::new(root.clone()),
+            characters: crate::characters::CharacterGallery::load(&root),
             codex_started: false,
             root,
             client: None,
@@ -237,6 +239,11 @@ impl App {
                 });
             });
         });
+        let gallery_width = ui.available_width() * 0.30;
+        egui::Panel::right("characters")
+            .exact_size(gallery_width)
+            .resizable(false)
+            .show(ui, |ui| self.characters.ui(ui));
         if self.chat_open {
             if ui.available_width() < 680.0 {
                 egui::CentralPanel::default().show(ui, |ui| self.chat_ui(ui));

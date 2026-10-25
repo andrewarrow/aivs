@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "ava",
+  "name": "Ava",
+  "description": "An adult woman in her early thirties with fair freckled skin, an oval face, green eyes, softly arched eyebrows, a straight nose, and shoulder-length wavy auburn hair parted slightly off center. She wears an oatmeal crewneck sweater and has a warm, open expression.",
+  "voice_description": "Warm, clear mid-register feminine voice with a neutral American accent and relaxed conversational delivery.",
+  "voice_id": "af_heart",
+  "image": {
+    "file": "reference.png",
+    "sha256": "0d91a35105f1672a6e06ac2d9d7c4926c80ecab90b5d7316a56bfd7a964c5a40"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "bd39da3140cd4e739df1a7e42e7188264c98b60d22788c0a80ac3e98c573f428"
+  }
+}

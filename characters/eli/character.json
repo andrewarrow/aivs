@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "eli",
+  "name": "Eli",
+  "description": "An adult man in his late twenties with fair skin, a narrow oval face, blue-gray eyes, thick dark eyebrows, short curly dark brown hair, and a clean-shaven jaw. He wears a charcoal cotton T-shirt and has a curious, relaxed expression.",
+  "voice_description": "Low, resonant masculine voice with a neutral American accent and deliberate, grounded delivery.",
+  "voice_id": "am_adam",
+  "image": {
+    "file": "reference.png",
+    "sha256": "a2380b632c250e9404f3c648e40be304b309ac529db8d9763ff04bdc1ca78455"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "975ca911fba915020a6238b6042cfbca89cbdb8e8f5c9bc8f8a5ce0102579889"
+  }
+}

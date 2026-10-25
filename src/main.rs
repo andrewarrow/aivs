@@ -4,6 +4,7 @@
 )]
 
 mod app;
+mod characters;
 mod codex;
 mod video;
 

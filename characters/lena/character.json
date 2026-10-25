@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "lena",
+  "name": "Lena",
+  "description": "An adult East Asian woman in her mid-thirties with light warm-toned skin, an oval face, dark brown eyes, straight eyebrows, and a chin-length straight black bob tucked behind one ear. She wears a navy crewneck top and has a calm, attentive expression.",
+  "voice_description": "Clear, even feminine voice with a neutral American accent and steady conversational pacing.",
+  "voice_id": "af_sarah",
+  "image": {
+    "file": "reference.png",
+    "sha256": "774875555657107e07a4e9a544ef4e78693df71436d5cd44f8ec9f70365d0ae8"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "732346cda7fc56d62582b4b5e5a791749e76093e471711f38bec3376b803db0f"
+  }
+}

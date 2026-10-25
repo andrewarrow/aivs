@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "owen",
+  "name": "Owen",
+  "description": "An adult man in his mid-fifties with fair weathered skin, a broad face, light blue eyes, short salt-and-pepper hair, and a close salt-and-pepper beard. He wears a faded blue denim shirt over a gray crewneck and has a thoughtful, kindly expression.",
+  "voice_description": "Low, slightly textured masculine voice with a neutral American accent and relaxed, measured delivery.",
+  "voice_id": "am_michael",
+  "image": {
+    "file": "reference.png",
+    "sha256": "9ccd8acb916c1a4e8bbed42707772bfac7ac69c750fed1fab66b44d8881e15c5"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "db2c586d6afd3a9810bb3f35dc77570859017aa0adeeb984c23d8f07c99086fd"
+  }
+}

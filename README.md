@@ -44,9 +44,11 @@ status in `outputs/<timestamp>_<seed>/render.json`. Only a video that passes
 decoded-frame and audio/video timing checks is published as `video.mp4`.
 **Open video** and **Show files** open the completed result and its directory.
 
-Characters, reference images, alternate renderers, speech synthesis, and the
-remaining Hunter menu options have not been migrated. Generation uses local
-cached models; file checks do not establish speech accuracy or lip synchronization.
+Character reference images appear in a scrollable gallery beside the workspace.
+The gallery reads the imported `characters/` data; generation does not yet use
+those references. Alternate renderers, speech synthesis, and the remaining
+Hunter menu options have not been migrated. Generation uses local cached models;
+file checks do not establish speech accuracy or lip synchronization.
 The Python sources currently ship in this checkout; keep `python/` alongside the
 source when building. `.env`, `.venv`, `.cache`, and generated outputs are ignored
 by Git. No runtime path points back to the Hunter checkout.

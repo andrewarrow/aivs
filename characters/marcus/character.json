@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "marcus",
+  "name": "Marcus",
+  "description": "An adult Black man in his late thirties with deep brown skin, a broad square face, dark brown eyes, close-cropped black hair, and a neatly trimmed short beard. He wears an olive canvas overshirt over a dark crewneck T-shirt and has a confident, easygoing expression.",
+  "voice_description": "Full, resonant masculine voice with a neutral American accent, clear articulation, and an assured conversational pace.",
+  "voice_id": "am_fenrir",
+  "image": {
+    "file": "reference.png",
+    "sha256": "20cbe09664516b0b0e3eeeb648d547747a3cdb38fd47d77e341ecd296cd58440"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "bf6987c16f531be5fef63a35694e517cdf9f677184ed9edb4a46b86fade28e9f"
+  }
+}

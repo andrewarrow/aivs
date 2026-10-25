@@ -11,6 +11,7 @@ description = "Native Rust workspace for local AI video generation and Codex"
 egui = "0.35"
 egui-wgpu = { version = "0.35", features = ["winit"] }
 egui-winit = "0.35"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 env_logger = "0.11"
 log = "0.4"
 pollster = "0.4"

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "maya",
+  "name": "Maya",
+  "description": "An adult South Asian woman in her late twenties with medium-brown skin, a heart-shaped face, dark brown almond-shaped eyes, thick eyebrows, and long straight black hair parted in the middle. She wears a dark teal cotton shirt and small gold stud earrings, with a confident, friendly expression.",
+  "voice_description": "Bright, smooth feminine voice with a neutral American accent and lively, clear conversational delivery.",
+  "voice_id": "af_bella",
+  "image": {
+    "file": "reference.png",
+    "sha256": "357d99f0e0e767dbe99cc35b2cebfd7f19a2aaf795cbfa69fb68d5b4a119b2df"
+  },
+  "voice_sample": {
+    "file": "voice.wav",
+    "sha256": "3f790ee86928918f6188aa712829657f22426b56d5af4edf2656629e215d67ec"
+  }
+}
