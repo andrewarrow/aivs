@@ -146,3 +146,72 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
         }
     }
 }
+
+#[test]
+fn clicking_character_names_and_portraits_replaces_the_displayed_prompt() {
+    let (mut app, _commands) = app();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut App, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| app.ui(ui),
+        )
+    };
+    let _ = frame(&mut app, vec![]);
+    let mut output = frame(&mut app, vec![]);
+    for (name, portrait) in [("Ava", false), ("Eli", true), ("Ava", false)] {
+        let label = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == name => Some(text.pos),
+                _ => None,
+            })
+            .expect("character name must be visible");
+        let pos = label + egui::vec2(8.0, if portrait { 60.0 } else { 6.0 });
+        output = frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let prompt = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text)
+                    if text
+                        .galley
+                        .text()
+                        .starts_with("A single continuous cinematic shot") =>
+                {
+                    Some(text.galley.text())
+                }
+                _ => None,
+            })
+            .expect("prompt must be visible");
+        assert!(prompt.starts_with(&format!("A single continuous cinematic shot of {name}.")));
+        assert!(prompt.contains(&format!("my name is {name}")));
+        assert!(!prompt.contains("nancy"));
+        assert!(prompt.contains("dramatic rock formations"));
+    }
+}

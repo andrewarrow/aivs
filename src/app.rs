@@ -246,7 +246,11 @@ impl App {
         egui::Panel::right("characters")
             .exact_size(gallery_width)
             .resizable(false)
-            .show(ui, |ui| self.characters.ui(ui));
+            .show(ui, |ui| {
+                if let Some(character) = self.characters.ui(ui) {
+                    self.video.select_character(character);
+                }
+            });
         if self.chat_open {
             if ui.available_width() < 680.0 {
                 egui::CentralPanel::default().show(ui, |ui| self.chat_ui(ui));

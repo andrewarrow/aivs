@@ -5,10 +5,11 @@ use std::{
 
 pub struct CharacterGallery {
     characters: Vec<Character>,
+    selected: Option<usize>,
 }
 
-struct Character {
-    name: String,
+pub struct Character {
+    pub name: String,
     image: Option<egui::ColorImage>,
     texture: Option<egui::TextureHandle>,
 }
@@ -29,14 +30,19 @@ impl CharacterGallery {
             .filter(|entry| entry.path().is_dir())
             .map(|entry| {
                 let folder = entry.path();
-                let name = character_name(&folder).unwrap_or_else(|| {
+                let data = fs::read(folder.join("character.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .unwrap_or_default();
+                let name = data["name"].as_str().map(str::to_owned).unwrap_or_else(|| {
                     folder
                         .file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or("Character")
                         .to_owned()
                 });
-                let image = character_image_path(&folder).and_then(|path| decode_image(&path).ok());
+                let image_file = data["image"]["file"].as_str().unwrap_or("reference.png");
+                let image = decode_image(&folder.join(image_file)).ok();
                 Character {
                     name,
                     image,
@@ -45,19 +51,29 @@ impl CharacterGallery {
             })
             .collect::<Vec<_>>();
         characters.sort_by(|a, b| a.name.cmp(&b.name));
-        Self { characters }
+        Self {
+            characters,
+            selected: None,
+        }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<&Character> {
         ui.heading("Characters");
         if self.characters.is_empty() {
             ui.label("No characters found.");
-            return;
+            return None;
         }
+        let mut clicked = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for character in &mut self.characters {
+            for (index, character) in self.characters.iter_mut().enumerate() {
                 ui.add_space(6.0);
-                ui.add(egui::Label::new(&character.name).wrap());
+                let selected = self.selected == Some(index);
+                if ui
+                    .add(egui::Button::selectable(selected, &character.name).wrap())
+                    .clicked()
+                {
+                    clicked = Some(index);
+                }
                 if character.texture.is_none()
                     && let Some(image) = character.image.take()
                 {
@@ -69,34 +85,33 @@ impl CharacterGallery {
                 }
                 if let Some(texture) = &character.texture {
                     let size = texture.size_vec2();
-                    let scale = (ui.available_width() / size.x).min(260.0 / size.y).min(1.0);
-                    ui.add(
-                        egui::Image::new((texture.id(), size * scale))
-                            .alt_text(format!("{} reference image", character.name)),
-                    );
+                    let width =
+                        (ui.available_width() - 2.0 * ui.spacing().button_padding.x).max(1.0);
+                    let scale = (width / size.x).min(260.0 / size.y).min(1.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::Image::new((texture.id(), size * scale))
+                                    .alt_text(format!("Select {}", character.name)),
+                            )
+                            .selected(selected),
+                        )
+                        .clicked()
+                    {
+                        clicked = Some(index);
+                    }
                 } else {
                     ui.add(egui::Label::new("Reference image unavailable.").wrap());
                 }
             }
         });
+        if let Some(index) = clicked {
+            self.selected = Some(index);
+            Some(&self.characters[index])
+        } else {
+            None
+        }
     }
-}
-
-fn character_name(folder: &Path) -> Option<String> {
-    let data: serde_json::Value =
-        serde_json::from_slice(&fs::read(folder.join("character.json")).ok()?).ok()?;
-    data.get("name")?.as_str().map(str::to_owned)
-}
-
-fn character_image_path(folder: &Path) -> Option<PathBuf> {
-    let data: serde_json::Value =
-        serde_json::from_slice(&fs::read(folder.join("character.json")).ok()?).ok()?;
-    let image_file = data
-        .get("image")
-        .and_then(|image| image.get("file"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("reference.png");
-    Some(folder.join(image_file))
 }
 
 fn decode_image(path: &Path) -> Result<egui::ColorImage, String> {
@@ -129,8 +144,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "Ava", "Eli", "Iris", "Joe", "Lena", "Marcus", "Maya", "Nora", "Owen", "Sue",
-                "Theo"
+                "Ava", "Eli", "Iris", "Lena", "Marcus", "Maya", "Nora", "Owen", "Theo"
             ]
         );
         assert!(

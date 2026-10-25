@@ -35,7 +35,7 @@ file/byte progress. Initial model setup downloads about **43 GB** and requires
 **50 GiB free**. Cached files are reused, and interrupted downloads can be retried.
 Errors keep setup locked. A ready installation skips the setup modal.
 
-Choose **Generate video** to run the unchanged prompt as one continuous shot
+Choose **Generate video** to run the displayed prompt as one continuous shot
 with native jointly generated speech. Dialogue determines the duration: the
 default produces **8 seconds at 1280×704 and 24 fps**. **Stop** interrupts the
 Python process group, including FFmpeg. Closing AIVS also stops its active work.
@@ -54,8 +54,16 @@ play/pause, seeking, volume, and fullscreen, including the generated audio.
 hidden, and previous results remain playable while another render runs.
 
 Character reference images appear in a scrollable gallery beside the workspace.
-The gallery reads the imported `characters/` data; generation does not yet use
-those references. Alternate renderers, speech synthesis, and the remaining
+Click a character's name or portrait to select them and update the prompt and
+spoken introduction. Like Hunter, Python resolves saved names and `@name` references
+outside quoted dialogue, adds appearance and voice descriptions, and uses the
+character's portrait as a starting image. Each render saves copies of its character
+profiles and reference assets beside the original and expanded prompts. Native
+speech follows the voice description; voice samples do not lock voice identity.
+The gallery and renderer use the workspace's `characters/` directory, falling back
+to this checkout's imported library. CLI renders also accept `--character NAME`
+(repeatable) and `--character-text-only` for scenes with multiple character images.
+Alternate renderers, speech synthesis, and the remaining
 Hunter menu options have not been migrated. Generation uses local cached models;
 file checks do not establish speech accuracy or lip synchronization.
 The Python sources currently ship in this checkout; keep `python/` alongside the

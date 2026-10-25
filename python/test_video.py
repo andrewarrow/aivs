@@ -1,4 +1,5 @@
 import io
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -86,6 +87,75 @@ class RenderTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Another AIVS"):
                     with video.project_lock(".render.lock"):
                         pass
+
+    def test_selected_prompt_reaches_renderer_timing_and_report_through_cli(self):
+        prompt = 'A cinematic shot of Eli, an adult man. He says "hello my name is Eli".'
+        library = Path(video.__file__).resolve().parents[1]
+        profile = video.characters.load_character("eli", root=library)
+        expanded = video.characters.expand_prompt(prompt, [profile], image_conditioned=True)
+
+        def render(actual_prompt, seed, frames, output, *, on_progress, image_file):
+            self.assertEqual(actual_prompt, expanded)
+            self.assertEqual(seed, 42)
+            self.assertEqual(frames, duration_estimate(prompt)["seconds"] * backend.FPS)
+            self.assertEqual(image_file, output.parent / "characters/eli/reference.png")
+            self.assertEqual(image_file.read_bytes(), (library / "characters/eli/reference.png").read_bytes())
+            output.write_bytes(b"validated video")
+            return {}
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), patch.object(video, "check_environment"), patch.object(video, "render", side_effect=render) as renderer, patch("sys.argv", ["video.py", "render", "--seed", "42", "--prompt", prompt]), patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(video.main(), 0)
+            renderer.assert_called_once()
+            report = json.loads(next(Path(directory).glob("outputs/*/render.json")).read_text())
+            self.assertEqual(report["original_prompt"], prompt)
+            self.assertEqual(report["prompt"], expanded)
+            self.assertEqual(report["characters"], [profile])
+            self.assertEqual(report["dialogue_timing"], duration_estimate(prompt))
+            self.assertEqual(report["image_source"]["file"], "characters/eli/reference.png")
+            video.characters.verify_snapshots([profile], next(Path(directory).glob("outputs/*")))
+
+    def test_workspace_character_library_overrides_checkout_and_explicit_selector_works(self):
+        profile = {"schema_version": 1, "id": "eli", "name": "Eli",
+                   "description": "A person in a bright red coat", "voice_description": "A soft voice"}
+        with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), patch.object(video, "check_environment"), patch.object(video, "render", side_effect=RuntimeError("captured")) as renderer, patch("sys.stdout", new_callable=io.StringIO):
+            folder = Path(directory) / "characters/eli"
+            folder.mkdir(parents=True)
+            (folder / "character.json").write_text(json.dumps(profile))
+            with self.assertRaisesRegex(RuntimeError, "captured"):
+                video.generate(42, 'A person says "Hello."', character=["ELI"])
+            self.assertIn(profile["description"], renderer.call_args.args[0])
+            self.assertIn(profile["voice_description"], renderer.call_args.args[0])
+            self.assertNotIn("image_file", renderer.call_args.kwargs)
+
+    def test_multiple_character_images_require_text_only_and_keep_dialogue_timing(self):
+        prompt = 'Eli and Ava say "hello there".'
+        with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), patch.object(video, "check_environment"), patch.object(video, "render", side_effect=RuntimeError("captured")) as renderer, patch("sys.stdout", new_callable=io.StringIO):
+            with self.assertRaisesRegex(ValueError, "Multiple saved characters"):
+                video.generate(42, prompt)
+            renderer.assert_not_called()
+            self.assertFalse((Path(directory) / "outputs").exists())
+            with self.assertRaisesRegex(RuntimeError, "captured"):
+                video.generate(42, prompt, character_text_only=True)
+            self.assertNotIn("image_file", renderer.call_args.kwargs)
+            self.assertIn("Character continuity:", renderer.call_args.args[0])
+            self.assertEqual(renderer.call_args.args[2], duration_estimate(prompt)["seconds"] * backend.FPS)
+            report = json.loads(next(Path(directory).glob("outputs/*/render.json")).read_text())
+            self.assertTrue(report["character_text_only"])
+            self.assertEqual([profile["id"] for profile in report["characters"]], ["eli", "ava"])
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is installed in the renderer's .venv")
+    def test_reference_image_is_checked_before_loading_the_pipeline(self):
+        source = Path(video.__file__).resolve().parents[1] / "characters/eli/reference.png"
+        info = backend.prepare_source_image(source)
+        self.assertEqual(info["source_file"], str(source))
+        self.assertEqual(info["conditioning"], "whole-first-frame")
+        self.assertGreater(info["width"], 0)
+        self.assertGreater(info["height"], 0)
+        with tempfile.TemporaryDirectory() as directory:
+            broken = Path(directory) / "broken.png"
+            broken.write_bytes(b"not an image")
+            with self.assertRaisesRegex(ValueError, "Cannot decode reference image"):
+                backend.render("A scene", 42, 24, Path(directory) / "video.mp4", image_file=broken)
 
     def test_success_forwards_render_estimates_and_saves_phase_timings(self):
         def render(prompt, seed, frames, output, *, on_progress):

@@ -219,6 +219,40 @@ fn child_failure_cannot_be_mistaken_for_a_ready_environment() {
 
 #[cfg(unix)]
 #[test]
+fn renderer_receives_the_selected_prompt_as_a_single_argument() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let python = root.path().join(".venv/bin/python");
+    std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+    std::fs::write(
+        &python,
+        r#"#!/usr/bin/env python3
+import json, pathlib, sys
+pathlib.Path('args.json').write_text(json.dumps(sys.argv[1:]))
+output = pathlib.Path('video.mp4').resolve()
+output.touch()
+print('AIVS_EVENT ' + json.dumps({'event': 'complete', 'output': str(output)}))
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (sender, events) = mpsc::channel();
+    let worker = Worker {
+        root: root.path().to_owned(),
+        sender,
+        cancel: Arc::default(),
+    };
+    let prompt = "A shot of @Eli. Eli says \"Hello, I'm Eli.\"\nThe camera follows.";
+    worker.render(prompt).unwrap();
+    let args: Vec<String> =
+        serde_json::from_slice(&std::fs::read(root.path().join("args.json")).unwrap()).unwrap();
+    assert_eq!(args, ["-u", SCRIPT, "render", "--prompt", prompt]);
+    assert!(matches!(events.recv().unwrap(), Event::Complete(path) if path.is_file()));
+}
+
+#[cfg(unix)]
+#[test]
 fn stopping_a_job_terminates_its_process_group_and_unblocks_output_readers() {
     let root = tempfile::tempdir().unwrap();
     let (sender, events) = mpsc::channel();

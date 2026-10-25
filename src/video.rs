@@ -41,10 +41,9 @@ enum Event {
     Stopped,
 }
 
-#[derive(Clone, Copy)]
 enum Task {
     Setup,
-    Render,
+    Render(String),
 }
 
 struct Job {
@@ -66,7 +65,7 @@ impl Job {
             };
             let result = match task {
                 Task::Setup => worker.setup(),
-                Task::Render => worker.render(),
+                Task::Render(prompt) => worker.render(&prompt),
             };
             if let Err(error) = result {
                 worker.send(if worker.cancel.load(Ordering::Relaxed) {
@@ -184,8 +183,10 @@ impl Worker {
         Ok(())
     }
 
-    fn render(&self) -> Result<(), String> {
-        let output = self.run(self.python("render"))?;
+    fn render(&self, prompt: &str) -> Result<(), String> {
+        let mut command = self.python("render");
+        command.arg("--prompt").arg(prompt);
+        let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
             Ok(())
@@ -367,6 +368,7 @@ fn read_output(
 
 pub struct VideoWorkspace {
     root: PathBuf,
+    prompt: String,
     setup: Setup,
     job: Option<Job>,
     rendering: bool,
@@ -392,6 +394,7 @@ impl VideoWorkspace {
     fn idle(root: PathBuf) -> Self {
         Self {
             root,
+            prompt: DEFAULT_PROMPT.trim().to_owned(),
             setup: Setup::Checking,
             job: None,
             rendering: false,
@@ -417,7 +420,7 @@ impl VideoWorkspace {
         self.fraction = None;
         self.remaining_seconds = None;
         self.stopping = false;
-        self.rendering = matches!(task, Task::Render);
+        self.rendering = matches!(task, Task::Render(_));
         if !self.rendering {
             self.setup = Setup::Checking;
         }
@@ -509,6 +512,20 @@ impl VideoWorkspace {
         self.setup == Setup::Ready
     }
 
+    pub fn select_character(&mut self, character: &crate::characters::Character) {
+        let name = &character.name;
+        self.prompt = format!(
+            "A single continuous cinematic shot of {name}. \
+             {name} makes eye contact with the camera, and speaks a short line directly to the viewer \
+             \"hello everyone my name is {name} and I am so excited to be here talking with you\", \
+             with clear natural mouth movement synced to their words. Their facial features remain \
+             consistent, and their expression is calm and believable. The camera glides smoothly \
+             alongside them at a slight distance, then adjusts to capture their turn toward the lens \
+             while maintaining a cinematic eye-level perspective. The scene is filled with cool \
+             early-morning light, open space, drifting sand, and dramatic rock formations in the background."
+        );
+    }
+
     pub fn setup_ui(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show(ui, |ui| {
             if self.setup == Setup::Checking {
@@ -574,11 +591,7 @@ impl VideoWorkspace {
                 );
                 ui.add_space(16.0);
                 ui.strong("Prompt");
-                ui.add(
-                    egui::Label::new(DEFAULT_PROMPT.trim())
-                        .wrap()
-                        .selectable(true),
-                );
+                ui.add(egui::Label::new(&self.prompt).wrap().selectable(true));
                 ui.add_space(16.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui
@@ -588,7 +601,7 @@ impl VideoWorkspace {
                         )
                         .clicked()
                     {
-                        self.start(Task::Render);
+                        self.start(Task::Render(self.prompt.clone()));
                     }
                     if self.rendering
                         && ui

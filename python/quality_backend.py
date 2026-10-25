@@ -126,13 +126,14 @@ def doctor():
         raise RuntimeError("The MLX Apple GPU calculation failed.")
 
 
-def render(prompt, seed, frames, output, *, on_progress=None):
+def render(prompt, seed, frames, output, *, on_progress=None, image_file=None):
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
     from render_estimate import RenderEstimate
     from validation import validate_video
 
     output = Path(output)
+    image = prepare_source_image(image_file) if image_file is not None else None
     native = output.with_name("video.native.mp4")
     partial = output.with_name("video.partial.mp4")
     inference_frames = math.ceil((frames - 1) / 8) * 8 + 1
@@ -149,10 +150,12 @@ def render(prompt, seed, frames, output, *, on_progress=None):
         with progress.phase("Preparing disk-streamed pipeline", "pipeline"):
             pipeline = DistilledPipeline(model_dir=str(snapshot), low_memory=True, low_ram_streaming=True)
         pipeline.generate_audio = True
+        generation_options = {"image": image["source_file"]} if image is not None else {}
         with pipeline_activity(pipeline, progress):
             pipeline.generate_and_save(
                 prompt=prompt, output_path=str(native), width=WIDTH, height=HEIGHT,
                 num_frames=inference_frames, frame_rate=FPS, seed=seed,
+                **generation_options,
             )
         decode_peak = mx.get_peak_memory() / 1024**3
         duration = frames / FPS
@@ -177,8 +180,33 @@ def render(prompt, seed, frames, output, *, on_progress=None):
         "inference_frames": inference_frames, "output_frames": frames,
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()},
+        "source_image": image,
         "peak_decode_mlx_memory_gib": round(decode_peak, 2), "video": info,
         "software": {name: version(name) for name in (
             "mlx", "mlx-metal", "mlx-arsenal", "ltx-core-mlx", "ltx-pipelines-mlx", "transformers",
         )},
+    }
+
+
+def prepare_source_image(source):
+    """Validate Hunter's whole-first-frame image anchor before loading model weights."""
+    import hashlib
+    from PIL import Image
+
+    source = Path(source).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Image file does not exist: {source}")
+    try:
+        with Image.open(source) as picture:
+            picture.verify()
+        with Image.open(source) as picture:
+            picture.load()
+            width, height = picture.size
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise ValueError(f"Cannot decode reference image: {source}") from exc
+    return {
+        "source_file": str(source),
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "width": width, "height": height,
+        "conditioning": "whole-first-frame", "strength": 1.0,
     }
