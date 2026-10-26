@@ -18,6 +18,7 @@ import time
 from quality_backend import ROOT, CACHE, FPS, WIDTH, HEIGHT, doctor, model_path, render
 from dialogue_helpers import duration_estimate
 import characters
+import speech_validation
 from shooting_script import create_shooting_script, load_shooting_script, parse_request, save_shooting_script
 from shot_renderer import render_shooting_script
 
@@ -59,6 +60,8 @@ def check():
     doctor()
     emit("progress", label="Checking cached model, text encoder, and audio weights")
     model_path()
+    emit("progress", label="Checking local speech verification")
+    speech_validation.check_available(ROOT)
     emit("ready")
 
 
@@ -88,6 +91,7 @@ def download():
     with project_lock(".setup.lock"):
         emit("progress", label="Downloading LTX-2.5 with audio (about 43 GB; cached files are reused)")
         model_path(download=True, progress_class=DownloadProgress)
+        speech_validation.setup(ROOT, on_progress=lambda **data: emit("progress", **data))
     check()
 
 

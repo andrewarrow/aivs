@@ -9,6 +9,7 @@ import tempfile
 import time
 
 import quality_backend
+import speech_validation
 from validation import validate_video
 
 FPS = quality_backend.FPS
@@ -35,6 +36,7 @@ def _validate_plan(plan: dict) -> tuple[list[dict], int, bool]:
     shots = plan.get("shots")
     if not isinstance(shots, list) or not shots:
         raise ValueError("Shooting plan must contain at least one shot.")
+    has_scene_ids = any(isinstance(shot, dict) and "scene_id" in shot for shot in shots)
     normalized = []
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -47,6 +49,13 @@ def _validate_plan(plan: dict) -> tuple[list[dict], int, bool]:
         for key in ("continue_previous",):
             if not isinstance(shot.get(key), bool):
                 raise ValueError(f"Shot {index + 1} needs a boolean {key} value.")
+        if has_scene_ids and (type(shot.get("scene_id")) is not int or shot["scene_id"] < 0):
+            raise ValueError(f"Shot {index + 1} needs a nonnegative integer scene_id.")
+        if shot["continue_previous"]:
+            if index == 0:
+                raise ValueError("The first shot cannot continue a previous shot.")
+            if has_scene_ids and shot["scene_id"] != normalized[-1]["scene_id"]:
+                raise ValueError(f"Shot {index + 1} cannot continue across scenes.")
         for key in ("start_state", "end_state"):
             if not isinstance(shot.get(key), str):
                 raise ValueError(f"Shot {index + 1} needs a string {key} value.")
@@ -62,6 +71,38 @@ def _validate_plan(plan: dict) -> tuple[list[dict], int, bool]:
     return normalized, seconds, plan["fade_out"]
 
 
+def _uses_previous_frame(shots: list[dict], index: int) -> bool:
+    if index == 0:
+        return False
+    # Scene IDs distinguish repeated headings (e.g. returning to the same room
+    # later). For source-backed plans, a director's camera-cut flag must never
+    # silently discard the only visual identity/wardrobe conditioning we have.
+    if "scene_id" in shots[index]:
+        return shots[index]["scene_id"] == shots[index - 1]["scene_id"]
+    # Older hand-authored plans have no scene metadata.
+    return shots[index]["continue_previous"]
+
+
+def _expected_dialogue(plan: dict, shots: list[dict]) -> list[str]:
+    """Use source beats, never generated prompt prose, as the speech contract."""
+    source = plan.get("source")
+    beats = source.get("beats") if isinstance(source, dict) else None
+    if not isinstance(beats, list) or not beats:
+        raise ValueError("Speech verification requires the shooting plan's source beats.")
+    by_id = {}
+    for beat in beats:
+        if (not isinstance(beat, dict) or type(beat.get("id")) is not int
+                or beat["id"] in by_id or beat.get("kind") not in ("action", "dialogue")
+                or not isinstance(beat.get("text"), str) or not beat["text"].strip()):
+            raise ValueError("Speech verification requires valid, unique source beats.")
+        by_id[beat["id"]] = beat
+    assigned = [beat_id for shot in shots for beat_id in shot["beat_ids"]]
+    if any(type(beat_id) is not int for beat_id in assigned) or assigned != list(by_id):
+        raise ValueError("Shot beat IDs must cover the source exactly once in order.")
+    return [" ".join(by_id[beat_id]["text"] for beat_id in shot["beat_ids"]
+                     if by_id[beat_id]["kind"] == "dialogue") for shot in shots]
+
+
 def _extract_last_frame(clip: Path, frame_index: int, image: Path) -> None:
     image.parent.mkdir(parents=True, exist_ok=True)
     image.unlink(missing_ok=True)
@@ -74,7 +115,8 @@ def _extract_last_frame(clip: Path, frame_index: int, image: Path) -> None:
         raise RuntimeError(f"FFmpeg did not extract the last frame from {clip}.")
 
 
-def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *, width=None, height=None) -> dict:
+def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *,
+              width=None, height=None, verify_audio=None) -> dict:
     width = WIDTH if width is None else width
     height = HEIGHT if height is None else height
     run_dir = output.parent
@@ -108,6 +150,8 @@ def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *, 
         "-movflags", "+faststart", str(partial),
     ], check=True, capture_output=True, text=True, cwd=run_dir)
     info = validate_video(partial, frames, width, height, expect_audio=True)
+    if verify_audio is not None:
+        info["speech_validation"] = verify_audio(partial)
     partial.replace(output)
     return info
 
@@ -127,8 +171,12 @@ def render_shooting_script(
     their atomic reports remain available if a later shot or assembly fails.
     """
     shots, seconds, fade_out = _validate_plan(plan)
+    dialogue = _expected_dialogue(plan, shots)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("seed must be an integer.")
+    # Fail before GPU inference if verification cannot run. Missing ASR is not
+    # permission to publish an unchecked performance.
+    speech_validation.check_available(quality_backend.ROOT)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     shots_dir = output.parent / "shots"
@@ -163,6 +211,15 @@ def render_shooting_script(
             clip = shot_dir / "video.mp4"
             frames = shot["seconds"] * FPS
             shot_seed = (seed + index) % _SEED_MODULUS
+            use_previous_frame = _uses_previous_frame(shots, index)
+            image_file = shot_dir / "start-frame.png" if use_previous_frame else None
+            source_frame = shots[index - 1]["seconds"] * FPS - 1 if use_previous_frame else None
+            continuity = {
+                "conditioning": "previous-shot-last-frame" if use_previous_frame else "none",
+                "source_shot": index if use_previous_frame else None,
+                "source_frame": source_frame,
+                "source_image": str(image_file) if image_file is not None else None,
+            }
             report = {
                 "prompt": shot["prompt"],
                 "seed": shot_seed,
@@ -172,6 +229,8 @@ def render_shooting_script(
                 "start_state": shot["start_state"],
                 "end_state": shot["end_state"],
                 "beat_ids": shot["beat_ids"],
+                "scene_id": shot.get("scene_id"),
+                "continuity": continuity,
             }
             save_shot(index, report)
 
@@ -196,19 +255,20 @@ def render_shooting_script(
                 )
 
             try:
-                image_file = None
-                if index > 0 and shot["continue_previous"]:
-                    image_file = shot_dir / "start-frame.png"
-                    _extract_last_frame(
-                        clips[-1], (shots[index - 1]["seconds"] * FPS) - 1, image_file
-                    )
+                if use_previous_frame:
+                    _extract_last_frame(clips[-1], source_frame, image_file)
                 runtime = renderer(
                     shot["prompt"], shot_seed, frames, clip,
                     on_progress=shot_progress,
                     image_file=image_file,
                     hold_image_framing=False,
                 )
-                report.update(status="complete", runtime=runtime)
+                report["runtime"] = runtime
+                emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
+                speech = speech_validation.validate_shot_audio(
+                    clip, dialogue[index], shot_dir, root=quality_backend.ROOT,
+                )
+                report.update(status="complete", speech_validation=speech)
                 clips.append(clip)
                 summaries.append({
                     "index": index,
@@ -217,6 +277,8 @@ def render_shooting_script(
                     "seconds": shot["seconds"],
                     "status": "complete",
                     "runtime": runtime,
+                    "continuity": continuity,
+                    "speech_validation": speech,
                 })
                 completed_seconds += shot["seconds"]
                 save_shot(index, report)
@@ -230,11 +292,20 @@ def render_shooting_script(
                 raise
             except Exception as exc:
                 report.update(status="failed", error=str(exc))
+                if isinstance(exc, speech_validation.SpeechValidationError):
+                    report["speech_validation"] = exc.report
                 save_shot(index, report)
                 raise
 
         emit_progress(0.97, "Assembling shots")
-        video_info = _assemble(clips, output, seconds, fade_out)
+        def verify_assembly(clip):
+            emit_progress(0.98, "Checking assembled dialogue after transitions")
+            return speech_validation.validate_shot_audio(
+                clip, " ".join(text for text in dialogue if text), output.parent,
+                root=quality_backend.ROOT,
+            )
+
+        video_info = _assemble(clips, output, seconds, fade_out, verify_audio=verify_assembly)
         emit_progress(0.99, "Validating complete video")
     except KeyboardInterrupt:
         raise

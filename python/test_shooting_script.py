@@ -143,7 +143,53 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("MARA looks like a woman with copper hair", artifact["shots"][0]["prompt"])
         self.assertIn("TOMAS speaks with a warm, quick voice", artifact["shots"][2]["prompt"])
         self.assertNotIn("MARA:", artifact["shots"][0]["prompt"])
+        self.assertIn("delivered exactly once in order", artifact["shots"][0]["prompt"])
+        self.assertIn("no spoken dialogue", artifact["shots"][2]["prompt"])
+        self.assertNotIn("current speaker", artifact["shots"][2]["prompt"])
         self.assertTrue(artifact["fade_out"])
+
+    def test_same_scene_cannot_restart_without_a_visual_handoff(self):
+        bad = candidate()
+        bad["shots"][1]["continue_previous"] = False
+        with self.assertRaisesRegex(ValueError, "must continue.*same scene"):
+            validate_shooting_script(bad, REQUEST, PROFILES)
+
+    def test_final_fade_does_not_force_three_seconds_for_a_brief_action(self):
+        request = {"version": 1, "cast": REQUEST["cast"],
+                   "script": 'INT. GLASSHOUSE - NIGHT\n\nMARA: "Then we have time. Ready?"\n\nMara nods.\n'}
+        proposed = {"shots": [{
+            "seconds": 4, "beat_ids": [1, 2], "continue_previous": False,
+            "prompt_template": "MARA faces TOMAS. {{line_1}} MARA nods once, lips at rest.",
+            "start_state": "MARA and TOMAS face each other.",
+            "end_state": "MARA has nodded and remains facing TOMAS.",
+        }]}
+        for ending in ("", "\nFADE OUT.\n"):
+            with self.subTest(ending=ending):
+                artifact = validate_shooting_script(
+                    proposed, {**request, "script": request["script"] + ending}, PROFILES)
+                self.assertEqual(artifact["seconds"], 4)
+                self.assertEqual(artifact["fade_out"], bool(ending))
+
+    def test_source_delivery_can_still_require_a_long_pause(self):
+        request = {"version": 1, "cast": REQUEST["cast"],
+                   "script": 'INT. GLASSHOUSE - NIGHT\n\nMARA (after a long pause): "Ready?"\n'}
+        proposed = {"shots": [{
+            "seconds": 12, "beat_ids": [1], "continue_previous": False,
+            "prompt_template": "MARA holds TOMAS's gaze through a long pause, then {{line_1}}",
+            "start_state": "MARA and TOMAS face each other.",
+            "end_state": "Both remain facing each other, lips at rest.",
+        }]}
+        self.assertEqual(validate_shooting_script(proposed, request, PROFILES)["seconds"], 12)
+
+    def test_planner_receives_speech_estimates_from_exact_source_lines(self):
+        source = parse_request(REQUEST, PROFILES)
+        instruction = shooting_script._instruction(source, None)
+        data = json.loads(instruction.split("\nSOURCE DATA\n", 1)[1].strip())
+        self.assertEqual(data["timing_guidance"]["speech_estimates"], [
+            {"beat_id": 2, "spoken_words": 4, "speech_seconds_at_160_wpm": 1.5},
+            {"beat_id": 4, "spoken_words": 4, "speech_seconds_at_160_wpm": 1.5},
+        ])
+        self.assertEqual(data["timing_guidance"]["settling_seconds"], 0.5)
 
     def test_missing_reordered_duplicate_beats(self):
         for ids in ([2], [1, 3], [1, 1]):

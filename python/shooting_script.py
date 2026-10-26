@@ -223,6 +223,21 @@ def _token_count(prompt: str, token_counter) -> int:
     return count
 
 
+def _timing_estimate(beats: list[dict]) -> dict:
+    """Expose the same conservative speech/action floor to planner and validator.
+
+    Source actions and delivery cues can require more time; this is deliberately
+    not an upper bound inferred from paragraph count. A fade adds no idle time.
+    """
+    words = sum(len(_WORDS.findall(beat["text"])) for beat in beats
+                if beat["kind"] == "dialogue")
+    actions = sum(beat["kind"] == "action" for beat in beats)
+    speech_seconds = words * 60 / 160
+    return {"spoken_words": words, "speech_seconds_at_160_wpm": speech_seconds,
+            "action_beats": actions,
+            "minimum_seconds": max(4, math.ceil(speech_seconds + actions + 0.5))}
+
+
 def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict], *, token_counter=None) -> dict:
     """Reject invented/reordered content and fill dialogue from the source of truth."""
     source = parse_request(request, profiles)
@@ -260,6 +275,11 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             raise ValueError("The first shot cannot continue a previous shot.")
         if index > 1 and scene_ids[0] != shots[-1]["scene_id"] and continue_previous:
             raise ValueError(f"Shot {index} cannot continue across scenes.")
+        if index > 1 and scene_ids[0] == shots[-1]["scene_id"] and not continue_previous:
+            raise ValueError(
+                f"Shot {index} must continue the previous shot within the same scene: "
+                "use continue_previous true and preserve its ending composition in the opening frame."
+            )
         template = _bounded(item.get("prompt_template"), f"Shot {index} prompt template")
         start = _bounded(item.get("start_state"), f"Shot {index} start state", 1200)
         end = _bounded(item.get("end_state"), f"Shot {index} end state", 1200)
@@ -283,18 +303,19 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
         action_prompt = action_prompt.rstrip()
         if action_prompt[-1] not in ".!?":
             action_prompt += "."
-        prompt = (action_prompt + " " + _cast_context(source)
-                  + "Only the current speaker moves their mouth. No subtitles, captions, or text overlays.")
+        speech_direction = (
+            "The only spoken words are the quoted dialogue, delivered exactly once in order. "
+            "No added words, repetitions, or unscripted vocalizations. Only the current speaker moves their mouth. "
+            "After the final word, mouths rest unless the source action requires otherwise. "
+            if required else "There is no spoken dialogue in this shot. "
+        )
+        prompt = (action_prompt + " " + _cast_context(source) + speech_direction
+                  + "No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
-        spoken_words = sum(len(_WORDS.findall(by_id[n]["text"])) for n in required)
-        action_count = sum(by_id[n]["kind"] == "action" for n in ids)
-        closing_action = (source["fade_out"] and ids[-1] == len(source_beats)
-                          and by_id[ids[-1]]["kind"] == "action")
-        action_time = action_count + (2 if closing_action else 0)
-        minimum = math.ceil(spoken_words * 60 / 160 + action_time + 0.5)
-        if seconds < max(4, minimum):
-            raise ValueError(f"Shot {index} needs at least {max(4, minimum)} seconds for its dialogue and action.")
+        minimum = _timing_estimate([by_id[n] for n in ids])["minimum_seconds"]
+        if seconds < minimum:
+            raise ValueError(f"Shot {index} needs at least {minimum} seconds for its dialogue and action.")
         shots.append({"seconds": seconds, "beat_ids": ids, "prompt_template": template,
                       "prompt": prompt, "start_state": start, "end_state": end,
                       "continue_previous": continue_previous, "scene": scene_markers[0],
@@ -335,7 +356,7 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
         display.append(f"SHOT {index} | {shot['seconds']}s | beats {', '.join(map(str, shot['beat_ids']))}")
         display.extend((f"Start: {shot['start_state']}", shot["prompt"], f"End: {shot['end_state']}", ""))
     if plan.get("fade_out"):
-        display.append("Fade out after the final action.")
+        display.append("Fade out at the end of the final shot.")
     (run_dir / "shooting-script.txt").write_text("\n".join(display).rstrip() + "\n", encoding="utf-8")
 
 
@@ -350,9 +371,21 @@ _SCHEMA = {"type": "object", "additionalProperties": False, "required": ["shots"
 
 
 def _instruction(source: dict, correction: str | None) -> str:
+    speech_estimates = []
+    for beat in source["beats"]:
+        if beat["kind"] == "dialogue":
+            timing = _timing_estimate([beat])
+            speech_estimates.append({
+                "beat_id": beat["id"], "spoken_words": timing["spoken_words"],
+                "speech_seconds_at_160_wpm": timing["speech_seconds_at_160_wpm"],
+            })
     body = {
         "script": source["script"], "cast": source["cast"], "characters": source["characters"],
-        "beats": source["beats"], "fade_out_after_final_action": source["fade_out"],
+        "beats": source["beats"], "fade_out_at_end": source["fade_out"],
+        "timing_guidance": {
+            "words_per_minute": 160, "settling_seconds": 0.5,
+            "speech_estimates": speech_estimates,
+        },
     }
     direction = Path(__file__).with_name("shooting-script-instructions.txt").read_text(encoding="utf-8")
     return (direction.rstrip() + "\n\n" + _json(body)

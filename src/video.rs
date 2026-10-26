@@ -153,7 +153,12 @@ impl Worker {
             return Err("Stopped".into());
         }
         self.send(Event::Installing);
-        for (program, package) in [("uv", "uv"), ("ffmpeg", "ffmpeg"), ("ffprobe", "ffmpeg")] {
+        for (program, package) in [
+            ("uv", "uv"),
+            ("ffmpeg", "ffmpeg"),
+            ("ffprobe", "ffmpeg"),
+            ("whisper-cli", "whisper-cpp"),
+        ] {
             if !available(program) {
                 if !available("brew") {
                     return Err(format!(

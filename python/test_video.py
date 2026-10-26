@@ -80,6 +80,26 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn("hf_secret", out.getvalue())
             self.assertIn("[redacted]", out.getvalue())
 
+    def test_readiness_requires_speech_verification_assets(self):
+        with patch.object(video, "check_environment"), patch.object(video, "doctor"), \
+                patch.object(video, "model_path"), \
+                patch.object(video.speech_validation, "check_available", side_effect=RuntimeError("Missing speech model")), \
+                patch("sys.stdout", new_callable=io.StringIO) as out:
+            with self.assertRaisesRegex(RuntimeError, "Missing speech model"):
+                video.check()
+            self.assertNotIn('"event": "ready"', out.getvalue())
+
+    def test_download_prepares_speech_checks_before_final_readiness(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), \
+                patch.object(video, "check_environment"), patch.object(video, "model_path") as download_model, \
+                patch.object(video.speech_validation, "setup") as setup_speech, patch.object(video, "check") as check, \
+                patch("sys.stdout", new_callable=io.StringIO):
+            video.download()
+            download_model.assert_called_once()
+            setup_speech.assert_called_once()
+            self.assertEqual(setup_speech.call_args.args, (Path(directory),))
+            check.assert_called_once()
+
     def test_setup_repairs_a_damaged_blob_instead_of_trusting_its_cache_entry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
