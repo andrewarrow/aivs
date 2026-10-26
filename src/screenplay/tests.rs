@@ -660,3 +660,31 @@ fn tab_at_the_end_of_dialogue_adds_an_instruction_then_a_new_spoken_line() {
     assert_eq!(screenplay.document.blocks.len(), count + 1);
     assert_eq!(screenplay.document.blocks[5].kind, Element::Parenthetical);
 }
+
+#[test]
+fn tab_opens_existing_instructions_and_consecutive_instructions_are_preserved() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    let count = screenplay.document.blocks.len();
+    editor.focus(&mut screenplay, 8, 3);
+    editor.key(&mut screenplay, egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks.len(), count);
+    assert_eq!(screenplay.active, screenplay.document.blocks[9].id);
+    editor.type_text(&mut screenplay, "smiling, ");
+    editor.key(&mut screenplay, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(screenplay.active, screenplay.document.blocks[10].id);
+    screenplay.active = screenplay.document.blocks[9].id;
+    screenplay.insert(Element::Parenthetical);
+    let index = screenplay.active_index();
+    screenplay.document.blocks[index].text = "(softly)".into();
+    screenplay.assign("JOE", character("Eli"));
+    screenplay.assign("SUE", character("Ava"));
+    let request: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+    assert!(
+        request["script"]
+            .as_str()
+            .unwrap()
+            .contains("JOE (smiling, looking around; softly): \"He was an optimistic man.\"")
+    );
+}

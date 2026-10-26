@@ -329,16 +329,22 @@ impl Screenplay {
                     }
                 }
                 Element::Parenthetical => {
-                    cue = text
+                    let instruction = text
                         .trim_matches(['(', ')'])
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    if cue.contains(['(', ')']) {
+                    if instruction.contains(['(', ')']) {
                         return Err(format!(
                             "Remove nested parentheses at element {} before generating.",
                             index + 1
                         ));
+                    }
+                    if !instruction.is_empty() {
+                        if !cue.is_empty() {
+                            cue.push_str("; ");
+                        }
+                        cue.push_str(&instruction);
                     }
                 }
                 Element::Dialogue if !text.is_empty() => {
@@ -475,6 +481,16 @@ impl Screenplay {
         }
         if kind == Element::Parenthetical {
             self.split(selection);
+            return;
+        }
+        if matches!(kind, Element::Character | Element::Dialogue)
+            && selection.is_empty()
+            && selection.end == self.document.blocks[index].text.chars().count()
+            && let Some(next) = self.document.blocks.get(index + 1)
+            && next.kind == Element::Parenthetical
+        {
+            self.active = next.id;
+            self.focus = Some((next.id, usize::from(next.text.starts_with('('))));
             return;
         }
         if kind == Element::Dialogue && !self.document.blocks[index].text.is_empty() {
