@@ -130,7 +130,9 @@ class RenderTests(unittest.TestCase):
             captured.update(request=actual_request, profiles=profiles, run_dir=run_dir)
             self.assertEqual(actual_request, request)
             self.assertEqual(token_counter("Mara turns the dial"), 4)
-            captured["plan"] = validated_screenplay_plan(actual_request, profiles, token_counter)
+            captured["plan"] = validated_screenplay_plan(
+                actual_request, profiles, token_counter=token_counter
+            )
             return captured["plan"]
 
         def render_plan(plan, seed, output, *, on_progress, on_shot):
