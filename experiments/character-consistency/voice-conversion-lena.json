@@ -1,0 +1,431 @@
+{
+  "version": 1,
+  "recorded_at": "2026-10-26T11:02:37.324566+00:00",
+  "status": "accepted-lena-conversion-pilot",
+  "label": "native-performance-converted-to-canonical-lena-voice",
+  "milestone_b_passed": false,
+  "lena_pilot_passed": true,
+  "owen_pilot_status": "not-started",
+  "fixed_voice_acceptance": true,
+  "acceptance_scope": "This Lena converted take only; Owen and later scenes remain untested.",
+  "run": "outputs/2026-10-26_voice-conversion-lena",
+  "source_quality": {
+    "version": 1,
+    "status": "clean-speech-confirmed",
+    "reviewer": "user",
+    "recorded_at": "2026-10-26T10:56:22.643272+00:00",
+    "source_video_sha256": "176b37daf6e3a9dca8d57aa65deb9a5d89e0199e50b9aa264a0cdf7a34eb2ad1",
+    "source_audio_sha256": "8a9e883f0693eb5e68d4d9d9cd1cc43b4641e0b74dd2b46079d9a403b89030e4",
+    "question": "In the accepted native clip (/Users/aa/os/aivs/outputs/2026-10-26_native-reference-control/video.mp4), is the soundtrack clean speech with quiet around it, or is there audible music/background sound mixed with the voice? PLAN2.md requires checking this before sending the full soundtrack to voice conversion.",
+    "response": "Clean speech with quiet around it"
+  },
+  "canonical_reference_quality": {
+    "version": 1,
+    "status": "technically-suitable-for-first-conversion-trial",
+    "reference": {
+      "id": "lena",
+      "voice_id": "af_sarah",
+      "voice_reference": "characters/lena/voice.wav",
+      "voice_reference_sha256": "732346cda7fc56d62582b4b5e5a791749e76093e471711f38bec3376b803db0f"
+    },
+    "reference_stats": {
+      "duration_seconds": 4.484958333333333,
+      "sample_rate_hz": 24000,
+      "channels": 1,
+      "frames": 107639,
+      "sample_width_bytes": 2,
+      "peak_pcm16": 17657,
+      "peak_dbfs": -5.370660358895847,
+      "rms_pcm16": 2154.5726982415167,
+      "rms_dbfs": -23.641775651918234,
+      "dc_offset_pcm16": 623.3848419253245,
+      "clipped_sample_count": 0,
+      "activity": {
+        "method": "20ms demeaned PCM RMS; approximate activity only, not VAD or perceptual review",
+        "threshold_dbfs": -45.0,
+        "active_windows": 131,
+        "window_count": 225,
+        "first_active_seconds": 0.48,
+        "last_active_end_seconds": 3.72
+      },
+      "quality_issues": []
+    },
+    "observed_transcript": "Hi, I'm Lina. It's good to see you. What should we do today?",
+    "source_transcript": "We still have some time.",
+    "reference_processing": "none; original canonical WAV preserved byte-for-byte",
+    "selection_reason": "4.485-second reference is within documented Seed-VC 1\u201330 second input range; no PCM clipping or structural issues; speech transcribes intelligibly. Use original before considering a longer version.",
+    "limitations": [
+      "ASR spells the name Lina; no original text/model-generation sidecar exists for the imported canonical sample. Profile associates it with af_sarah; original synthesis version is not known.",
+      "Waveform has asymmetric speech (DC mean recorded); no normalization or filtering applied.",
+      "No assistant listening or perceptual quality pass; target identity and conversion artifacts require human listening.",
+      "Approximate RMS activity is not voice activity detection and cannot establish background isolation."
+    ],
+    "voice_conversion_not_yet_accepted": true,
+    "whisper_model": {
+      "repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "file": "ggml-base.en.bin",
+      "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin"
+    },
+    "evidence": {
+      "canonical.txt": "bd4a4aeb2ba281b91c0f5e633cceac2b4282e016e0681bb4d972f58f4d1050b6",
+      "canonical-transcribe.log": "06dd428f577a96940fa25b27aa389e3ce67fabc19f0c088e3b1701499d121799",
+      "native.txt": "b96352c4705044b163de72245e5f80204c06df6058cddcd40857e548b044d63a",
+      "native-transcribe.log": "3902899c020b372e54a86cdabae8f273908d346ad7af1b4993127fd65041d090",
+      "commands.json": "903b0d3b05786b8531afe830a3caeee557aaf3c593335111a3ab8d0383f74426",
+      "native.json": "e12a626cf31c01f50eb6275e66b7bfaa7790102217b8c71490bdd5536d0c4818",
+      "native-16k.wav": "5dbb40f05bf10f56672ff62dc17578dd14fb9c542ce068c31005e1386a7b4fbd",
+      "canonical.json": "d8aa614e6c1118a12a2596276f595565da4e2e9f3d94cae24df95dc41919e5ab",
+      "canonical-16k.wav": "e873c4ffe64c87d6e324853faf82eb249135597ca65d70473038b0c63caaa94c"
+    }
+  },
+  "source_hashes": {
+    "prepared_manifest": "ae3088f59f7a72ba1ed271fe0bc00ee26803ad3b72aaf74a3f9aac2e5cf17e9e",
+    "acceptance": "27cba5030e900c0543d9e91b909a0a556821aa6b8e5c2df0e9b5bb4f3a2a483f",
+    "source_quality": "c52aa1f5c89a74d45bfae39a3e5d8316751d0d33f9f3ad9ab683498c4dc8ccd2",
+    "video": "176b37daf6e3a9dca8d57aa65deb9a5d89e0199e50b9aa264a0cdf7a34eb2ad1",
+    "native_video": "79d4109f226e314fea6b7e0496dea8938b98d7ed4bdd8c3776543fe6486eb9dc",
+    "audio": "8a9e883f0693eb5e68d4d9d9cd1cc43b4641e0b74dd2b46079d9a403b89030e4",
+    "manifest": "d75f6ec11d1dade65a11356391d2263b09ca6fc4e8001d72bc0d1583ac0b262a",
+    "render": "b43cbb53200b6b390ced405bc0bf92c55a6fe73b0db8a73dddba3dc025fb95f7",
+    "evidence": "492c9cfcc835311ac8f38aa4223231ec675e05eb19c45f67bd78bf39ee3d98e0",
+    "voice_reference": "732346cda7fc56d62582b4b5e5a791749e76093e471711f38bec3376b803db0f"
+  },
+  "converter": {
+    "source_revision": "51383efd921027683c89e5348211d93ff12ac2a8",
+    "models": {
+      "version": 1,
+      "code_repository": "https://github.com/Plachtaa/seed-vc.git",
+      "code_revision": "51383efd921027683c89e5348211d93ff12ac2a8",
+      "models": [
+        {
+          "name": "seed",
+          "repo_id": "Plachta/Seed-VC",
+          "revision": "257283f9f41585055e8f858fba4fd044e5caed6e",
+          "files": {
+            "DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth": "8ec8841b20bb46df9f7e8e570a6946a4b87b940133c7f0e778487ff33841f720",
+            "config_dit_mel_seed_uvit_whisper_small_wavenet.yml": "27a91ac41bdb41d0b6951c63642d791b4a70d60b9fc5550eb645f9ddcb3c94da"
+          }
+        },
+        {
+          "name": "campplus",
+          "repo_id": "funasr/campplus",
+          "revision": "e4b6ede7ce16997aff4ae69fbca1f0175e2afede",
+          "files": {
+            "campplus_cn_common.bin": "3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8"
+          }
+        },
+        {
+          "name": "bigvgan",
+          "repo_id": "nvidia/bigvgan_v2_22khz_80band_256x",
+          "revision": "633ff708ed5b74903e86ff1298cf4a98e921c513",
+          "files": {
+            "bigvgan_generator.pt": "e95ba25972d3de0628d99cd156e9315a9c018899bf739988959ebe3544080ced",
+            "config.json": "88a1f47acf747db0b21e97a389d838566147f7a5464583ff5c8d819d870f03ee"
+          }
+        },
+        {
+          "name": "whisper",
+          "repo_id": "openai/whisper-small",
+          "revision": "973afd24965f72e36ca33b3055d56a652f456b4d",
+          "files": {
+            "model.safetensors": "1d7734884874f1a1513ed9aa760a4f8e97aaa02fd6d93a3a85d27b2ae9ca596b",
+            "config.json": "e6a2b489da1b5aed65a8eb8d1e7466fa867ad5643a8bc138ba708bd56b2875c4",
+            "preprocessor_config.json": "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666"
+          }
+        }
+      ]
+    },
+    "settings": {
+      "seed": 83,
+      "diffusion_steps": 30,
+      "length_adjust": 1.0,
+      "inference_cfg_rate": 0.7,
+      "f0_condition": false,
+      "auto_f0_adjust": false,
+      "semi_tone_shift": 0,
+      "fp16": false,
+      "whisper_encoder_dtype": "float16 (upstream default)",
+      "cfm_and_vocoder_dtype": "float32",
+      "network_offline": true
+    },
+    "python": "3.10.21 (main, Sep 24 2026, 17:45:59) [Clang 22.1.3 ]",
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "device": {
+      "device": "mps",
+      "torch": "2.7.1",
+      "mps_available": true,
+      "mps_fallback": "1"
+    },
+    "elapsed_seconds": 23.70193987499806
+  },
+  "assets": {
+    "prepared_manifest": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/manifest.json",
+      "sha256": "ae3088f59f7a72ba1ed271fe0bc00ee26803ad3b72aaf74a3f9aac2e5cf17e9e"
+    },
+    "accepted_source_video": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/source-video.mp4",
+      "sha256": "176b37daf6e3a9dca8d57aa65deb9a5d89e0199e50b9aa264a0cdf7a34eb2ad1"
+    },
+    "source_native_audio": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/source-audio.wav",
+      "sha256": "8a9e883f0693eb5e68d4d9d9cd1cc43b4641e0b74dd2b46079d9a403b89030e4"
+    },
+    "canonical_voice": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/characters/lena/voice.wav",
+      "sha256": "732346cda7fc56d62582b4b5e5a791749e76093e471711f38bec3376b803db0f"
+    },
+    "raw_converted_audio": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/conversion/raw/vc_source-audio_voice_1.0_30_0.7.wav",
+      "sha256": "5e1bef430881cb4ca86dd1e8c285add23bd4e723536538d6eb7cab0d6258e0fe"
+    },
+    "converted_pcm16_audio": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/conversion/converted.wav",
+      "sha256": "c793b0a17d1a7e20f73154abda40f3acb0500869806e047329714b8096901cb6"
+    },
+    "mux_audio": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/mux-audio.wav",
+      "sha256": "090bcb05c3844ca522ea251aa0f8d20f31b3b3300e0e03d5c19f69cbff603044"
+    },
+    "converted_video": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/converted-video.mp4",
+      "sha256": "1003fcc201a3f2065b886f4c88f417061c700ec7df20b37735f620e2f92a56bd"
+    },
+    "lossless_audio_video": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/converted-video.mov",
+      "sha256": "2097fdda9a92b4b6162fad7f351dbe569d90786a58babd17396391791ac5ffce"
+    },
+    "conversion_status": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/conversion-status.json",
+      "sha256": "d779a1bc3982bb42b27dde462b23f8c77a3af4c486486dcf7a8439d25619df06"
+    },
+    "conversion_log": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/conversion.log",
+      "sha256": "6b790cea6a6ed0f2ec985af72335425671e7ba7f3ced63f2a4dc33333c1f198b"
+    },
+    "automated_review": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/review.json",
+      "sha256": "f43232c09a6cf221fb748ce1520c3fb0ac1761c21ffef7dd3600fe3722d1badb"
+    },
+    "human_review": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/human-review.json",
+      "sha256": "7cfc15b029607f60b3ce40a6f3803fcb19a2e89dc489dc50d5f63f821cbe79bf"
+    },
+    "source_quality": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/source-quality.json",
+      "sha256": "c52aa1f5c89a74d45bfae39a3e5d8316751d0d33f9f3ad9ab683498c4dc8ccd2"
+    },
+    "reference_quality": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/reference-quality.json",
+      "sha256": "49c64c1c1e1666b0e6b54aee2ecaeebd76cb7344a342c696002c151dcf3f0429"
+    },
+    "verification_addendum": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/verification-addendum.json",
+      "sha256": "58a1945de38580987e568a46747beb49ab27660f65873dd42c457d82dc133a57"
+    },
+    "reviewer_corrected_snapshot": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/review_voice_conversion-corrected.py",
+      "sha256": "d2aa74d8c7329e759569787f90b613ce2797e045d68aa410248ff52ed36559f6"
+    }
+  },
+  "measurements": {
+    "source_duration_seconds": 4.0,
+    "converted_duration_seconds": 3.9938321995464854,
+    "converted_pcm16": {
+      "file": "conversion/converted.wav",
+      "sha256": "c793b0a17d1a7e20f73154abda40f3acb0500869806e047329714b8096901cb6",
+      "duration_seconds": 3.9938321995464854,
+      "pcm16_stats": {
+        "duration_seconds": 3.9938321995464854,
+        "sample_rate_hz": 22050,
+        "channels": 1,
+        "frames": 88064,
+        "sample_width_bytes": 2,
+        "peak_pcm16": 27566,
+        "peak_dbfs": -1.5015236628672337,
+        "rms_pcm16": 1853.512645651231,
+        "rms_dbfs": -24.949087631911677,
+        "dc_offset_pcm16": -26.048146802325583,
+        "clipped_sample_count": 0,
+        "activity": {
+          "method": "20ms demeaned PCM RMS; approximate activity only, not VAD or perceptual review",
+          "threshold_dbfs": -45.0,
+          "active_windows": 54,
+          "window_count": 200,
+          "first_active_seconds": 1.62,
+          "last_active_end_seconds": 2.7
+        },
+        "quality_issues": []
+      },
+      "encoding": {
+        "encoding": "FLOAT to PCM_16; no normalization; out-of-range rejected",
+        "source_subtype": "FLOAT",
+        "sample_rate_hz": 22050,
+        "channels": 1,
+        "frames": 88064,
+        "prequantization_peak": 0.8412419557571411,
+        "prequantization_clipped_sample_count": 0
+      }
+    },
+    "mux": {
+      "input_frames": 88064,
+      "target_frames": 88200,
+      "tail_padding_samples": 136,
+      "tail_padding_seconds": 0.006167800453514739,
+      "delay_correction_seconds": 0.0,
+      "delay_correction_applied": false,
+      "note": "No measured delay correction or time stretch was applied.",
+      "sha256": "090bcb05c3844ca522ea251aa0f8d20f31b3b3300e0e03d5c19f69cbff603044",
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2,
+      "file": "mux-audio.wav",
+      "pcm16_stats": {
+        "sample_rate_hz": 22050,
+        "channels": 1,
+        "frames": 88200,
+        "duration_seconds": 4.0,
+        "peak_pcm16": 27566,
+        "rms_pcm16": 1852.0830823427514,
+        "clipped_samples": 0,
+        "activity": {
+          "method": "20 ms demeaned PCM RMS; approximate activity, not VAD",
+          "threshold_dbfs": -45.0,
+          "active_windows": 54,
+          "window_count": 200,
+          "first_active_seconds": 1.62,
+          "last_active_end_seconds": 2.7
+        }
+      }
+    },
+    "frame_count": 96,
+    "mp4_video_frame_hashes_match": true,
+    "audio_codec_checks": {
+      "alac": {
+        "decoded_sample_count": 88200,
+        "exact_pcm_match": true,
+        "method": "decoded ALAC s16le bytes equal mux PCM16 bytes"
+      },
+      "aac": {
+        "decoded_sample_count": 88200,
+        "mux_sample_count": 88200,
+        "correlation": 0.9997603131742545,
+        "threshold": 0.99,
+        "offset_applied_samples": 0,
+        "method": "Pearson correlation of decoded AAC and mux PCM at zero offset; codec check only"
+      }
+    },
+    "transcript": {
+      "source": "We still have some time.",
+      "converted": "We still have some time."
+    },
+    "rough_dtw_token_alignment_seconds": [
+      {
+        "word": "we",
+        "source": 1.68,
+        "converted": 1.6600000000000001,
+        "delta": -0.02
+      },
+      {
+        "word": "still",
+        "source": 1.9000000000000001,
+        "converted": 1.86,
+        "delta": -0.04
+      },
+      {
+        "word": "have",
+        "source": 2.08,
+        "converted": 2.06,
+        "delta": -0.02
+      },
+      {
+        "word": "some",
+        "source": 2.24,
+        "converted": 2.22,
+        "delta": -0.02
+      },
+      {
+        "word": "time",
+        "source": 2.54,
+        "converted": 2.54,
+        "delta": 0.0
+      }
+    ],
+    "video_frames_and_timing": {
+      "source_vs_mp4": {
+        "hash_match": true,
+        "pts_match": true,
+        "duration_match": true,
+        "time_base_match": true,
+        "frame_count_source": 96,
+        "frame_count_converted": 96,
+        "frame_count_match": true,
+        "all_match": true
+      },
+      "source_vs_mov": {
+        "hash_match": true,
+        "pts_match": true,
+        "duration_match": true,
+        "time_base_match": true,
+        "frame_count_source": 96,
+        "frame_count_converted": 96,
+        "frame_count_match": true,
+        "all_match": true
+      }
+    }
+  },
+  "human_review": {
+    "version": 1,
+    "status": "accepted",
+    "reviewer": "user",
+    "recorded_at": "2026-10-26T11:02:37.322974+00:00",
+    "question": "After comparing the converted clip with Lena\u2019s saved voice and the original video, does it sound like Lena while retaining acceptable lip sync and clear, complete words? Converted: /Users/aa/os/aivs/outputs/2026-10-26_voice-conversion-lena/voice-review/converted-video.mp4 \u2014 saved voice: /Users/aa/os/aivs/outputs/2026-10-26_voice-conversion-lena/characters/lena/voice.wav \u2014 original: /Users/aa/os/aivs/outputs/2026-10-26_voice-conversion-lena/source-video.mp4. PLAN2.md requires this human comparison before accepting conversion.",
+    "response": "Accept voice match, lip sync, and audio quality",
+    "scope": "This Lena converted take only; Owen and later scenes remain untested.",
+    "voice_identity": "accepted",
+    "lip_sync": "accepted",
+    "spoken_words_and_audio_quality": "accepted",
+    "fixed_voice_acceptance": true,
+    "milestone_b_passed": false,
+    "reviewed_video": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/converted-video.mp4",
+      "sha256": "1003fcc201a3f2065b886f4c88f417061c700ec7df20b37735f620e2f92a56bd"
+    },
+    "canonical_voice": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/characters/lena/voice.wav",
+      "sha256": "732346cda7fc56d62582b4b5e5a791749e76093e471711f38bec3376b803db0f"
+    },
+    "source_video": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/source-video.mp4",
+      "sha256": "176b37daf6e3a9dca8d57aa65deb9a5d89e0199e50b9aa264a0cdf7a34eb2ad1"
+    },
+    "automated_review": {
+      "file": "outputs/2026-10-26_voice-conversion-lena/voice-review/review.json",
+      "sha256": "f43232c09a6cf221fb748ce1520c3fb0ac1761c21ffef7dd3600fe3722d1badb"
+    }
+  },
+  "limitations": [
+    "Whisper DTW values are token-alignment timestamps, not measured word centers, onsets, ends, or phoneme boundaries. The initial review artifact labels them as centers; the tracked report corrects that terminology.",
+    "Conventional Whisper token boundary estimates include the opening silence and are unreliable on this clip. No global delay correction or time stretch was applied.",
+    "Human acceptance applies to this short Lena sentence only. Owen, different dialogue, and scene consistency remain unproven.",
+    "The imported canonical reference has an af_sarah profile binding and verified hash; its original synthesis engine revision is not recorded. The original reference is preserved without regeneration."
+  ],
+  "next_step": "Repeat the bounded native-generation and voice-conversion proof with Owen; obtain acceptance of Owen native performance before converting it.",
+  "validation": {
+    "base_python_suite": {
+      "command": ".venv/bin/python -m unittest discover -s python",
+      "tests_run": 103,
+      "optional_skips": 3,
+      "result": "passed"
+    },
+    "isolated_voice_tests": {
+      "command": ".cache/seed-vc-env/bin/python -m unittest discover -s python -p 'test_*voice*.py'",
+      "tests_run": 19,
+      "skips": 0,
+      "result": "passed"
+    },
+    "diff_check": "passed"
+  }
+}

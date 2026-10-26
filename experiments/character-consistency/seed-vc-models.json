@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "code_repository": "https://github.com/Plachtaa/seed-vc.git",
+  "code_revision": "51383efd921027683c89e5348211d93ff12ac2a8",
+  "models": [
+    {
+      "name": "seed",
+      "repo_id": "Plachta/Seed-VC",
+      "revision": "257283f9f41585055e8f858fba4fd044e5caed6e",
+      "files": {
+        "DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth": "8ec8841b20bb46df9f7e8e570a6946a4b87b940133c7f0e778487ff33841f720",
+        "config_dit_mel_seed_uvit_whisper_small_wavenet.yml": "27a91ac41bdb41d0b6951c63642d791b4a70d60b9fc5550eb645f9ddcb3c94da"
+      }
+    },
+    {
+      "name": "campplus",
+      "repo_id": "funasr/campplus",
+      "revision": "e4b6ede7ce16997aff4ae69fbca1f0175e2afede",
+      "files": {
+        "campplus_cn_common.bin": "3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8"
+      }
+    },
+    {
+      "name": "bigvgan",
+      "repo_id": "nvidia/bigvgan_v2_22khz_80band_256x",
+      "revision": "633ff708ed5b74903e86ff1298cf4a98e921c513",
+      "files": {
+        "bigvgan_generator.pt": "e95ba25972d3de0628d99cd156e9315a9c018899bf739988959ebe3544080ced",
+        "config.json": "88a1f47acf747db0b21e97a389d838566147f7a5464583ff5c8d819d870f03ee"
+      }
+    },
+    {
+      "name": "whisper",
+      "repo_id": "openai/whisper-small",
+      "revision": "973afd24965f72e36ca33b3055d56a652f456b4d",
+      "files": {
+        "model.safetensors": "1d7734884874f1a1513ed9aa760a4f8e97aaa02fd6d93a3a85d27b2ae9ca596b",
+        "config.json": "e6a2b489da1b5aed65a8eb8d1e7466fa867ad5643a8bc138ba708bd56b2875c4",
+        "preprocessor_config.json": "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666"
+      }
+    }
+  ]
+}

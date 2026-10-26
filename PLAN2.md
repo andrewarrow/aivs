@@ -10,9 +10,10 @@ liked at commit `084d048887f47a54eb959196d19d4944903a9615`. Add canonical visual
 references, then test whether voice conversion can give the resulting performance
 the saved performer's voice **without changing its words or local timing**.
 
-This is a hypothesis to test, not a claim that voice conversion already works.
-Neither the frozen-audio prototype nor the proposed conversion path becomes the
-default until a small end-to-end comparison passes human audiovisual review.
+Voice conversion has passed human review for one Lena performance. This is
+evidence for that take only; it does not establish Owen, new dialogue, or
+scene-to-scene consistency. Neither the frozen-audio prototype nor conversion
+becomes the default until both performers pass the planned end-to-end review.
 
 This plan revises the architecture and execution order in [PLAN.md](PLAN.md).
 Retain that document and the existing takes as the history of the first approach.
@@ -40,13 +41,20 @@ Retain that document and the existing takes as the history of the first approach
   words after watching it with sound. Existing visual review and all-frame OCR
   found no unwanted captions. Its generated voice remains diagnostic.
   [Run evidence](experiments/character-consistency/native-reference-control.json)
-  records the result. Milestone A passed; voice conversion has **not been run**.
+  records the result. Milestone A passed. A pinned voice conversion has now
+  passed human review for Lena on this line; Owen and broader scene consistency
+  remain untested.
   The preserved native output from the earlier period lacks a Git SHA, so it
   cannot be identified conclusively as the exact take the user remembers.
 
 Evidence: [four-shot review](experiments/character-consistency/acceptance.json),
 [human feedback and clip hashes](experiments/character-consistency/human-review.json),
 and [prompt-only trial](experiments/character-consistency/lip-sync-trial.json).
+
+The user also confirmed that the accepted Lena source contains clean speech with
+quiet around it. The converted take retained the source video frames and was
+accepted for voice match, lip sync, and audio quality. Its evidence is in the
+[Lena conversion record](experiments/character-consistency/voice-conversion-lena.json).
 
 ## What stays
 
@@ -127,9 +135,8 @@ and finalize edit timing. Preserve source dialogue order and complete action bea
 
 ## Milestone A: recover sync with a saved face
 
-**Immediate next step:** snapshot the canonical Lena voice reference and validate
-its quality. Then run the pinned converter experiment in Milestone B against this
-accepted take; no new video inference is needed.
+Milestone A passed. Lena's voice-reference preparation and first conversion
+review are also complete; see Milestone B below.
 
 The initial diagnostic renders one native joint-audio shot of Lena using the
 existing desert starting image and the line “We still have some time.”
@@ -160,7 +167,9 @@ hashes, raw native media, and a PCM WAV decoded from the final AAC soundtrack.
 See the [recorded result](experiments/character-consistency/native-reference-control.json)
 and [reproduction instructions](experiments/character-consistency/README.md#native-reference-control-plan2-milestone-a).
 Milestone A has passed. Its generated voice remains temporary diagnostic audio;
-fixed-voice acceptance is still false.
+the accepted converted Lena take is recorded separately under Milestone B. This
+native control itself remains diagnostic and does not satisfy fixed-voice
+acceptance.
 
 If it fails, use at most two additional diagnostic renders, changing one factor
 at a time. One useful control removes the image anchor at the same resolution,
@@ -174,21 +183,43 @@ remains temporary diagnostic audio.
 
 ## Milestone B: prove voice conversion on the accepted take
 
-Reuse Milestone A's exact video and native speech. No new video inference is
-needed to test the converter.
+**Immediate next step:** produce one native Owen control and obtain human review
+of its performance and source speech quality. Then repeat the same bounded
+conversion experiment using Owen's canonical voice reference.
 
-- [ ] Snapshot the canonical Lena voice reference and validate its quality.
-- [ ] Run a pinned converter in an isolated environment. Initially keep source
-      timing and delivery; disable optional style/accent changes where supported.
-- [ ] Save source/converted WAVs, model and reference hashes, settings, measured
-      durations, word timing evidence, and any explicit delay correction.
-- [ ] Remux the converted speech with the unchanged video frames. Verify that
-      video frame hashes match and the mux uses the intended converted waveform.
-- [ ] Independently check the transcript, clipped words, added speech, silence,
-      and conversion artifacts. Listen against the canonical voice sample.
-- [ ] Obtain human review of original versus converted video: voice must match
-      the target, and lip sync must remain acceptable throughout the sentence.
-- [ ] Repeat with Owen to test both voices before expanding the scene matrix.
+Reuse the accepted native video and speech. Lena's first conversion was accepted
+for the exact line “We still have some time.” No new video inference was needed.
+The acceptance applies to this performance and does not establish Owen, new
+dialogue, or scene-to-scene consistency.
+
+- [x] Lena: snapshot the canonical voice reference and record PCM quality
+      measurements; the measurements are descriptive, not a perceptual pass.
+- [x] Lena: run the pinned V1 converter in isolation with seed 83, 30 steps,
+      CFG 0.7, length adjustment 1.0, and no F0 or pitch adjustment.
+- [x] Lena: save source and converted audio, model/reference hashes, settings,
+      durations, and approximate word-alignment evidence.
+- [x] Lena: remux the converted speech with unchanged video frames. All 96 frame
+      hashes and timing match the source; no offset or stretch was applied.
+- [x] Lena: independently check words, clipping, added speech, silence, and
+      conversion artifacts, and compare against the canonical voice.
+- [x] Lena: the user accepted voice match, lip sync, and audio quality for this
+      converted performance.
+- [ ] Repeat with Owen, starting with an accepted native Owen take.
+
+The Lena conversion took 23.70 seconds. Its PCM16 derivative is 88,064 samples
+at 22,050 Hz (3.993832 seconds); only 136 zero samples (6.17 ms) were appended
+to reach four seconds. The raw float output is preserved, no normalization,
+clipping, time stretch, or offset was used. The remuxed AAC correlates 0.999760
+with the converted PCM at zero offset; ALAC decoding is exact. Both independent
+transcripts match the source line. Whisper DTW estimates token alignment
+differences of 0–40 ms; these estimates are not word onsets or proof of sync.
+The user separately accepted the audible voice match and lip sync. See the
+[run record](experiments/character-consistency/voice-conversion-lena.json) and
+[reviewed converted clip](outputs/2026-10-26_voice-conversion-lena/voice-review/converted-video.mp4).
+
+This is a Lena-only acceptance. Milestone B overall remains incomplete until
+Owen also passes. Fixed-voice acceptance is true for this Lena take only; it does
+not enable a default GUI path or establish a general conversion capability.
 
 Try one conservative configuration per performer first; allow at most two
 documented adjustments before evaluating another method. A conversion failure
@@ -196,8 +227,9 @@ must leave the take failed or awaiting review. Never silently publish the native
 generated voice as the saved performer.
 
 **Exit condition:** both performers have accepted target voices and retain the
-native take's accepted sync. Matching duration, transcript, or waveform checks
-alone cannot satisfy this condition.
+native take's accepted sync. Lena has passed for one performance; Owen remains
+pending. Matching duration, transcript, approximate alignment, or waveform
+checks alone cannot satisfy this condition.
 
 ## Milestone C: consistency across scenes and new dialogue
 

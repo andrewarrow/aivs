@@ -41,8 +41,82 @@ checks alone leave human lip-sync acceptance pending. For the
 [native-reference control](native-reference-control.json), the user accepted lip
 sync, likeness, and spoken words; all-frame OCR and visual review found no captions.
 The generated voice is
-temporary diagnostic audio and does not satisfy fixed-voice acceptance. The next
-step is to snapshot Lena's canonical voice reference and validate its quality.
+temporary diagnostic audio and does not satisfy fixed-voice acceptance. Lena's
+canonical reference has since been prepared and used in the Milestone B trial
+below.
+
+## Voice-conversion experiment (PLAN2 Milestone B)
+
+The experiment uses Seed-VC V1 with the accepted native take and Lena's original
+`af_sarah` reference. Preparation verifies the acceptance record, media, review
+evidence, and canonical character hashes before copying them to a new run.
+It preserves the original reference and records PCM statistics; those statistics
+do not establish perceptual quality or speaker identity.
+
+Install the converter separately from both the MLX and Kokoro environments:
+
+```sh
+uv venv .cache/seed-vc-env --python 3.10.21
+uv pip install --python .cache/seed-vc-env/bin/python \
+  -r experiments/character-consistency/requirements-seed-vc.txt
+git clone https://github.com/Plachtaa/seed-vc.git .cache/seed-vc
+git -C .cache/seed-vc checkout --detach 51383efd921027683c89e5348211d93ff12ac2a8
+.venv/bin/python experiments/character-consistency/download_voice_models.py
+.venv/bin/python experiments/character-consistency/prepare_voice_reference.py \
+  --run-dir outputs/<new-run>
+cp outputs/2026-10-26_voice-conversion-lena/source-quality.json \
+  outputs/<new-run>/source-quality.json
+```
+
+The copied source-quality confirmation is valid only when the new prepared
+run's source video and audio hashes match that confirmation. The runner checks
+both hashes before conversion and again afterward. For a different native take,
+listen to that source first and record a new user confirmation in its run-local
+`source-quality.json` with status `clean-speech-confirmed`, reviewer `user`, and
+the exact source video/audio SHA-256 values; do not reuse this confirmation.
+
+The [model manifest](seed-vc-models.json) pins each repository revision and file
+hash. Downloads total about 1.9 GB. The runner requires the pinned source checkout
+to be clean and runs offline under the workspace GPU lock. It saves the source
+archive, dependency versions, model hashes, configuration, seed, and input hashes.
+
+Before conversion, listen to the source with sound and record whether it is clean
+speech. A run-local `source-quality.json` binds that human assessment to both
+source media hashes. The current Lena run records the user's confirmation,
+“Clean speech with quiet around it.” A source with interfering ambience needs
+separate evaluation before conversion.
+
+```sh
+.cache/seed-vc-env/bin/python experiments/character-consistency/run_voice_conversion.py \
+  --run-dir outputs/<new-run>
+.cache/seed-vc-env/bin/python experiments/character-consistency/review_voice_conversion.py \
+  outputs/<new-run>
+```
+
+The first configuration uses seed 83, 30 diffusion steps, CFG 0.7, length adjustment
+1.0, and no F0/pitch adjustment. V1 does not run V2's optional accent/emotion
+conversion stage. CFM and the vocoder use float32; the upstream Whisper encoder
+uses float16. These settings are a timing-preservation hypothesis to evaluate.
+Every conversion attempt requires a new prepared run, preserving failed attempts.
+
+Review remuxes the converted audio with unchanged video frames and checks their
+hashes. It preserves raw converter output, records any PCM conversion and tail
+silence padding, independently transcribes source and converted speech, and saves
+approximate word alignment evidence. Duration and transcript agreement do not
+establish lip sync. Human comparison against the original video and canonical
+voice remains required for each take. For the first Lena conversion, the user
+accepted voice match, lip sync, and audio quality. The reviewed [converted clip](../../outputs/2026-10-26_voice-conversion-lena/voice-review/converted-video.mp4)
+uses the accepted native take and the original `af_sarah` sample. The raw output
+was preserved as float and measured 3.993832 seconds. Conversion took 23.70
+seconds. The 88,064-sample, 22,050 Hz PCM16 derivative retains its level without
+normalization or clipping, with only 136 zero samples (6.17 ms) appended to reach four seconds.
+All 96 video frame hashes and their timing match the source. The remuxed AAC has
+0.999760 correlation at zero offset; ALAC decoding is exact. Both transcripts
+match the source line. DTW reports approximate token alignment differences of
+0–40 ms, which are estimates rather than proof of synchronization. Full settings,
+hashes, and review are in the [Lena conversion record](voice-conversion-lena.json).
+Fixed-voice acceptance is true for this Lena performance only. Owen remains
+pending, so Milestone B is incomplete and the GUI/default render path is unchanged.
 
 ## Prepare speech and reference assets
 
