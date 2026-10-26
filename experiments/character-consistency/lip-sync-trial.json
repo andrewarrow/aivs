@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "recorded_at": "2026-10-26",
+  "status": "failed-human-lip-sync-review",
+  "milestone_passed": false,
+  "human_review": {
+    "reviewer": "user",
+    "response": "Improved, but still unacceptable",
+    "scope": "Shot 1 (Lena, desert road) audiovisual lip-sync comparison",
+    "decision": "fail",
+    "interpretation": "The user perceived an improvement over the baseline, but did not accept the lip synchronization.",
+    "assistant_audio_review": false
+  },
+  "comparison": {
+    "baseline_run": "outputs/2026-10-26_02-38-01-820168_clean-prompt",
+    "pilot_run": "outputs/2026-10-26_02-57-28-419326_character-comparison",
+    "pilot_scope": "Only shot 1 was rendered; shots 2 through 4 were not rendered in this pilot.",
+    "baseline_manifest": {
+      "file": "outputs/2026-10-26_02-38-01-820168_clean-prompt/manifest.json",
+      "sha256": "b2daf09f5d1a98e36106546e1c14b6c35d8248c041ec56c8300455f8878ff257",
+      "source_sha256": "a9d322792461b731f2ef42d3b98325acda289ee2fc40d89748e05fb4e1c7c5bb"
+    },
+    "pilot_manifest": {
+      "file": "outputs/2026-10-26_02-57-28-419326_character-comparison/manifest.json",
+      "sha256": "3d81e2f471fd69a09a4b98deb20f728b6fb937d239767ac7b7657c983ed2e85d",
+      "source_sha256": "2d2196e4f06536c1cb4f7b0f72e945376363f6536ec3f16e61da38ade8f2a0fd"
+    },
+    "variable": "The tracked request added performance directions to shot 1. The generic lip-sync suffix from the baseline was unchanged.",
+    "original_prompt": "A natural live-action medium close-up of the woman in the reference image, in the same setting: desert road at dusk. She looks toward an off-camera conversation partner to the right. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition. The visible speaker moves their lips in time with the supplied audio, then rests with lips closed. Natural breathing and small eye movements.",
+    "pilot_prompt": "A natural live-action medium close-up of the woman in the reference image, in the same setting: desert road at dusk. She looks toward an off-camera conversation partner to the right. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition. She begins with her lips gently closed during the brief opening pause. As the voice begins, she delivers one short sentence naturally to her conversation partner. Her lips, jaw, and cheeks articulate continuously with the supplied voice through its final syllable. When the voice ends, her lips close and she remains quietly attentive for the rest of the take. The visible speaker moves their lips in time with the supplied audio, then rests with lips closed. Natural breathing and small eye movements."
+  },
+  "controlled_inputs": {
+    "seed": 83,
+    "frame_size": "768x448",
+    "fps": 24,
+    "frames": 96,
+    "duration_seconds": 4,
+    "line_text": "We still have some time.",
+    "line_pcm_sha256": "100822f893572df527fd88536dc3d531ea08c6feb83b5ab914366a36eb7fffe9",
+    "conditioning_audio_sha256": "f6711eae472cc517949bbd18d163de2298f81a5a815b6814f35ccfa1c98743ab",
+    "start_image_sha256": "4a63111ab8764240e5600a4bdab68d0727d16c71f884d3ee49013dedb552ddae",
+    "speaker_interval_seconds": {
+      "start": 0.35,
+      "end": 1.8852916666666666
+    }
+  },
+  "runtime": {
+    "model": "dgrauet/ltx-2.5-mlx-q8",
+    "model_revision": "746ca9aacb697d2c739f544d68b584214dedcc75",
+    "runtime_revision": "14a3ddd6054736beb45b4d836135fa4d44490531",
+    "mlx": "0.32.4",
+    "mlx_metal": "0.32.4",
+    "mlx_arsenal": "0.17.0",
+    "ltx_core_mlx": "0.18.0",
+    "ltx_pipelines_mlx": "0.18.0",
+    "transformers": "5.20.2"
+  },
+  "baseline_clip": {
+    "file": "outputs/2026-10-26_02-38-01-820168_clean-prompt/shots/001/video.mp4",
+    "sha256": "85b6177cf5ce999f71aaf7592bbfcc41cc063b342578d133682042e0319e1569"
+  },
+  "pilot_clip": {
+    "file": "outputs/2026-10-26_02-57-28-419326_character-comparison/shots/001/video.mp4",
+    "sha256": "a9977f9ea6ad1ddefad973d74d8e8daef23c499bc6faebc0422917d77792acb2",
+    "before_after_video": "outputs/2026-10-26_02-57-28-419326_character-comparison/review/before-after.mp4",
+    "before_after_video_sha256": "b60df84e22c67189e2e618161588c340cb25b7adaba45684dfda9b0fb74e722f"
+  },
+  "automated_observations": {
+    "ocr": {
+      "inspection": "outputs/2026-10-26_02-57-28-419326_character-comparison/shots/001/inspection.json",
+      "frames_inspected": 96,
+      "text_bearing_frames": 0
+    },
+    "independent_transcription": {
+      "file": "outputs/2026-10-26_02-57-28-419326_character-comparison/review/transcript.json",
+      "text": "We still have some time.",
+      "model": ".cache/whisper/ggml-base.en.bin",
+      "model_sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+      "model_provenance": ".cache/whisper/model.json"
+    },
+    "scope_limit": "OCR and transcription do not establish lip-sync quality. The assistant did not claim to hear the audio or independently judge audiovisual synchronization."
+  },
+  "followup": "The performance directions remain experimental. No default prompt change is accepted from this failed review."
+}

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status": "needs-human-lip-sync-review",
+  "status": "failed-human-lip-sync-review",
   "milestone_passed": false,
   "run": "outputs/2026-10-26_02-38-01-820168_clean-prompt",
   "source_sha256": "a9d322792461b731f2ef42d3b98325acda289ee2fc40d89748e05fb4e1c7c5bb",
@@ -24,7 +24,7 @@
         "gain": 0.7064009493282271,
         "samples": 96000
       },
-      "lip_sync_status": "needs-human-review",
+      "lip_sync_status": "failed-human-review",
       "assistant_visual_observations": [
         "Black bob, face outline, eyebrows, and nose remain visually consistent with the portrait throughout the shot.",
         "Mouth rounding appears around frame 5 (0.208s), during the 0.350s opening silence; the mouth remains slightly parted after the line. Check audible phonemes before accepting."
@@ -42,7 +42,7 @@
         "gain": 0.7064076262587359,
         "samples": 96000
       },
-      "lip_sync_status": "needs-human-review",
+      "lip_sync_status": "failed-human-review",
       "assistant_visual_observations": [
         "Salt-and-pepper hair/beard, forehead, nose, and eye spacing remain visually consistent with the portrait throughout the shot.",
         "Mouth opening appears around frame 4 (0.167s), during the opening silence. Lips return to rest after speech. Check anticipatory movement against actual phonemes."
@@ -60,7 +60,7 @@
         "gain": 0.7064009493282271,
         "samples": 96000
       },
-      "lip_sync_status": "needs-human-review",
+      "lip_sync_status": "failed-human-review",
       "assistant_visual_observations": [
         "Face shape, eyebrows, nose, and bob remain visually consistent in the cafe angle and through speaking frames.",
         "Mouth rounding appears around frame 3 (0.125s), before the opening silence ends; the mouth returns to rest near 1.4s while source energy continues to about 1.6s. Needs audiovisual review."
@@ -78,7 +78,7 @@
         "gain": 0.7064076262587359,
         "samples": 96000
       },
-      "lip_sync_status": "needs-human-review",
+      "lip_sync_status": "failed-human-review",
       "assistant_visual_observations": [
         "Hair, beard, face outline, and eye/nose geometry remain visually consistent in the cafe angle and through the ending.",
         "Mouth remains at rest through the opening pause; speech-like movement begins near 0.42s and settles near 1.8s. These frames do not establish individual phoneme alignment."
@@ -104,10 +104,11 @@
     "ocr": "Apple Vision VNRecognizeTextRequest accurate en-US, language correction off, every decoded frame",
     "visual": "Assistant inspected all-frame face sheets beside canonical portraits, and 6fps whole-frame contact sheets.",
     "identity_limit": "Visual resemblance only; no calibrated face recognition or independent speaker similarity score.",
-    "lip_sync_limit": "Frame-based inspection can flag timing concerns but cannot accept phoneme-level audiovisual synchronization. No human acceptance recorded."
+    "lip_sync_limit": "Human audiovisual review rejected all four shots. Frame-based observations and waveform checks do not override that decision."
   },
   "remaining_checks": [
-    "Human audiovisual lip-sync acceptance, especially shots 1-3.",
+    "Correct lip synchronization in all four shots, then obtain fresh human audiovisual acceptance.",
     "Calibrated identity and independent speaker checks; new text, more views and multi-person speaker binding remain later tests."
-  ]
+  ],
+  "human_review": "experiments/character-consistency/human-review.json"
 }

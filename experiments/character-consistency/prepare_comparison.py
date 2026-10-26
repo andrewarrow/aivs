@@ -48,12 +48,65 @@ def _validate_source_cast_and_lines(source_manifest: dict, request: dict) -> dic
     return matched
 
 
-def prepare_comparison(source_run: Path, run_dir: Path) -> dict:
+def _validate_shot_inputs(source_manifest: dict, request: dict) -> None:
+    source_shots = source_manifest.get("shots", [])
+    requested_shots = request.get("shots", [])
+    if len(source_shots) != len(requested_shots):
+        raise ValueError(f"Comparison shot count changed: source has {len(source_shots)}, request has {len(requested_shots)}.")
+    role_to_character = {item["role"]: item["character"] for item in request["cast"]}
+    # The prompt is the only shot input allowed to change. Check all other
+    # source-linked inputs before any audio is copied or any run is created.
+    for index, (source_shot, shot) in enumerate(zip(source_shots, requested_shots, strict=True), 1):
+        line_id = shot.get("line")
+        line = next((item for item in request["lines"] if item.get("id") == line_id), None)
+        if line is None:
+            raise ValueError(f"Comparison shot {index} references an unknown dialogue line.")
+        character = role_to_character.get(line.get("role"))
+        source_line_key = source_shot.get("line")
+        source_line = source_manifest.get("lines", {}).get(source_line_key, {})
+        if (source_shot.get("index") != index
+                or source_shot.get("scene") != shot.get("scene")
+                or source_line.get("role") != line.get("role")
+                or source_line.get("character") != character
+                or source_line.get("text") != line.get("text")):
+            raise ValueError(f"Comparison shot {index} order, scene, or dialogue differs from the source run.")
+        if shot.get("image", {}).get("sha256") != source_shot.get("image", {}).get("sha256"):
+            raise ValueError(f"Comparison shot {index} image hash differs from the source run.")
+
+
+def _validate_prompt_only(source_run: Path, request: dict) -> None:
+    source_request = json.loads((source_run / "request.json").read_text(encoding="utf-8"))
+    original = json.loads(json.dumps(source_request))
+    proposed = json.loads(json.dumps(request))
+    for version in (original, proposed):
+        for shot in version.get("shots", []):
+            shot.pop("prompt", None)
+    if original != proposed:
+        raise ValueError("Comparison request may change shot prompts only.")
+
+
+def _invalidate_prepared_run(run_dir: Path, error: Exception) -> None:
+    manifest_path = run_dir / "manifest.json"
+    if manifest_path.exists():
+        failed_manifest = run_dir / "manifest.failed.json"
+        if failed_manifest.exists():
+            failed_manifest.unlink()
+        manifest_path.replace(failed_manifest)
+    report_path = run_dir / "render.json"
+    report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+    report.update(status="failed", error=str(error))
+    milestone._atomic_json(report_path, report)
+
+
+def prepare_comparison(source_run: Path, run_dir: Path, *, request_file: Path | None = None) -> dict:
     source_run = _repo_path(source_run)
     run_dir = _repo_path(run_dir)
     source_manifest = milestone.verify(source_run)
-    request = json.loads(milestone.DEFAULT_REQUEST.read_text(encoding="utf-8"))
+    request_path = _repo_path(request_file) if request_file is not None else milestone.DEFAULT_REQUEST
+    request = json.loads(request_path.read_text(encoding="utf-8"))
     matching_lines = _validate_source_cast_and_lines(source_manifest, request)
+    _validate_prompt_only(source_run, request)
+    _validate_shot_inputs(source_manifest, request)
 
     def reuse_performance(profile, text, output):
         key = (profile["id"], text)
@@ -72,27 +125,33 @@ def prepare_comparison(source_run: Path, run_dir: Path) -> dict:
         output.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         return record
 
-    comparison = milestone.prepare(
-        milestone.DEFAULT_REQUEST, run_dir, speech_fn=reuse_performance,
-    )
-    before = source_manifest["shots"]
-    after = comparison["shots"]
-    if len(before) != len(after):
-        raise ValueError(f"Comparison shot count changed: source has {len(before)}, new run has {len(after)}.")
-    for index, (source_shot, comparison_shot) in enumerate(zip(before, after, strict=True), 1):
-        if source_shot.get("index") != comparison_shot.get("index"):
-            raise ValueError(f"Comparison shot ordering differs at position {index}.")
-        for asset_name in ("image", "audio"):
-            source_hash = source_shot.get(asset_name, {}).get("sha256")
-            comparison_hash = comparison_shot.get(asset_name, {}).get("sha256")
-            if source_hash != comparison_hash:
-                raise ValueError(f"Comparison shot {index} {asset_name} hash differs from the source run.")
-    return comparison
+    prepared = False
+    try:
+        comparison = milestone.prepare(request_path, run_dir, speech_fn=reuse_performance)
+        prepared = True
+        before = source_manifest["shots"]
+        after = comparison["shots"]
+        if len(before) != len(after):
+            raise ValueError(f"Comparison shot count changed: source has {len(before)}, new run has {len(after)}.")
+        for index, (source_shot, comparison_shot) in enumerate(zip(before, after, strict=True), 1):
+            if source_shot.get("index") != comparison_shot.get("index"):
+                raise ValueError(f"Comparison shot ordering differs at position {index}.")
+            for asset_name in ("image", "audio"):
+                source_hash = source_shot.get(asset_name, {}).get("sha256")
+                comparison_hash = comparison_shot.get(asset_name, {}).get("sha256")
+                if source_hash != comparison_hash:
+                    raise ValueError(f"Comparison shot {index} {asset_name} hash differs from the source run.")
+        return comparison
+    except Exception as exc:
+        if prepared:
+            _invalidate_prepared_run(run_dir, exc)
+        raise
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_run", type=Path, help="Verified prepared/rendered source run")
+    parser.add_argument("--request", type=Path, help="Comparison request JSON (defaults to the milestone request)")
     parser.add_argument(
         "--run-dir", type=Path,
         default=ROOT / "outputs" / f"{datetime.now():%Y-%m-%d_%H-%M-%S-%f}_character-comparison",
@@ -100,7 +159,7 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        manifest = prepare_comparison(args.source_run, args.run_dir)
+        manifest = prepare_comparison(args.source_run, args.run_dir, request_file=args.request)
     except Exception as exc:
         print(f"Comparison preparation failed: {exc}", file=sys.stderr, flush=True)
         return 1

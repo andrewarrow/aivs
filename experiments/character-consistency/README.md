@@ -57,7 +57,23 @@ an existing run instead of synthesizing again:
 The helper prints a new run directory for the same verify/render commands. It
 checks the source snapshots, role/voice/text bindings, and all four image and
 padded-audio hashes. It copies the saved PCM and full speech provenance; a missing
-or mismatched performance fails preparation. Existing runs remain immutable.
+or mismatched performance fails preparation. A failed comparison cannot be
+verified or rendered; a late validation failure preserves its manifest as
+`manifest.failed.json`. Existing runs remain immutable.
+
+For a controlled prompt-only experiment, pass `--request <request.json>` to the
+helper. Other request fields must match the source request. The current lip-sync
+pilot changes only shot 1's performance directions:
+
+```sh
+.venv/bin/python experiments/character-consistency/prepare_comparison.py \
+  outputs/2026-10-26_02-38-01-820168_clean-prompt \
+  --request experiments/character-consistency/request-lip-sync.json
+.venv/bin/python python/character_milestone.py render --run-dir outputs/<new-run> --shot 1
+```
+
+The default seed keeps shot 1 at 83. Evaluate this pilot before commissioning
+more retakes; the changed directions are a hypothesis, not an accepted fix.
 
 ## Review criteria
 
@@ -75,7 +91,7 @@ similarity, speaker similarity, and lip-sync still need review.
 This experiment does not establish multi-person dialogue or arbitrary-angle
 identity preservation. See [PLAN.md](../../PLAN.md) for later milestones.
 
-The latest [16-second comparison](../../outputs/2026-10-26_02-38-01-820168_clean-prompt/video.mp4)
+The [16-second baseline comparison](../../outputs/2026-10-26_02-38-01-820168_clean-prompt/video.mp4)
 uses visual performance directions without quoted dialogue or overlay prohibitions.
 Words remain in the supplied audio and line manifest. All images, PCM tracks,
 and seeds match the original comparison. OCR found zero text-bearing frames out
@@ -86,6 +102,21 @@ with their supplied PCM.
 [acceptance.json](acceptance.json) records these run-specific checks and detailed
 visual observations. The run also holds all-frame face sheets, 6fps whole-frame
 samples, OCR/landmark output, review scripts, and transcription/model provenance.
-Likeness is visually consistent in these views. Shots 1–3 show mouth movement
-during the opening silence, so human audiovisual lip-sync acceptance remains
-open. The milestone remains pending review.
+Likeness is visually consistent in these views. Subsequent human audiovisual
+review rejected lip synchronization in **all four shots**. The exact feedback
+and reviewed video hashes are saved in [human-review.json](human-review.json).
+The direction of the perceived timing error was not specified. The earlier
+run-local review report remains historical evidence; `acceptance.json` records
+the failed human review. Milestone 1 has not passed.
+
+The subsequent [shot 1 prompt pilot clip](../../outputs/2026-10-26_02-57-28-419326_character-comparison/shots/001/video.mp4)
+added performance directions while preserving the baseline's generic lip-sync
+suffix and reusing the same image, PCM, conditioning audio, seed, dimensions,
+frame rate, and model/runtime revisions. It rendered shot 1 only. The user's
+response was “Improved, but still unacceptable,” so this remains a failed human
+lip-sync review and milestone 1 remains false. The pilot is not an accepted fix;
+the default prompt is unchanged. Hashes, prompt text, run provenance, OCR, and
+independent transcription are recorded in [lip-sync-trial.json](lip-sync-trial.json).
+The available [before/after review video](../../outputs/2026-10-26_02-57-28-419326_character-comparison/review/before-after.mp4)
+contains the comparison. Automated OCR and Whisper checks do not replace human
+audiovisual review; the assistant did not claim to listen to or judge the audio.

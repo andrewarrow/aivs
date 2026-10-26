@@ -19,6 +19,7 @@ import character_milestone as milestone
 import characters
 import quality_backend as backend
 import quality_progress
+import validation
 import video
 from validation import validate_supplied_audio
 
@@ -247,6 +248,67 @@ class FixedAudioBackendTests(unittest.TestCase):
                     samples = array("h", decoded)
                     crossings = sum(a < 0 <= b for a, b in zip(samples, samples[1:]))
                     self.assertAlmostEqual(crossings, frequency, delta=2)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
+    def test_retry_after_interrupted_validation_encodes_fresh_media(self):
+        class Progress:
+            def __init__(self, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def phase(self, *args): return nullcontext()
+            def log(self, *args, **kwargs): pass
+
+        frequencies = iter((440, 660))
+        class Pipeline:
+            def __init__(self, **kwargs): pass
+            def generate_and_save(self, **kwargs):
+                frequency = next(frequencies)
+                subprocess.run([
+                    "ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i",
+                    f"color=blue:s={kwargs['width']}x{kwargs['height']}:r=24:d=5",
+                    "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000:duration=5",
+                    "-frames:v", str(kwargs["num_frames"]), "-c:v", "libx264", "-c:a", "aac",
+                    kwargs["output_path"],
+                ], check=True, capture_output=True)
+
+        mx = types.SimpleNamespace(reset_peak_memory=lambda: None, get_peak_memory=lambda: 0)
+        modules = {"mlx.core": mx,
+                   "ltx_pipelines_mlx.distilled": types.SimpleNamespace(DistilledPipeline=Pipeline)}
+        with tempfile.TemporaryDirectory() as directory, patch.dict("sys.modules", modules), \
+                patch.object(quality_progress, "RenderProgress", Progress), \
+                patch.object(quality_progress, "pipeline_activity", lambda *args: nullcontext()), \
+                patch.object(backend, "model_path", return_value=Path(directory)), \
+                patch("importlib.metadata.version", return_value="test"):
+            root = Path(directory)
+            output = root / "video.mp4"
+            partial = root / "video.partial.mp4"
+            real_validate_video = validation.validate_video
+            validations = 0
+            def interrupt_first_validation(*args, **kwargs):
+                nonlocal validations
+                validations += 1
+                if validations == 1:
+                    raise InterruptedError("validation interrupted")
+                return real_validate_video(*args, **kwargs)
+
+            with patch.object(validation, "validate_video", side_effect=interrupt_first_validation):
+                with self.assertRaisesRegex(InterruptedError, "validation interrupted"):
+                    backend.render("A person speaks.", 83, 96, output, width=128, height=64)
+                self.assertTrue(partial.is_file())
+                self.assertFalse(output.exists())
+
+                backend.render("A person speaks.", 83, 96, output, width=128, height=64)
+
+            self.assertEqual(validations, 2)
+            self.assertFalse(partial.exists())
+            self.assertTrue(output.is_file())
+            decoded = subprocess.run([
+                "ffmpeg", "-v", "error", "-i", str(output), "-ss", "0.5", "-t", "1",
+                "-f", "s16le", "-ac", "1", "-ar", "24000", "pipe:1",
+            ], check=True, capture_output=True).stdout
+            samples = array("h", decoded)
+            crossings = sum(a < 0 <= b for a, b in zip(samples, samples[1:]))
+            self.assertAlmostEqual(crossings, 660, delta=2)
 
 
 if __name__ == "__main__":

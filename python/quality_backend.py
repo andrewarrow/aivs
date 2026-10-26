@@ -145,6 +145,9 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
         image["anchor_frames"] = [0] if frames <= 1 else [0, frames - 1]
     native = output.with_name("video.native.mp4")
     partial = output.with_name("video.partial.mp4")
+    # A failed encode or validation leaves its unpublished output behind. Each
+    # attempt must start with an empty path so FFmpeg cannot reuse stale media.
+    partial.unlink(missing_ok=True)
     inference_frames = math.ceil((frames - 1) / 8) * 8 + 1
     started = time.monotonic()
     estimate = RenderEstimate.from_history(output.parent.parent, frames, width, height,

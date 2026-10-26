@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "recorded_at": "2026-10-26T09:56:44.078574+00:00",
+  "reviewer": "user",
+  "source": "User response to audiovisual lip-sync review question in this conversation",
+  "response": "Some shots have visible lip-sync problems",
+  "scope": "Human audiovisual lip-sync acceptance of the four-shot comparison",
+  "status": "failed",
+  "milestone_passed": false,
+  "run": "outputs/2026-10-26_02-38-01-820168_clean-prompt",
+  "source_sha256": "a9d322792461b731f2ef42d3b98325acda289ee2fc40d89748e05fb4e1c7c5bb",
+  "video": {
+    "file": "outputs/2026-10-26_02-38-01-820168_clean-prompt/video.mp4",
+    "sha256": "f54cb17f0576e427bddbe30d1c379b76dd07f724f361caaf637c7f900dfbe399"
+  },
+  "shots": [
+    {
+      "index": 1,
+      "file": "outputs/2026-10-26_02-38-01-820168_clean-prompt/shots/001/video.mp4",
+      "sha256": "85b6177cf5ce999f71aaf7592bbfcc41cc063b342578d133682042e0319e1569",
+      "decision": "fail"
+    },
+    {
+      "index": 2,
+      "file": "outputs/2026-10-26_02-38-01-820168_clean-prompt/shots/002/video.mp4",
+      "sha256": "54d6a957bd2d8560218b05bea00fe23f344e7f40e4fd0ff32bacbaf8f31b25a0",
+      "decision": "fail"
+    },
+    {
+      "index": 3,
+      "file": "outputs/2026-10-26_02-38-01-820168_clean-prompt/shots/003/video.mp4",
+      "sha256": "13044e53c00b9e384bc2a8e954ee3eb6f974e415a260f23335c0d8115618d42a",
+      "decision": "fail"
+    },
+    {
+      "index": 4,
+      "file": "outputs/2026-10-26_02-38-01-820168_clean-prompt/shots/004/video.mp4",
+      "sha256": "9de549b0b14e6b4f37175ad0af0d76891ca4cb7c037a42142700ddbe6bf4062c",
+      "decision": "fail"
+    }
+  ],
+  "limits": "The user rejected lip synchronization in every shot but did not specify whether the mouth leads, lags, or forms the wrong shapes. Earlier assistant frame observations are separate evidence.",
+  "followup_question": "Which shots have lip-sync problems: 1 (Lena/desert), 2 (Owen/desert), 3 (Lena/cafe), or 4 (Owen/cafe)? If you can tell, does the mouth move before the words, after them, or form the wrong shapes?",
+  "followup_response": "all"
+}
