@@ -37,9 +37,12 @@ Run independent transcription, all-frame OCR, and face-sheet preparation with:
 This uses the existing cached Whisper model and Apple Vision, records their
 provenance, and writes evidence under the run's `review/` directory. Review the
 images against the canonical portrait and play the video with sound. Technical
-checks leave human lip-sync acceptance pending. The generated voice is temporary
-diagnostic audio and does not satisfy fixed-voice acceptance. Voice conversion
-begins only after the saved-face native performance is accepted.
+checks alone leave human lip-sync acceptance pending. For the
+[native-reference control](native-reference-control.json), the user accepted lip
+sync, likeness, and spoken words; all-frame OCR and visual review found no captions.
+The generated voice is
+temporary diagnostic audio and does not satisfy fixed-voice acceptance. The next
+step is to snapshot Lena's canonical voice reference and validate its quality.
 
 ## Prepare speech and reference assets
 

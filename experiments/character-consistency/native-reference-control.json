@@ -1,9 +1,9 @@
 {
   "version": 1,
   "recorded_at": "2026-10-26T03:34:11.482017-07:00",
-  "status": "awaiting-human-audiovisual-review",
+  "status": "accepted-diagnostic-native-take",
   "label": "diagnostic-native-voice",
-  "milestone_a_passed": false,
+  "milestone_a_passed": true,
   "fixed_voice_acceptance": false,
   "run": "outputs/2026-10-26_native-reference-control",
   "commands": [
@@ -278,10 +278,15 @@
     }
   },
   "human_review": {
-    "status": "pending",
-    "lip_sync": "pending",
-    "face_identity": "pending-human-confirmation",
-    "spoken_words_and_audio_quality": "pending-human-listening",
+    "status": "accepted",
+    "reviewer": "user",
+    "accepted_at": "2026-10-26T10:39:27Z",
+    "question": "After watching the native Lena clip with sound, are its lip sync and likeness acceptable? Clip: /Users/aa/os/aivs/outputs/2026-10-26_native-reference-control/video.mp4 \u2014 portrait: /Users/aa/os/aivs/outputs/2026-10-26_native-reference-control/canonical-portrait.png. Expected words: \u201cWe still have some time.\u201d PLAN2.md requires this review before voice conversion.",
+    "response": "Accept lip sync, likeness, and spoken words",
+    "lip_sync": "accepted",
+    "face_identity": "accepted",
+    "spoken_words": "accepted",
+    "audio_quality": "not-separately-assessed",
     "assistant_audio_review": false
   },
   "validation": {
@@ -312,5 +317,5 @@
     }
   },
   "interpretation": "Audio mode and resolution both changed from the rejected A2V take. A perceived improvement cannot isolate either factor. Temporary generated voice does not establish saved voice identity.",
-  "next_step": "Obtain human audiovisual review of this exact video before voice conversion. No additional diagnostic renders or conversion have been performed."
+  "next_step": "Snapshot and validate the canonical Lena voice reference, then run the pinned converter experiment in Milestone B against this accepted take. No new video inference is needed."
 }

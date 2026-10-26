@@ -36,12 +36,13 @@ Retain that document and the existing takes as the history of the first approach
 - Source inspection found no demonstrated timeline error or disabled audio
   conditioning. `generate_audio=False` skips audio decoding; the A2V transformer
   still receives frozen audio. Arbitrary stream offsets are not an established fix.
-- The native-reference control has now been rendered and independently checked;
-  human audiovisual acceptance is pending. Its generated voice remains diagnostic.
+- The user accepted the native-reference control's lip sync, likeness, and spoken
+  words after watching it with sound. Existing visual review and all-frame OCR
+  found no unwanted captions. Its generated voice remains diagnostic.
   [Run evidence](experiments/character-consistency/native-reference-control.json)
-  records the result. Voice conversion has **not been run**. The preserved native
-  output from the earlier period lacks a Git SHA, so it cannot be identified
-  conclusively as the exact take the user remembers.
+  records the result. Milestone A passed; voice conversion has **not been run**.
+  The preserved native output from the earlier period lacks a Git SHA, so it
+  cannot be identified conclusively as the exact take the user remembers.
 
 Evidence: [four-shot review](experiments/character-consistency/acceptance.json),
 [human feedback and clip hashes](experiments/character-consistency/human-review.json),
@@ -126,9 +127,9 @@ and finalize edit timing. Preserve source dialogue order and complete action bea
 
 ## Milestone A: recover sync with a saved face
 
-**Immediate next step:** review the [native-reference clip](outputs/2026-10-26_native-reference-control/video.mp4)
-with sound and record human acceptance or rejection of its lip sync and likeness.
-Do not begin voice conversion before acceptance.
+**Immediate next step:** snapshot the canonical Lena voice reference and validate
+its quality. Then run the pinned converter experiment in Milestone B against this
+accepted take; no new video inference is needed.
 
 The initial diagnostic renders one native joint-audio shot of Lena using the
 existing desert starting image and the line “We still have some time.”
@@ -146,17 +147,20 @@ individual contributions. Optimize resolution only after recovering quality.
 - [x] Produce the native-reference control without modifying default GUI behavior.
 - [x] Verify the exact words independently and inspect for generated captions.
 - [x] Compare face identity against the canonical portrait throughout the clip.
-- [ ] Obtain human audiovisual acceptance of this take's lip sync.
+- [x] Obtain human audiovisual acceptance of this take's lip sync, likeness, and
+      spoken words.
 
 The first control rendered successfully in 237.81 seconds. Whisper independently
 recovered the exact line, and all-frame OCR found no text in 96 frames. Visual
 comparison of every face frame with the canonical portrait found no obvious
-identity drift; human likeness confirmation and listening remain pending. The
-run preserves its prompt, references, code snapshots, hashes, raw native media,
-and a PCM WAV decoded from the final AAC soundtrack. See the
-[recorded result](experiments/character-consistency/native-reference-control.json)
+identity drift. The user watched with sound and accepted the lip sync, likeness,
+and spoken words in the [native-reference clip](outputs/2026-10-26_native-reference-control/video.mp4).
+The run preserves its prompt, references, code snapshots,
+hashes, raw native media, and a PCM WAV decoded from the final AAC soundtrack.
+See the [recorded result](experiments/character-consistency/native-reference-control.json)
 and [reproduction instructions](experiments/character-consistency/README.md#native-reference-control-plan2-milestone-a).
-Milestone A has **not passed** until human audiovisual review accepts this take.
+Milestone A has passed. Its generated voice remains temporary diagnostic audio;
+fixed-voice acceptance is still false.
 
 If it fails, use at most two additional diagnostic renders, changing one factor
 at a time. One useful control removes the image anchor at the same resolution,
