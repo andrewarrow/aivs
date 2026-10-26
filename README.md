@@ -37,8 +37,11 @@ Errors keep setup locked. A ready installation skips the setup modal.
 
 Choose **Generate video** to perform the displayed screenplay as one continuous
 shot with native jointly generated speech at **1280×704 and 24 fps**. All spoken
-lines determine the duration. **Stop** interrupts the
-Python process group, including FFmpeg. Closing AIVS also stops its active work.
+lines determine speech time; screenplay action paragraphs each reserve another
+three seconds for physical action, including the final walk. This is a timing
+heuristic, not a guarantee that the model completes every action. **Stop**
+interrupts the Python process group, including FFmpeg. Closing AIVS also stops
+its active work.
 Each run saves its prompt, random seed, dialogue timing, runtime details, and
 status in `outputs/<timestamp>_<seed>/render.json`. Only a video that passes
 decoded-frame and audio/video timing checks is published as `video.mp4`.
@@ -72,9 +75,12 @@ Python resolves the assigned `@name` references and adds appearance and voice
 descriptions, with explicit performer-to-role bindings in the render prompt.
 GUI renders do not infer cast from bare names in the script, even when a role
 shares a saved character's name.
-The GUI renders from these saved descriptions, with fixed-camera, wide-framing
-instructions and no required joint image. Cast resolution has no two-character
-limit. The renderer's image inputs anchor complete frames, rather than separate
+The GUI renders from these saved descriptions, with a fixed wide camera showing
+both actors head to toe beside the whole car, with room to move and walk. Camera
+instructions hold the composition while allowing actors to change position.
+The current scene reserves 32 seconds for its dialogue and action, rather than
+the 14-second speech-only estimate. No joint image is required. Cast resolution
+has no two-character limit. The renderer's image inputs anchor complete frames, rather than separate
 per-person identities, so the GUI does not feed solo portraits into an ensemble
 scene. Saved photos remain available for a future identity-conditioning backend;
 text guidance does not guarantee exact likeness or voice identity.

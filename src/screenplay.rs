@@ -97,21 +97,23 @@ impl Screenplay {
             .collect::<Vec<_>>()
             .join("; ");
         let mut prompt = format!(
-            "A single continuous cinematic shot featuring {} roles. Cast: {references}. \
+            "A single continuous cinematic wide shot featuring {} roles. Cast: {references}. \
          Each role uses its assigned performer's saved appearance and voice. \
          Script names identify roles throughout the action and dialogue. \
-         Frame this as a locked-off wide shot with every character's entire head and torso visible \
-         down to the waist, leaving landscape around them throughout. A fixed tripod camera at eye \
-         level holds a constant focal length and camera-to-subject distance for the entire conversation. \
-         Each character stays at the same distance while speaking, with only natural head and body motion. \
-         Keep everyone visible together, with breathing room above their heads. No zoom, push-in, \
-         close-up, reframing, or cuts. \
-         Preserve each character's saved appearance and distinct voice throughout the scene. \
-         Play the following action and dialogue in order, at a natural conversational pace. \
+         Frame this as a locked-off wide shot from across the road, showing the entire station wagon \
+         and both actors from head to feet, with ground visible below their shoes. \
+         Full-length figures occupy no more than half the frame height, with open road around them \
+         and enough room for their final walk to remain in shot. The fixed tripod camera holds this \
+         wide composition while the actors move freely through the scene and interact with each \
+         other, the car, and the postcard. They look at each other and the objects they handle. \
+         No zoom, push-in, close-up, reframing, or cuts. \
+         Perform every scripted physical action in order, allowing silent action beats between \
+         spoken lines at a natural conversational pace. Complete the final walking action with \
+         several visible steps before fading out. \
          Only the person delivering a line speaks and moves their mouth; everyone else listens \
          with natural reactions. Each character's mouth follows their own voice. \
          Scene headings, action, character names, and parentheticals are directions, not spoken words. \
-         No narration, subtitles, captions, or on-screen text.\n\n",
+         No narration, subtitles, captions, or text overlays.\n\n",
             roles.len()
         );
         let mut speaker = "";

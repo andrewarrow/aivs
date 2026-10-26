@@ -129,7 +129,7 @@ def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_o
             temp.write_text(json.dumps(report, indent=2) + "\n")
             temp.replace(run_dir / "render.json")
         save()
-        emit("progress", label=f"Generating {timing['seconds']} seconds of talking video")
+        emit("progress", label=f"Generating {timing['seconds']} seconds of video")
         try:
             options = {"image_file": image, "hold_image_framing": hold_image_framing} if image is not None else {}
             report["runtime"] = render(expanded_prompt, seed, timing["seconds"] * FPS, output,

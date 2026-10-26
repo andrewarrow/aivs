@@ -1,4 +1,4 @@
-"""Standard-library helpers for entering dialogue prompts and estimating speech time."""
+"""Standard-library helpers for estimating dialogue and screenplay action time."""
 
 from __future__ import annotations
 
@@ -9,8 +9,12 @@ import re
 WORDS_PER_MINUTE = 160
 TURN_GAP_SECONDS = 0.2
 PADDING_SECONDS = 1.0
+ACTION_BEAT_SECONDS = 3.0
 _WORD_RE = re.compile(r"[\w]+(?:['’][\w]+)*", re.UNICODE)
 _SPEAKER_LABEL_RE = re.compile(r"(?:^|\b)[A-Z][A-Z0-9_-]*(?:\s*\([^)]*\))?:\s*$")
+_SCENE_HEADING_RE = re.compile(r"^(?:INT\./EXT\.|EXT\./INT\.|INT\.|EXT\.|I/E\.)[ \t]+\S.*$", re.MULTILINE)
+_TRANSITION_RE = re.compile(r"^(?:FADE (?:IN|OUT|TO BLACK)|(?:CUT|DISSOLVE|SMASH CUT|MATCH CUT) TO)[.:]?$", re.IGNORECASE)
+_SCRIPT_DIALOGUE_RE = re.compile(r'^[A-Z][A-Z0-9_ .\'-]*(?:\s*\([^)]*\))?:\s*["“]')
 _NARRATION_BEFORE_SPEECH_RE = re.compile(
     r"\b(?:says?|speaks?|replies?|asks?|responds?|whispers?|shouts?|tells?)"
     r"(?:\s+to\s+[\w'-]+)?\s*$",
@@ -87,8 +91,29 @@ def _quoted_segments(prompt: str) -> list[str]:
     return _parse_quoted_segments(trimmed)
 
 
+def _screenplay_actions(prompt: str) -> list[str]:
+    """Find action paragraphs in the workspace's labeled screenplay format.
+
+    Only text after a scene heading is eligible, so ordinary prose prompts and
+    cast/camera instructions keep their existing speech-only estimates.
+    """
+    prompt = _strip_outer_quote_wrapper(prompt)
+    heading = _SCENE_HEADING_RE.search(prompt)
+    if heading is None:
+        return []
+    actions = []
+    for block in re.split(r"\n\s*\n", prompt[heading.end():]):
+        text = block.strip()
+        if not text or _SCENE_HEADING_RE.fullmatch(text) or _TRANSITION_RE.fullmatch(text):
+            continue
+        if _SCRIPT_DIALOGUE_RE.match(text) or text.startswith(('"', '“', '(')):
+            continue
+        actions.append(text)
+    return actions
+
+
 def duration_estimate(prompt: str) -> dict:
-    """Estimate spoken duration from quoted dialogue, excluding stage directions.
+    """Estimate dialogue time plus room for screenplay action paragraphs.
 
     This intentionally uses quoted segments as a simple dialogue marker; it does
     not attempt to distinguish spoken dialogue from film or book quotations.
@@ -99,13 +124,15 @@ def duration_estimate(prompt: str) -> dict:
         raise ValueError('No quoted dialogue found. Put spoken words in quotes or set --seconds.')
 
     turn_count = len([segment for segment in dialogue if _WORD_RE.search(segment)])
-    seconds = max(2, math.ceil(
+    speech_seconds = (
         word_count * 60 / WORDS_PER_MINUTE
         + TURN_GAP_SECONDS * (turn_count - 1)
         + PADDING_SECONDS
-    ))
-    return {
-        "seconds": seconds,
+    )
+    actions = _screenplay_actions(prompt)
+    action_seconds = len(actions) * ACTION_BEAT_SECONDS
+    estimate = {
+        "seconds": max(2, math.ceil(speech_seconds + action_seconds)),
         "word_count": word_count,
         "turn_count": turn_count,
         "words_per_minute": WORDS_PER_MINUTE,
@@ -114,3 +141,11 @@ def duration_estimate(prompt: str) -> dict:
         "method": "quoted-dialogue-estimate",
         "dialogue": dialogue,
     }
+    if actions:
+        estimate.update(
+            method="screenplay-dialogue-and-action-estimate",
+            action_count=len(actions),
+            action_beat_seconds=ACTION_BEAT_SECONDS,
+            action_seconds=action_seconds,
+        )
+    return estimate

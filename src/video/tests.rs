@@ -313,15 +313,29 @@ raise SystemExit(video.main())
     }
     for direction in [
         "locked-off wide shot",
-        "entire head and torso",
-        "down to the waist",
-        "constant focal length and camera-to-subject distance",
+        "entire station wagon",
+        "both actors from head to feet",
+        "ground visible below their shoes",
+        "actors move freely through the scene",
+        "several visible steps before fading out",
         "No zoom",
     ] {
         assert!(expanded.contains(direction));
     }
     assert_eq!(report["dialogue_timing"]["turn_count"], 5);
     assert_eq!(report["dialogue_timing"]["word_count"], 31);
+    assert_eq!(report["dialogue_timing"]["action_count"], 6);
+    assert_eq!(report["dialogue_timing"]["action_seconds"], 18.0);
+    assert_eq!(report["seconds"], 32);
+    assert_eq!(report["runtime"]["output_frames"], 768);
+    for stationary_direction in [
+        "down to the waist",
+        "camera-to-subject distance",
+        "stays at the same distance",
+        "only natural head and body motion",
+    ] {
+        assert!(!expanded.contains(stationary_direction));
+    }
     assert_eq!(
         report["dialogue_timing"]["dialogue"],
         serde_json::json!([
