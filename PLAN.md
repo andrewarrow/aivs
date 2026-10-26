@@ -120,8 +120,11 @@ Deliverables and acceptance:
 - [x] Record which checks are automatic and which still require human review.
 - [x] Exercise failure paths with meaningful offline tests and run the relevant
       existing Python suite.
-- [ ] Resolve generated captions and complete detailed likeness/lip-sync acceptance
-      before declaring the milestone passed.
+- [x] Suppress generated captions in the four-shot comparison and retain the
+      original takes and conditioning provenance.
+- [x] Save detailed frame/likeness review and independent transcript evidence.
+- [ ] Complete human audiovisual lip-sync acceptance before declaring the
+      milestone passed; review anticipatory mouth motion in shots 1–3.
 
 Do not contend with a GUI render already holding the workspace GPU lock. Asset
 preparation and CPU voice synthesis may proceed; video inference waits for the
@@ -151,9 +154,34 @@ The planner tests had an existing fake `exec --json` transport against productio
 deltas. A [16-second comparison video](outputs/2026-10-26_02-15-11-855410_character-milestone/video.mp4)
 now contains all four 768x448 takes at 24 fps. The run contains five sampled
 frames per shot, original line WAVs, input snapshots, and a `review.json` with
-waveform checks and remaining findings. Generated captions persist in both
-locations. Detailed facial likeness, lip-sync acceptance, and multi-person
-speaker binding remain unresolved; this prototype stays opt-in.
+waveform checks and remaining findings. Those initial takes have generated
+captions in both locations. They remain available beside the follow-up below;
+this prototype stays opt-in.
+
+### Caption suppression and acceptance review (2026-10-26)
+
+The [new 16-second comparison](outputs/2026-10-26_02-38-01-820168_clean-prompt/video.mp4)
+removes quoted dialogue and overlay prohibitions from visual prompts. Exact words
+stay in the line manifest and supplied audio. All four shots reuse the baseline's
+byte-identical audio, reference images, and seeds. The comparison preparation
+helper under `experiments/character-consistency/` reuses verified performances
+without re-synthesizing them; Kokoro re-synthesis can produce different PCM.
+
+Apple Vision OCR found no text in all 384 decoded frames, versus 159 text-bearing
+frames in the original takes. Whole-frame samples and all-frame face sheets were
+inspected beside canonical portraits. Both performers remain visually consistent
+in these views; no calibrated identity score is claimed. Independent Whisper
+base.en transcription recovered all four lines exactly, and decoded audio
+correlation exceeds 0.9999 for every shot and the assembled video.
+
+[Acceptance evidence](experiments/character-consistency/acceptance.json) records
+the measurements and per-shot observations. Full frame evidence, review scripts,
+transcription/model provenance, and `review.json` are saved with the new run.
+Mouth rounding/opening appears during the opening silence in shots 1–3; frame
+inspection alone cannot establish phoneme synchronization. Human audiovisual
+lip-sync acceptance remains open, and the milestone has **not passed**. A
+controlled NAG-only trial retained captions and was not adopted. Validation:
+74 Python tests passed, plus real four-shot rendering, OCR, and audio checks.
 
 ## Later milestones
 

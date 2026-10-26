@@ -83,7 +83,10 @@ class MilestoneTests(unittest.TestCase):
         self.assertEqual(first["audio"]["sha256"], third["audio"]["sha256"])
         self.assertEqual(first["speaker"], {"role": "SUE", "character": "lena", "start_seconds": 0.35, "end_seconds": 1.35})
         self.assertEqual(first["frames"], 96)
-        self.assertIn('says, "There is time."', first["prompt"])
+        self.assertTrue(first["prompt"].startswith(self.request["shots"][0]["prompt"].rstrip()))
+        self.assertNotIn("There is time.", first["prompt"])
+        self.assertIn("moves their lips in time with the supplied audio, then rests with lips closed.", first["prompt"])
+        self.assertEqual(plan["lines"]["sue"]["text"], "There is time.")
         with wave.open(str(self.run / first["audio"]["file"]), "rb") as stream:
             self.assertEqual(stream.getnframes() / stream.getframerate(), 4)
             self.assertEqual(stream.readframes(8400), b"\0\0" * 8400)

@@ -154,10 +154,10 @@ def prepare(request_file: Path, run_dir: Path, *, character_root=ROOT, voice_pyt
             shutil.copyfile(_checked_asset(request_file.parent, shot["image"]), image_path)
             line = prepared_lines[shot["line"]]
             timing = _shot_audio(run_dir / line["file"], directory / "audio.wav")
-            prompt = (shot["prompt"].rstrip() + " After a brief pause, the visible speaker says, "
-                      + json.dumps(line["text"], ensure_ascii=False)
-                      + ". The lips follow this exact soundtrack, then close as the speaker listens silently. "
-                        "Natural breathing and small eye movements. No subtitles, captions or visible writing.")
+            # The soundtrack carries the words; quoting them here can produce captions.
+            prompt = (shot["prompt"].rstrip()
+                      + " The visible speaker moves their lips in time with the supplied audio, then rests with lips closed."
+                        " Natural breathing and small eye movements.")
             prepared_shots.append({"index": index, "scene": shot["scene"], "prompt": prompt,
                                    "line": shot["line"], "role": line["role"], "character": line["character"],
                                    "seconds": timing["seconds"], "frames": timing["seconds"] * quality_backend.FPS,
