@@ -161,6 +161,16 @@ Scripts and cast assignments autosave to `screenplay.json` in the workspace.
 **⌘/Ctrl+S** saves immediately. Click text to edit; use the element selector,
 **+ Insert**, and **Edit** for formatting, insertion, deletion, and role renaming.
 
+Use **File → Import…** to choose a `.fountain` screenplay. Import replaces the
+current screenplay and clears its cast; **Undo** restores both. Scene headings,
+action, character cues, parentheticals, dialogue, and transitions become editable
+elements. Centered text and lyrics retain their text in action/dialogue elements;
+simultaneous dialogue is imported in source order. Title-page metadata, outline
+sections, notes, omitted passages, page breaks, and emphasis formatting are omitted.
+The original Fountain file is preserved, and the imported screenplay autosaves to
+`screenplay.json`. Full-length scripts can be imported; video generation still
+requires a script within the existing 100,000-character limit.
+
 - **Enter** creates the next screenplay element; **Shift+Enter** inserts a line break.
 - **Tab** in dialogue adds a parenthetical instruction. On an empty action, it
   changes the element to a character cue; **Shift+Tab** selects the previous type.

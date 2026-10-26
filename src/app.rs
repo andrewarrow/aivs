@@ -28,6 +28,7 @@ pub struct App {
     draft: String,
     status: String,
     error: Option<String>,
+    import_error: Option<String>,
     pub quit: bool,
 }
 
@@ -54,6 +55,7 @@ impl App {
             draft: String::new(),
             status: String::new(),
             error: None,
+            import_error: None,
             quit: false,
         }
     }
@@ -238,6 +240,24 @@ impl App {
         }
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui
+                        .add_enabled(
+                            self.screenplay.can_import(),
+                            egui::Button::new("Import…"),
+                        )
+                        .on_hover_text("Import a .fountain file. Undo restores the current screenplay and cast.")
+                        .on_disabled_hover_text("Reload the screenplay before importing.")
+                        .clicked()
+                    {
+                        ui.close();
+                        self.import_error = match select_fountain(&self.root) {
+                            Ok(Some(path)) => self.screenplay.import_fountain(&path).err(),
+                            Ok(None) => None,
+                            Err(error) => Some(error),
+                        };
+                    }
+                });
                 ui.menu_button("Codex", |ui| {
                     self.connection_ui(ui);
                     if ui.checkbox(&mut self.chat_open, "Show chat").changed() && self.chat_open {
@@ -245,6 +265,14 @@ impl App {
                     }
                 });
             });
+            if let Some(error) = self.import_error.clone() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    if ui.button("Dismiss").clicked() {
+                        self.import_error = None;
+                    }
+                });
+            }
         });
         let gallery_width = (ui.available_width() * 0.30).min(160.0);
         egui::Panel::right("characters")
@@ -516,6 +544,50 @@ impl App {
             Err(error) => self.error = Some(error),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn select_fountain(root: &std::path::Path) -> Result<Option<PathBuf>, String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    let mtm = MainThreadMarker::new().ok_or("Import requires the main thread.")?;
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setTitle(Some(&NSString::from_str("Import screenplay")));
+    panel.setPrompt(Some(&NSString::from_str("Import")));
+    panel.setMessage(Some(&NSString::from_str(
+        "Choose a Fountain screenplay. Undo restores the current screenplay and cast.",
+    )));
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    panel.setAllowsOtherFileTypes(false);
+    // Fountain has no system UTI. AppKit also accepts an extension directly.
+    #[allow(deprecated)]
+    panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&[NSString::from_str(
+        "fountain",
+    )])));
+    if let Some(directory) = NSURL::from_file_path(root) {
+        panel.setDirectoryURL(Some(&directory));
+    }
+    let response = panel.runModal();
+    if response == NSModalResponseOK {
+        panel
+            .URL()
+            .and_then(|url| url.to_file_path())
+            .map(Some)
+            .ok_or_else(|| "Could not open the selected file.".into())
+    } else if response == NSModalResponseCancel {
+        Ok(None)
+    } else {
+        Err("Could not open the file chooser. Please try again.".into())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn select_fountain(_root: &std::path::Path) -> Result<Option<PathBuf>, String> {
+    Err("The screenplay file chooser requires macOS.".into())
 }
 
 #[cfg(test)]

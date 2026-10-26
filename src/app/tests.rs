@@ -26,6 +26,7 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
             draft: String::new(),
             status: String::new(),
             error: None,
+            import_error: None,
             quit: false,
         },
         commands,

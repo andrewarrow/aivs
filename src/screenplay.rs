@@ -7,6 +7,8 @@ use std::{
 
 use crate::characters::CastCharacter;
 
+mod fountain;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Element {
     Heading,
@@ -184,6 +186,43 @@ fn consume_exact(input: &mut egui::InputState, modifiers: egui::Modifiers, key: 
 }
 
 impl Screenplay {
+    pub fn can_import(&self) -> bool {
+        !self.load_failed
+    }
+
+    pub fn import_fountain(&mut self, path: &Path) -> Result<(), String> {
+        if !self.can_import() {
+            return Err("Reload the screenplay before importing.".into());
+        }
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("fountain"))
+        {
+            return Err("Choose a .fountain screenplay to import.".into());
+        }
+        let source = fs::read_to_string(path)
+            .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+        let elements = fountain::parse(&source)?;
+        let before = self.snapshot();
+        self.document = Document {
+            blocks: elements
+                .into_iter()
+                .map(|(kind, text)| {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    Block { id, kind, text }
+                })
+                .collect(),
+            cast: BTreeMap::new(),
+        };
+        self.active = self.document.blocks[0].id;
+        self.focus = Some((self.active, 0));
+        self.rename = None;
+        self.record(before, None);
+        self.save();
+        Ok(())
+    }
+
     pub fn load(root: &Path) -> Self {
         let path = root.join("screenplay.json");
         let mut screenplay = Self::default();
