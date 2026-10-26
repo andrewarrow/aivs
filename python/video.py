@@ -18,6 +18,7 @@ import time
 from quality_backend import ROOT, CACHE, FPS, WIDTH, HEIGHT, doctor, model_path, render
 from dialogue_helpers import duration_estimate
 import characters
+from character_conditioning import POLICY as CHARACTER_CONDITIONING_POLICY
 from shooting_script import create_shooting_script, load_shooting_script, parse_request, save_shooting_script
 from shot_renderer import render_shooting_script
 from render_formats import resolve_format
@@ -160,6 +161,9 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
     """Translate arbitrary human screenplay text and its cast, then film the plan."""
     if not isinstance(request, dict) or request.get("version") != 1:
         raise ValueError("Screenplay requests must use version 1.")
+    if request.get("character_conditioning", CHARACTER_CONDITIONING_POLICY) != CHARACTER_CONDITIONING_POLICY:
+        raise ValueError("New screenplay renders require saved-character-assets-v1 conditioning.")
+    request = dict(request, character_conditioning=CHARACTER_CONDITIONING_POLICY)
     spec = resolve_format(request["render_format"]) if "render_format" in request else None
     cast = request.get("cast")
     if not isinstance(cast, list) or any(not isinstance(binding, dict) or not isinstance(binding.get("character"), str)
@@ -186,8 +190,9 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
             "width": spec["width"] if spec else WIDTH, "height": spec["height"] if spec else HEIGHT,
             **({"render_format": spec["name"], "model_width": spec["model_width"],
                 "model_height": spec["model_height"]} if spec else {}),
-            "audio": "generated",
+            "audio": "native-with-saved-voice-conversion",
             "characters": profiles, "shooting_script": "shooting-script.json",
+            "character_conditioning": CHARACTER_CONDITIONING_POLICY,
         }
 
         def save():
@@ -227,6 +232,7 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
 
             report["runtime"] = render_shooting_script(
                 plan, seed, output, on_progress=lambda **data: emit("render_progress", **data),
+                character_profiles=profiles,
                 on_shot=shot_update,
                 token_counter=count_tokens,
                 on_activity=lambda message: emit("activity", message=message),
@@ -272,6 +278,8 @@ def resume_screenplay(directory):
         # Use the cast snapshot, independent of edits to the current screenplay
         # or gallery. Revalidating a saved plan never calls the Codex planner.
         parse_request(request, profiles)
+        if report.get("character_conditioning") != request.get("character_conditioning"):
+            raise ValueError("Cannot resume a run with a different character conditioning policy.")
         output = run_dir / "video.mp4"
         if (report.get("status") == "complete" and output.is_file()
                 and report.get("sha256") == hashlib.sha256(output.read_bytes()).hexdigest()):
@@ -321,6 +329,8 @@ def resume_screenplay(directory):
 
             report["runtime"] = render_shooting_script(
                 plan, seed, output, resume=True,
+                character_profiles=(profiles if report.get("character_conditioning") == CHARACTER_CONDITIONING_POLICY
+                                    else None),
                 on_progress=lambda **data: emit("render_progress", **data),
                 on_shot=shot_update,
                 token_counter=count_tokens,

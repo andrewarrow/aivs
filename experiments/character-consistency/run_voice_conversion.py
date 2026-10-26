@@ -1,4 +1,4 @@
-"""Run one pinned, offline Seed-VC conversion on a prepared accepted Lena or Owen take."""
+"""Pinned offline Seed-VC worker for diagnostic takes and saved-character GUI audio."""
 
 from __future__ import annotations
 
@@ -423,14 +423,94 @@ def run(run_dir: Path, *, code_dir: Path = DEFAULT_CODE, models_dir: Path = DEFA
         raise
 
 
+def check_converter(code_dir: Path, models_dir: Path) -> dict:
+    """Check the shared offline converter without requiring an experiment take."""
+    os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PYTORCH_ENABLE_MPS_FALLBACK="1")
+    pins = {}
+    for line in Path(__file__).with_name("requirements-seed-vc.txt").read_text().splitlines():
+        if line.strip() and not line.lstrip().startswith("#"):
+            package, expected = line.split("==")
+            installed = importlib.metadata.version(package)
+            if installed != expected:
+                raise ValueError(f"Seed-VC requires {package}=={expected}; got {installed}. Reinstall its pinned environment.")
+            pins[package] = installed
+    metadata_path = _safe_file(models_dir / "models.json", "model manifest")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    code = validate_code(code_dir, metadata)
+    validate_models(models_dir, metadata)
+    return {"code": code, "models_manifest_sha256": _hash(metadata_path),
+            "device": _mps_info(), "dependencies": pins, "policy": "seed-vc-native-timing-v1"}
+
+
+def convert_audio(source: Path, reference: Path, output_dir: Path, *,
+                  code_dir: Path, models_dir: Path) -> dict:
+    """Convert a GUI shot to its saved voice, preserving the native video take.
+
+    This uses the same pinned inference as the diagnostic experiment. It makes
+    no claim of perceptual acceptance and never changes experiment evidence.
+    The GUI owns the workspace lock; this child must not acquire it again.
+    """
+    source = _safe_file(source, "native speech")
+    reference = _safe_file(reference, "saved voice sample")
+    output_dir = output_dir.resolve()
+    identity = check_converter(code_dir, models_dir)
+    inputs = {"source_audio": source, "reference": reference}
+    hashes = {key: _hash(path) for key, path in inputs.items()}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # A fresh staging directory makes interrupted audio inference retryable
+    # without replacing the original expensive video or reusing partial WAVs.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix=".convert-", dir=output_dir) as temporary:
+        result = _run_inference(code_dir, models_dir, Path(temporary), inputs)
+        staged = Path(temporary) / "converted.wav"
+        encoding = _materialize_pcm16(result["raw_output"], staged)
+        import wave
+        with wave.open(str(source), "rb") as audio:
+            source_seconds = audio.getnframes() / audio.getframerate()
+        with wave.open(str(staged), "rb") as audio:
+            converted_seconds = audio.getnframes() / audio.getframerate()
+        if abs(converted_seconds - source_seconds) > 0.1:
+            raise ValueError("Converted voice changed the shot duration by more than 100 ms.")
+        if ({key: _hash(path) for key, path in inputs.items()} != hashes
+                or check_converter(code_dir, models_dir) != identity):
+            raise ValueError("Voice inputs or converter changed during inference.")
+        target = output_dir / "converted.wav"
+        staged.replace(target)
+        record = {"status": "converted-needs-review", "identity": identity,
+                  "inputs": hashes, "sha256": _hash(target),
+                  "source_seconds": source_seconds, "converted_seconds": converted_seconds,
+                  "encoding": encoding, "settings": result["settings"],
+                  "elapsed_seconds": result["elapsed_seconds"]}
+        _atomic_json(output_dir / "conversion.json", record)
+    return record
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, required=True, help="Prepared immutable voice-reference run")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--run-dir", type=Path, help="Prepared immutable voice-reference run")
+    mode.add_argument("--check", action="store_true", help="Check shared GUI converter prerequisites")
+    mode.add_argument("--source-audio", type=Path)
+    parser.add_argument("--reference", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--code-dir", type=Path, default=DEFAULT_CODE)
     parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS)
     args = parser.parse_args(argv)
+    if args.source_audio and not all((args.reference, args.output_dir)):
+        parser.error("--source-audio requires --reference and --output-dir")
+    if not args.source_audio and (args.reference or args.output_dir):
+        parser.error("--reference and --output-dir require --source-audio")
     signal.signal(signal.SIGTERM, lambda _signum, _frame: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
+        if args.check:
+            result = check_converter(args.code_dir.resolve(), args.models_dir.resolve())
+            print("AIVS_VOICE " + json.dumps(result), flush=True)
+            return 0
+        if args.source_audio:
+            result = convert_audio(args.source_audio, args.reference, args.output_dir,
+                                   code_dir=args.code_dir.resolve(), models_dir=args.models_dir.resolve())
+            print("AIVS_VOICE " + json.dumps(result), flush=True)
+            return 0
         result = run(args.run_dir, code_dir=args.code_dir, models_dir=args.models_dir)
     except KeyboardInterrupt:
         return 130

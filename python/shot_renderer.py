@@ -175,6 +175,16 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
     take = saved.get("take", 1)
     if type(take) is not int or take < 1:
         return False
+    if saved.get("character_assets") != report.get("character_assets"):
+        return False
+    voice = (report.get("character_assets") or {}).get("voice", {})
+    if "file" in voice and clip.name == "video.mp4" and clip.is_file():
+        converted = saved.get("voice_conversion")
+        if (not isinstance(converted, dict) or not isinstance(converted.get("inputs"), dict)
+                or converted.get("character") != voice["character"]
+                or converted["inputs"].get("reference") != voice["sha256"]
+                or converted.get("identity") != voice["converter"]):
+            return False
     if (saved.get("base_seed", report["base_seed"]) != report["base_seed"]
             or saved.get("seed") != _take_seed(report["base_seed"], take)
             or any(saved.get(key) != report[key]
@@ -289,6 +299,7 @@ def render_shooting_script(
     token_counter=None,
     render_fn=None,
     resume=False,
+    character_profiles=None,
 ) -> dict:
     """Render plan shots in order and publish only a validated assembled video.
 
@@ -300,6 +311,9 @@ def render_shooting_script(
     Every saved take remains available. New plans use automated visual evidence
     to adapt only unrendered shots. Neither a quality issue nor unavailable review
     starts another video inference or asks for human approval.
+    New GUI runs pass ``character_profiles`` to anchor eligible scene openings
+    with saved portraits and convert single-speaker audio to saved voice samples.
+    Native picture checkpoints make interrupted conversion resumable separately.
     """
     shots, seconds, fade_out = _validate_plan(plan)
     spec = resolve_format(plan["render_format"]) if "render_format" in plan else None
@@ -322,6 +336,12 @@ def render_shooting_script(
     automatic_review = plan.get("planning_policy") == "single-render-v1"
     execution_plan = dict(plan, shots=[dict(shot) for shot in shots])
     activity = on_activity or (lambda message: None)
+    asset_bindings = None
+    if character_profiles is not None:
+        import character_conditioning
+        asset_bindings = character_conditioning.prepare(
+            plan, character_profiles, output.parent, activity,
+        )
     review_backend = None
     if automatic_review:
         try:
@@ -357,9 +377,17 @@ def render_shooting_script(
             use_previous_frame = _uses_previous_frame(shots, index)
             previous_clip = clips[-1] if use_previous_frame else None
             image_file = shot_dir / "start-frame.png" if use_previous_frame else None
+            assets = asset_bindings[index] if asset_bindings is not None else None
+            portrait = assets["image"] if assets is not None else {}
+            voice = assets["voice"] if assets is not None else {}
+            convert_voice = "file" in voice
+            native_clip = shot_dir / "video.source.mp4" if convert_voice else clip
+            if not use_previous_frame and "file" in portrait:
+                image_file = output.parent / portrait["file"]
             source_frame = shots[index - 1]["seconds"] * FPS - 1 if use_previous_frame else None
             continuity = {
-                "conditioning": "previous-shot-last-frame" if use_previous_frame else "none",
+                "conditioning": ("previous-shot-last-frame" if use_previous_frame else
+                                 "saved-character-portrait" if image_file is not None else "none"),
                 "source_shot": index if use_previous_frame else None,
                 "source_frame": source_frame,
                 "source_image": str(image_file) if image_file is not None else None,
@@ -380,6 +408,7 @@ def render_shooting_script(
                 "beat_ids": shot["beat_ids"],
                 "scene_id": shot.get("scene_id"),
                 "continuity": continuity,
+                **({"character_assets": assets} if assets is not None else {}),
             }
             if automatic_review:
                 report.update(planned_prompt=planned_shot["prompt"],
@@ -458,6 +487,9 @@ def render_shooting_script(
                             report["restored_from"] = str(candidate_dir)
                         report.update(take=candidate.get("take", 1), seed=candidate["seed"],
                                       runtime=candidate.get("runtime"), reused=True)
+                        for key in ("native_sha256", "voice_conversion"):
+                            if key in candidate:
+                                report[key] = candidate[key]
                         if automatic_review:
                             shot.update(prompt=candidate["prompt"],
                                         prompt_template=candidate.get("prompt_template", shot["prompt_template"]))
@@ -476,13 +508,31 @@ def render_shooting_script(
                         raise RuntimeError(message) from failure
 
                 if not reused:
-                    pending = (resume and saved is not None and not clip.exists()
-                               and saved.get("runtime") is None and saved.get("sha256") is None
-                               and _matches_saved_take(saved, report, clip, previous_clip))
+                    # A completed native picture survives failed/interrupted
+                    # conversion. Resume must finish its soundtrack, not infer
+                    # the expensive video again or assign it a new seed.
+                    reuse_native = (resume and convert_voice and saved is not None
+                                    and native_clip.is_file() and saved.get("runtime") is not None
+                                    and saved.get("native_sha256") == _file_sha256(native_clip)
+                                    and _matches_saved_take(dict(saved, sha256=None), report,
+                                                            native_clip, previous_clip))
+                    if reuse_native:
+                        validate_video(native_clip, frames, width, height, expect_audio=True)
+                    if (resume and convert_voice and native_clip.is_file() and saved is not None
+                            and saved.get("native_sha256") is not None
+                            and saved["native_sha256"] != _file_sha256(native_clip)):
+                        raise ValueError(f"Saved native video changed: {native_clip}. Review it before resuming.")
+                    pending = reuse_native or (
+                        resume and saved is not None and not clip.exists()
+                        and saved.get("runtime") is None and saved.get("sha256") is None
+                        and _matches_saved_take(saved, report, clip, previous_clip)
+                    )
                     if pending:
                         # An interruption during text planning did not consume a
                         # video take. Keep its seed, frame and adaptation cache.
                         report.update(take=saved.get("take", 1), seed=saved["seed"])
+                        if reuse_native:
+                            report.update(runtime=saved["runtime"], native_sha256=saved["native_sha256"])
                         if automatic_review:
                             shot.update(prompt=saved["prompt"],
                                         prompt_template=saved.get("prompt_template", shot["prompt_template"]))
@@ -498,9 +548,9 @@ def render_shooting_script(
                         report.update(take=take, seed=_take_seed(base_seed, take))
                     report_committed = True
                     save_shot(index, report)
-                    if use_previous_frame:
+                    if use_previous_frame and not reuse_native:
                         _extract_last_frame(previous_clip, source_frame, image_file)
-                    if (automatic_review and use_previous_frame and visual_reviews
+                    if (automatic_review and use_previous_frame and visual_reviews and not reuse_native
                             and not (pending and report.get("adaptation", {}).get("status") in ("applied", "unchanged"))):
                         emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Reconciling observed continuity")
                         try:
@@ -525,13 +575,27 @@ def render_shooting_script(
                             report["adaptation"] = shot["adaptation"]
                         save_shot(index, report)
                     shot_started = time.monotonic()
-                    report["runtime"] = renderer(
-                        shot["prompt"], report["seed"], frames, clip,
-                        on_progress=shot_progress,
-                        image_file=image_file,
-                        hold_image_framing=False,
-                        **({"width": width, "height": height} if spec else {}),
-                    )
+                    if not reuse_native:
+                        if (not use_previous_frame and "file" in portrait
+                                and _file_sha256(image_file) != portrait["sha256"]):
+                            raise ValueError("Saved character portrait changed before rendering.")
+                        report["runtime"] = renderer(
+                            shot["prompt"], report["seed"], frames, native_clip,
+                            on_progress=shot_progress,
+                            image_file=image_file,
+                            hold_image_framing=False,
+                            **({"width": width, "height": height} if spec else {}),
+                        )
+                        if convert_voice:
+                            report["native_sha256"] = _file_sha256(native_clip)
+                            report["status"] = "converting-voice"
+                            save_shot(index, report)
+                    if convert_voice:
+                        emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Applying saved character voice")
+                        report["voice_conversion"] = character_conditioning.apply_voice(
+                            native_clip, clip, voice, output.parent, shot["seconds"],
+                            width=width, height=height,
+                        )
                 runtime = report["runtime"]
                 report["sha256"] = _file_sha256(clip)
                 report["status"] = "verifying"
@@ -575,6 +639,8 @@ def render_shooting_script(
                     "runtime": runtime,
                     "continuity": continuity,
                     "sha256": report["sha256"],
+                    **({key: report[key] for key in ("character_assets", "native_sha256", "voice_conversion")
+                        if key in report}),
                     **({key: report[key] for key in (
                         "planned_prompt", "planned_shot_sha256", "prompt_template", "adaptation",
                         "visual_review", "observed_end_state") if key in report}),
@@ -627,5 +693,8 @@ def render_shooting_script(
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "shots": summaries,
         "video": video_info,
+        **({"character_conditioning": "saved-character-assets-v1",
+            "identity_review": "pending: compare portraits, voices, spoken words, and lip sync"}
+           if asset_bindings is not None else {}),
         **({"scene_review": scene_review, "render_policy": "single-render-v1"} if automatic_review else {}),
     }

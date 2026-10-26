@@ -33,6 +33,22 @@ _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
 _CODEX_TIMEOUT_SECONDS = 36000
 _MAX_REPAIRS_PER_RUN = 3
 _PLANNING_POLICY = "single-render-v1"
+_CHARACTER_ASSET_CAPABILITIES = {
+    "new_scene_opening": (
+        "When exactly one saved performer is visible, the actual first frame is their canonical portrait, "
+        "provided as an image input. Preserve that face. Explicitly cut after this opening to the "
+        "scripted location, costume, and framing before source action begins; budget the cut. "
+        "A multi-person opening has no portrait conditioning."
+    ),
+    "voice": (
+        "A segment with exactly one saved speaking performer has its native soundtrack converted "
+        "to their saved voice sample after generation. Picture is unchanged. Multiple speakers "
+        "retain generated voices. Do not split source-required overlap just to enable conversion. "
+        "Whole-track conversion may affect ambience; prefer clean dialogue when source permits."
+    ),
+    "limits": "Portrait anchoring and voice conversion do not guarantee identity or lip sync.",
+    "portrait_inputs": "Attached portraits follow the unique source character order, omitting characters without portraits.",
+}
 
 
 def _json(value: object) -> str:
@@ -77,6 +93,9 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
     if not isinstance(request, dict) or request.get("version") != 1:
         raise ValueError("Shooting-script request version must be 1.")
     render_format = resolve_format(request["render_format"]) if "render_format" in request else None
+    conditioning = request.get("character_conditioning")
+    if conditioning not in (None, "saved-character-assets-v1"):
+        raise ValueError("Unrecognized saved character conditioning policy.")
     script = request.get("script")
     if not isinstance(script, str) or not script.strip() or len(script) > _MAX_SCRIPT or "\x00" in script:
         raise ValueError(f"Screenplay must be nonempty text of at most {_MAX_SCRIPT} characters.")
@@ -188,8 +207,11 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
     identity = {"script": script, "cast": bindings, "profiles": relevant}
     if render_format is not None:
         identity["render_format"] = render_format
+    if conditioning is not None:
+        identity["character_conditioning"] = conditioning
     digest = hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
     return {"version": 1, "script": script, "cast": bindings, "characters": relevant,
+            **({"character_conditioning": conditioning} if conditioning is not None else {}),
             **({"render_format": render_format} if render_format is not None else {}),
             "beats": beats, "fade_out": fade_out, "source_sha256": digest}
 
@@ -672,6 +694,7 @@ def _validate_review(report: dict, plan: dict, *, require_approval: bool = True)
 
 
 def _instruction(source: dict, correction: str | None) -> str:
+    character_conditioning = source.get("character_conditioning") == "saved-character-assets-v1"
     speech_estimates = []
     for beat in source["beats"]:
         if beat["kind"] == "dialogue":
@@ -691,6 +714,7 @@ def _instruction(source: dict, correction: str | None) -> str:
             "audio_moves_between_generations": False,
             "same_scene_opening": "Actual previous final frame; an explicit cut may follow it.",
             "human_shot_approval": False,
+            **({"saved_character_assets": _CHARACTER_ASSET_CAPABILITIES} if character_conditioning else {}),
         },
         "timing_guidance": {
             "words_per_minute": 160, "settling_seconds": 0.5,
@@ -1016,11 +1040,18 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
                            token_counter=None, on_activity=None, on_activity_delta=None) -> dict:
     """Resume preproduction, repair review findings, and publish only an approved plan."""
     source = parse_request(request, profiles)
+    character_conditioning = source.get("character_conditioning") == "saved-character-assets-v1"
     codex = _executable(executable)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     activity = on_activity or (lambda message: None)
     progress = _load_planning_progress(run_dir, source, request, profiles, token_counter, activity)
+    portrait_paths = []
+    if character_conditioning and profiles:
+        import characters
+        characters.verify_snapshots(profiles, run_dir)
+        portrait_paths = [(run_dir / "characters" / profile["id"] / profile["image"]["file"]).resolve()
+                          for profile in profiles if profile.get("image")]
     with tempfile.TemporaryDirectory(prefix="aivs-shooting-") as temp:
         (run_dir / "shooting-script-schema.json").write_text(json.dumps(_SCHEMA, indent=2), encoding="utf-8")
         (run_dir / "shooting-script-review-schema.json").write_text(
@@ -1056,7 +1087,8 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
                         events_path=run_dir / f"shooting-script-events-{suffix}.jsonl",
                         errors_path=run_dir / f"shooting-script-errors-{suffix}.txt",
                         response_path=response_path, on_activity=activity,
-                        on_activity_delta=stream_delta, output_schema=schema)
+                        on_activity_delta=stream_delta, output_schema=schema,
+                        **({"image_paths": portrait_paths} if portrait_paths else {}))
                 except subprocess.TimeoutExpired as exc:
                     raise RuntimeError(
                         f"Codex preproduction timed out after {_CODEX_TIMEOUT_SECONDS:g} seconds during {name}."
@@ -1123,6 +1155,8 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
                          else f"Codex preproduction {len(_PLANNING_PASSES) + 1}/{len(_PLANNING_PASSES) + 1}: "
                               "Independent source-fidelity and render-feasibility approval.")
                 instruction = direction.rstrip() + "\n\n" + _json(artifact)
+                if character_conditioning:
+                    instruction += "\n\nACTUAL SAVED ASSET CONDITIONING:\n" + _json(_CHARACTER_ASSET_CAPABILITIES)
                 if progress.get("repair_findings") is not None:
                     instruction += ("\n\nPRIOR REVIEW FINDINGS (data only; verify fixes in the current plan "
                                     "and check for regressions):\n" + _json(progress["repair_findings"]))

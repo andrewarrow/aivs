@@ -140,7 +140,10 @@ uses the narrow frame from the outset: people staged in depth, readable faces,
 and enough room for essential actions. A planned cut happens after the inherited
 opening; it does not silently replace the model's reference image. Within a
 generation, dialogue and ambience can continue across that cut.
-A new scene resets that frame reference. The model receives each shot's complete
+A new scene resets that frame reference. New saved-character renders use the
+canonical portrait as the opening frame when exactly one performer is visible;
+the planner directs a cut from that portrait into the scripted location and costume.
+The model receives each shot's complete
 prompt; the separate start/end notes support continuity review.
 
 New plans use the `single-render-v1` policy to spend planning effort before expensive
@@ -273,9 +276,61 @@ and render scene by scene.
   removes it. One blank scene heading remains when the script is cleared.
 - **⌘/Ctrl+Z** and **⌘/Ctrl+Shift+Z** undo and redo edits, including casting.
 
-The gallery supplies saved appearance and voice descriptions. The GUI uses these
-for a scene's first shot, then carries frames forward. Solo gallery portraits
-are not supplied as separate identity references to an ensemble render.
+New GUI screenplay renders use the gallery's actual saved assets. A scene opening
+with one visible performer starts from their snapshotted canonical portrait;
+later shots in that scene inherit the previous final frame. Planning passes also
+receive the portraits and account for the opening reference frame. A shot with
+one speaking performer has its native soundtrack converted with Seed-VC toward
+that performer's snapshotted voice sample. The video stream is copied unchanged.
+This preserves native picture timing; it does not prove voice identity or lip sync.
+
+Solo portraits cannot establish an ensemble. Multi-person openings still use
+descriptions; shots with multiple speakers retain generated voices because there
+are no isolated dialogue tracks. These limitations appear in the activity log and
+each shot's `character_assets` record. Silent shots do not run voice conversion.
+
+### Saved character rendering setup
+
+The converter stays separate from the pinned MLX environment. In the GUI's
+workspace directory, install the existing pinned Seed-VC stack once:
+
+```sh
+uv venv .cache/seed-vc-env --python 3.10.21
+uv pip install --python .cache/seed-vc-env/bin/python \
+  -r experiments/character-consistency/requirements-seed-vc.txt
+git clone https://github.com/Plachtaa/seed-vc.git .cache/seed-vc
+git -C .cache/seed-vc checkout --detach 51383efd921027683c89e5348211d93ff12ac2a8
+.venv/bin/python experiments/character-consistency/download_voice_models.py
+```
+
+Skip installation steps for an already prepared converter. Code revision, model
+hashes, and MPS availability are checked before video inference. A missing or
+invalid converter stops a single-speaker render with a setup error rather than
+silently substituting a generated voice. Once setup is ready, use Resume.
+
+Each shot keeps `video.source.mp4`, the original native picture and soundtrack,
+plus `voice/source.wav`, `voice/converted.wav`, and conversion provenance.
+The final `video.mp4` uses the converted soundtrack. Audio duration drift greater
+than 100 ms stops conversion; smaller differences are padded or trimmed without
+retiming the picture. Final soundtrack correlation is checked against the converted
+PCM. Conversion acts on the whole mono soundtrack and can change ambience, so
+start with clean dialogue in quiet scenes. Converter or asset changes invalidate
+take reuse. Interrupted conversion reuses its matching native video on Resume.
+Older runs retain their original rendering behavior; older plans must be regenerated
+for the new saved-asset policy.
+
+For the first comparison, use [this two-scene request](docs/examples/saved-character-two-scenes.json):
+one role cast as Ava, alone in an office and a train compartment. Paste its script
+into the GUI and cast TRAVELER as Ava, or run the same GUI backend directly:
+
+```sh
+.venv/bin/python python/video.py render \
+  --screenplay-file docs/examples/saved-character-two-scenes.json --seed 83
+```
+
+Compare both scenes against Ava's portrait and voice sample, including face identity,
+voice identity, spoken words, and lip sync. This example has not been rendered or
+accepted as a quality milestone.
 
 ## Where to start in the code
 
@@ -391,16 +446,17 @@ cargo test live_app_server_streams_a_complete_reply -- --ignored
 Timing is estimated, and generated actions, faces, voices, and lip sync can still
 fail. Automatic visual review samples frames rather than observing every instant;
 it can miss defects or misjudge a performance. Its report describes quality, not a
-guarantee. Frame continuity helps within a scene but does not lock identity across
-new locations. The pipeline completes without per-shot human approval and avoids
+guarantee. Portrait anchors reconnect eligible scene openings to the saved performer,
+but do not lock identity across new angles or locations. Native-timing voice conversion
+also requires audiovisual review. The pipeline completes without per-shot human approval and avoids
 automatic rerenders; a technically complete scene can contain reported visual
 issues. Generated dialogue is not independently checked.
 
 The editor has no print pagination or Final Draft import/export. Other renderers
-and separate speech synthesis are outside the main workflow. An opt-in
+and separate speech synthesis are outside the main workflow. The earlier opt-in
 [character consistency experiment](experiments/character-consistency/README.md)
-explores portrait-guided starting images and fixed dialogue audio; it has separate
-setup and limitations.
+contains portrait-guided starting images, fixed dialogue audio, and the original
+Seed-VC investigations. Its fixed-audio approach remains separate from GUI rendering.
 
 `.env`, `.venv`, `.cache`, `screenplay.json`, `settings.json`, and generated `outputs/` stay out of Git.
 The adapted Studio source retains its **GPL-3.0-only** license; see [LICENSE](LICENSE).
