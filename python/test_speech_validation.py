@@ -170,11 +170,33 @@ class ShotAudioValidationTests(unittest.TestCase):
 
 
 class SpeechSetupTests(unittest.TestCase):
+    def test_incompatible_cli_is_rejected_before_reading_model_or_downloading(self):
+        result = subprocess.CompletedProcess(["whisper-cli", "--help"], 0, "", "old CLI --model --file")
+        with patch.object(speech.shutil, "which", return_value="/bin/whisper-cli"), \
+                patch.object(speech.subprocess, "run", return_value=result), \
+                patch.object(speech, "_sha256") as digest, \
+                patch.object(speech.urllib.request, "urlopen") as download:
+            with self.assertRaisesRegex(RuntimeError, "incompatible.*--output-json-full"):
+                speech.check_available()
+            with self.assertRaisesRegex(RuntimeError, "incompatible"):
+                speech.setup()
+            digest.assert_not_called()
+            download.assert_not_called()
+
+    def test_cli_readiness_reads_stderr_and_fails_on_execution_error(self):
+        result = subprocess.CompletedProcess(["whisper-cli", "--help"], 0, "", "\n".join(speech._CLI_OPTIONS))
+        with patch.object(speech.subprocess, "run", return_value=result):
+            speech._check_cli("whisper-cli")
+        with patch.object(speech.subprocess, "run", side_effect=subprocess.TimeoutExpired("whisper-cli", 15)), \
+                self.assertRaisesRegex(RuntimeError, "could not start"):
+            speech._check_cli("whisper-cli")
+
     def test_download_is_pinned_verified_atomic_and_reused(self):
         content = b"model weights"
         digest = hashlib.sha256(content).hexdigest()
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(speech.shutil, "which", return_value="/bin/whisper-cli"), \
+                patch.object(speech, "_check_cli"), \
                 patch.object(speech, "MODEL_BYTES", len(content)), \
                 patch.object(speech, "MODEL_SHA256", digest), \
                 patch.object(speech.urllib.request, "urlopen", return_value=io.BytesIO(content)) as download:
@@ -191,6 +213,7 @@ class SpeechSetupTests(unittest.TestCase):
         content = b"bad model"
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(speech.shutil, "which", return_value="/bin/whisper-cli"), \
+                patch.object(speech, "_check_cli"), \
                 patch.object(speech, "MODEL_BYTES", len(content)), \
                 patch.object(speech, "MODEL_SHA256", "0" * 64), \
                 patch.object(speech.urllib.request, "urlopen", return_value=io.BytesIO(content)):

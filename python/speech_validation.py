@@ -29,6 +29,9 @@ MODEL_SHA256 = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b
 MODEL_BYTES = 487601967
 _TIMEOUT_SECONDS = 180
 _WORDS = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+_CLI_OPTIONS = ("--model", "--file", "--language", "--no-gpu", "--threads",
+                "--output-json-full", "--output-file", "--no-prints",
+                "--suppress-nst", "--temperature", "--no-fallback")
 
 
 class SpeechValidationError(RuntimeError):
@@ -57,11 +60,25 @@ def _atomic_json(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
+def _check_cli(executable: str) -> None:
+    try:
+        result = subprocess.run([executable, "--help"], check=True, capture_output=True,
+                                text=True, timeout=15)
+        help_text = result.stdout + result.stderr
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("Speech verification could not start whisper-cli. Repair whisper-cpp and retry setup.") from exc
+    missing = [option for option in _CLI_OPTIONS if option not in help_text]
+    if missing:
+        raise RuntimeError("The installed whisper-cli is incompatible with speech verification. "
+                           "Upgrade whisper-cpp and retry setup. Missing options: " + ", ".join(missing))
+
+
 def check_available(root: Path | None = None) -> dict:
     """Check the recognizer and pinned model without network access or inference."""
     executable = shutil.which("whisper-cli")
     if executable is None:
         raise RuntimeError("Speech verification needs whisper-cli. Install whisper-cpp and retry setup.")
+    _check_cli(executable)
     model = _root(root) / ".cache" / "whisper" / MODEL_FILENAME
     if (not model.is_file() or model.stat().st_size != MODEL_BYTES
             or _sha256(model) != MODEL_SHA256):
@@ -74,8 +91,10 @@ def check_available(root: Path | None = None) -> dict:
 
 def setup(root: Path | None = None, *, on_progress=None) -> dict:
     """Download the pinned recognition model only during explicit app setup."""
-    if shutil.which("whisper-cli") is None:
+    executable = shutil.which("whisper-cli")
+    if executable is None:
         raise RuntimeError("Speech verification needs whisper-cli. Install whisper-cpp and retry setup.")
+    _check_cli(executable)
     root = _root(root)
     model = root / ".cache" / "whisper" / MODEL_FILENAME
     if model.is_file() and model.stat().st_size == MODEL_BYTES and _sha256(model) == MODEL_SHA256:
