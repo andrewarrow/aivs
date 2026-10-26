@@ -28,6 +28,7 @@ CONFIGS = (
     "tokenizer_config.json", "chat_template.jinja", "quantize_config.json",
     "spatial_upscaler_x2_v1_0_config.json",
 )
+HQ_WEIGHTS = (*WEIGHTS, "transformer-dev.safetensors")
 os.environ["HF_HOME"] = str(CACHE)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -38,16 +39,40 @@ class InvalidCache(RuntimeError):
         super().__init__(f"Truncated or invalid cached model file: {filename}. Retry setup to repair it.")
 
 
-def model_path(download=False, progress_class=None):
+def profile_config(profile="distilled"):
+    """Identity for experiment manifests; changing profile never happens implicitly."""
+    if profile not in ("distilled", "hq"):
+        raise ValueError("Local render profile must be distilled or hq.")
+    return {
+        "backend": "mlx", "model": MODEL_REPO, "model_revision": MODEL_REVISION,
+        "runtime_revision": RUNTIME_REVISION, "profile": profile,
+        "pipeline": "hq-two-stage" if profile == "hq" else "distilled-two-stage",
+        "stage1_steps": 15 if profile == "hq" else 8, "stage2_steps": 3,
+        "quantization": "int8", "low_memory": True, "low_ram_streaming": True,
+        **({"sampler": "res_2s", "cfg_scale": 3.0, "stg_scale": 0.0,
+            "enable_teacache": False} if profile == "hq" else {}),
+    }
+
+
+def model_path(download=False, progress_class=None, *, profile="distilled"):
     from huggingface_hub import snapshot_download
 
+    profile_config(profile)
+    weights = HQ_WEIGHTS if profile == "hq" else WEIGHTS
     if download:
         try:
-            return model_path()
+            return model_path(profile=profile)
         except (OSError, RuntimeError):
             pass
-        if shutil.disk_usage(ROOT).free < 50 * 1024**3:
-            raise RuntimeError("Model setup needs about 50 GiB free for the 43 GB model and download workspace.")
+        required_gib = 70 if profile == "hq" else 50
+        if profile == "hq":
+            try:
+                model_path()
+                required_gib = 22
+            except (OSError, RuntimeError):
+                pass
+        if shutil.disk_usage(ROOT).free < required_gib * 1024**3:
+            raise RuntimeError(f"Model setup needs about {required_gib} GiB free for the selected weights and download workspace.")
         from dotenv import dotenv_values
         token = dotenv_values(ROOT / ".env").get("HF_API")
         if not token or not token.strip():
@@ -56,34 +81,37 @@ def model_path(download=False, progress_class=None):
         token = False
     snapshot = Path(snapshot_download(
         MODEL_REPO, revision=MODEL_REVISION, cache_dir=str(CACHE / "hub"),
-        allow_patterns=[*WEIGHTS, "*.json", "chat_template.jinja", "LICENSE", "README.md"],
+        allow_patterns=[*weights, "*.json", "chat_template.jinja", "LICENSE", "README.md"],
         local_files_only=not download, token=token, max_workers=3, tqdm_class=progress_class,
     ))
     if download:
         # A cached blob may exist but be truncated. HF trusts existing blobs,
         # so explicitly replace only damaged files at this pinned revision.
         from huggingface_hub import hf_hub_download
-        for _ in range(len(WEIGHTS) + len(CONFIGS)):
+        for _ in range(len(weights) + len(CONFIGS)):
             try:
-                validate_snapshot(snapshot)
+                validate_snapshot(snapshot, profile=profile)
                 return snapshot
             except InvalidCache as exc:
                 hf_hub_download(
                     MODEL_REPO, exc.filename, revision=MODEL_REVISION,
                     cache_dir=str(CACHE / "hub"), token=token, force_download=True,
                 )
-    validate_snapshot(snapshot)
+    validate_snapshot(snapshot, profile=profile)
     return snapshot
 
 
-def validate_snapshot(snapshot):
-    missing = [name for name in (*WEIGHTS, *CONFIGS)
+def validate_snapshot(snapshot, *, profile="distilled"):
+    profile_config(profile)
+    weights = HQ_WEIGHTS if profile == "hq" else WEIGHTS
+    missing = [name for name in (*weights, *CONFIGS)
                if not (snapshot / name).is_file() or (snapshot / name).stat().st_size == 0]
     if missing:
-        raise RuntimeError("Model cache is incomplete: " + ", ".join(missing))
+        hint = " Run .venv/bin/python python/quality_backend.py --download-hq first." if profile == "hq" else ""
+        raise RuntimeError("Model cache is incomplete: " + ", ".join(missing) + hint)
     # Check safetensors lengths without reading 43 GB on every startup. This
     # rejects truncated blobs, including a partial snapshot returned offline.
-    for name in WEIGHTS:
+    for name in weights:
         path = snapshot / name
         try:
             with path.open("rb") as reader:
@@ -128,12 +156,15 @@ def doctor():
 
 
 def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
-           audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False):
+           audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False, profile="distilled"):
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
     from render_estimate import RenderEstimate
     from validation import validate_video, validate_supplied_audio
 
+    config = profile_config(profile)
+    if profile == "hq" and audio_file is not None:
+        raise ValueError("The HQ comparison profile generates native audio; fixed audio is unsupported.")
     output = Path(output)
     if (type(frames) is not int or frames < 1
             or any(type(value) is not int or value < 64 or value % 64 for value in (width, height))):
@@ -150,19 +181,25 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
     partial.unlink(missing_ok=True)
     inference_frames = math.ceil((frames - 1) / 8) * 8 + 1
     started = time.monotonic()
-    estimate = RenderEstimate.from_history(output.parent.parent, frames, width, height,
-                                          RUNTIME_REVISION, on_progress)
+    # The installed progress hooks and timing history describe the distilled
+    # architecture. HQ has different sampler calls; show phase heartbeats only.
+    estimate = (RenderEstimate.from_history(output.parent.parent, frames, width, height,
+                                           RUNTIME_REVISION, on_progress)
+                if profile == "distilled" else None)
     with RenderProgress(verbose=3, estimate=estimate) as progress:
         with progress.phase("Loading MLX renderer", "runtime"):
             import mlx.core as mx
             from ltx_pipelines_mlx.distilled import DistilledPipeline
+            if profile == "hq":
+                from ltx_pipelines_mlx.ti2vid_two_stages_hq import TI2VidTwoStagesHQPipeline
             if audio is not None:
                 from ltx_pipelines_mlx.a2vid_distilled import A2VidDistilledPipeline
         with progress.phase("Checking cached model files", "cache"):
-            snapshot = model_path()
+            snapshot = model_path(profile=profile)
         mx.reset_peak_memory()
         with progress.phase("Preparing disk-streamed pipeline", "pipeline"):
-            pipeline_type = A2VidDistilledPipeline if audio is not None else DistilledPipeline
+            pipeline_type = (TI2VidTwoStagesHQPipeline if profile == "hq" else
+                             A2VidDistilledPipeline if audio is not None else DistilledPipeline)
             pipeline = pipeline_type(model_dir=str(snapshot), low_memory=True, low_ram_streaming=True)
         pipeline.generate_audio = audio is None
         generation_options = _image_generation_options(
@@ -170,6 +207,9 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
             frames,
             hold_image_framing,
         )
+        if profile == "hq":
+            generation_options.update(stage1_steps=15, stage2_steps=3, cfg_scale=3.0,
+                                      stg_scale=0.0, enable_teacache=False)
         if audio is not None:
             # The causal video grid needs up to eight extra inference frames.
             # Pad its conditioning track; final muxing uses the original audio.
@@ -180,7 +220,9 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
                 "-c:a", "pcm_s16le", str(conditioning_audio),
             ], check=True, capture_output=True, text=True)
             generation_options["audio_path"] = str(conditioning_audio)
-        with pipeline_activity(pipeline, progress):
+        activity = (progress.phase("HQ generation and decode (15 + 3 steps)")
+                    if profile == "hq" else pipeline_activity(pipeline, progress))
+        with activity:
             pipeline.generate_and_save(
                 prompt=prompt, output_path=str(native), width=width, height=height,
                 num_frames=inference_frames, frame_rate=FPS, seed=seed,
@@ -208,14 +250,12 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
         if not keep_native:
             native.unlink()
     return {
-        "backend": "mlx", "model": MODEL_REPO, "model_revision": MODEL_REVISION,
-        "runtime_revision": RUNTIME_REVISION,
-        "pipeline": "audio-driven-distilled-two-stage" if audio is not None else "distilled-two-stage",
-        "stage1_steps": 8, "stage2_steps": 3, "quantization": "int8",
+        **config,
+        "pipeline": "audio-driven-distilled-two-stage" if audio is not None else config["pipeline"],
         "audio": "supplied" if audio is not None else "generated",
         "inference_frames": inference_frames, "output_frames": frames,
         "elapsed_seconds": round(time.monotonic() - started, 2),
-        "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()},
+        "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()} if estimate else {},
         "source_image": image,
         "source_audio": audio,
         "peak_decode_mlx_memory_gib": round(decode_peak, 2), "video": info,
@@ -283,3 +323,13 @@ def _image_generation_options(source_file, frames, hold_image_framing):
     if frames > 1:
         images.append(ImageConditioningInput.guide(source_file, frames - 1, 1.0))
     return {"images": images}
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Download the optional pinned LTX HQ weights.")
+    parser.add_argument("--download-hq", action="store_true", required=True,
+                        help="Download the dev transformer; adds about 19.2 GB to a complete default cache.")
+    parser.parse_args()
+    print(model_path(download=True, profile="hq"))

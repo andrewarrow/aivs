@@ -25,6 +25,12 @@ Codex planning and automatic visual review use your configured Codex service and
 login. Visual review sends sampled rendered frames to Codex. Video inference and
 media checks run locally; generated dialogue is trusted without transcription.
 
+For a repeatable visual-quality experiment, see
+[Compare production paths](docs/production-comparison.md): baseline local
+rendering, per-shot storyboards with optional local HQ inference, and the same
+storyboards rendered through LTX Pro. This separate CLI compares complete scenes
+with sound and leaves artistic judgments unassigned until review.
+
 ## The core workflow, with a real example
 
 These files come from run `2026-10-26_04-12-06-092171_1035559519`.

@@ -11,6 +11,7 @@ import tempfile
 import time
 
 import quality_backend
+import storyboard as storyboard_assets
 from validation import validate_video
 from render_formats import resolve_format
 
@@ -105,10 +106,7 @@ def _file_sha256(path: Path) -> str:
 
 def _planned_shot_sha256(plan: dict, shot: dict) -> str:
     """Bind execution changes to the approved source, coverage and timing."""
-    content = {"source_sha256": plan.get("source_sha256"),
-               "planning_policy": plan.get("planning_policy"), "shot": shot}
-    return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False,
-                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+    return storyboard_assets.planned_shot_sha256(plan, shot)
 
 
 def _take_seed(base_seed: int, take: int) -> int:
@@ -177,6 +175,8 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
         return False
     if saved.get("character_assets") != report.get("character_assets"):
         return False
+    if saved.get("storyboard") != report.get("storyboard"):
+        return False
     voice = (report.get("character_assets") or {}).get("voice", {})
     if "file" in voice and clip.name == "video.mp4" and clip.is_file():
         converted = saved.get("voice_conversion")
@@ -200,8 +200,8 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
         return False
     continuity = saved.get("continuity")
     if not isinstance(continuity, dict) or any(
-        continuity.get(key) != report["continuity"][key]
-        for key in ("conditioning", "source_shot", "source_frame")
+        continuity.get(key) != report["continuity"].get(key)
+        for key in ("conditioning", "source_shot", "source_frame", "source_image_sha256")
     ):
         return False
     if previous_clip is not None:
@@ -300,6 +300,8 @@ def render_shooting_script(
     render_fn=None,
     resume=False,
     character_profiles=None,
+    storyboard=None,
+    review_enabled=True,
 ) -> dict:
     """Render plan shots in order and publish only a validated assembled video.
 
@@ -314,12 +316,17 @@ def render_shooting_script(
     New GUI runs pass ``character_profiles`` to anchor eligible scene openings
     with saved portraits and convert single-speaker audio to saved voice samples.
     Native picture checkpoints make interrupted conversion resumable separately.
+    An optional run-local ``storyboard`` manifest binds one first frame to every
+    planned shot, overriding inherited frames and portraits. ``review_enabled``
+    can freeze prompts and suppress automatic review for controlled comparisons.
     """
     shots, seconds, fade_out = _validate_plan(plan)
     spec = resolve_format(plan["render_format"]) if "render_format" in plan else None
     width, height = (spec["model_width"], spec["model_height"]) if spec else (WIDTH, HEIGHT)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("seed must be an integer.")
+    if type(review_enabled) is not bool:
+        raise ValueError("review_enabled must be a boolean.")
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     shots_dir = output.parent / "shots"
@@ -333,9 +340,11 @@ def render_shooting_script(
     summaries = []
     clips = []
     visual_reviews = []
-    automatic_review = plan.get("planning_policy") == "single-render-v1"
+    automatic_review = review_enabled and plan.get("planning_policy") == "single-render-v1"
     execution_plan = dict(plan, shots=[dict(shot) for shot in shots])
     activity = on_activity or (lambda message: None)
+    storyboard_bindings = (storyboard_assets.prepare(plan, storyboard, output.parent)
+                           if storyboard is not None else None)
     asset_bindings = None
     if character_profiles is not None:
         import character_conditioning
@@ -374,7 +383,8 @@ def render_shooting_script(
             base_seed = (seed + index) % _SEED_MODULUS
             archive_dir = output.parent / "takes" / f"{index + 1:03d}"
             take = _last_archived_take(archive_dir) + 1
-            use_previous_frame = _uses_previous_frame(shots, index)
+            frame_binding = storyboard_bindings[index] if storyboard_bindings is not None else None
+            use_previous_frame = frame_binding is None and _uses_previous_frame(shots, index)
             previous_clip = clips[-1] if use_previous_frame else None
             image_file = shot_dir / "start-frame.png" if use_previous_frame else None
             assets = asset_bindings[index] if asset_bindings is not None else None
@@ -382,16 +392,21 @@ def render_shooting_script(
             voice = assets["voice"] if assets is not None else {}
             convert_voice = "file" in voice
             native_clip = shot_dir / "video.source.mp4" if convert_voice else clip
-            if not use_previous_frame and "file" in portrait:
+            if frame_binding is not None:
+                image_file = storyboard_assets.resolve_image(frame_binding, output.parent)
+            elif not use_previous_frame and "file" in portrait:
                 image_file = output.parent / portrait["file"]
             source_frame = shots[index - 1]["seconds"] * FPS - 1 if use_previous_frame else None
             continuity = {
-                "conditioning": ("previous-shot-last-frame" if use_previous_frame else
+                "conditioning": ("storyboard-first-frame" if frame_binding is not None else
+                                 "previous-shot-last-frame" if use_previous_frame else
                                  "saved-character-portrait" if image_file is not None else "none"),
                 "source_shot": index if use_previous_frame else None,
                 "source_frame": source_frame,
                 "source_image": str(image_file) if image_file is not None else None,
                 "source_clip_sha256": summaries[-1]["sha256"] if use_previous_frame else None,
+                **({"source_image_sha256": frame_binding["image"]["sha256"]}
+                   if frame_binding is not None else {}),
             }
             report = {
                 "prompt": shot["prompt"],
@@ -409,6 +424,7 @@ def render_shooting_script(
                 "scene_id": shot.get("scene_id"),
                 "continuity": continuity,
                 **({"character_assets": assets} if assets is not None else {}),
+                **({"storyboard": frame_binding} if frame_binding is not None else {}),
             }
             if automatic_review:
                 report.update(planned_prompt=planned_shot["prompt"],
@@ -541,6 +557,12 @@ def render_shooting_script(
                                 shot["adaptation"] = saved["adaptation"]
                                 report["adaptation"] = saved["adaptation"]
                     elif any(shot_dir.iterdir()):
+                        if (shot_dir / "cloud-job.json").exists():
+                            raise ValueError(
+                                "A saved cloud job cannot be matched to this take. "
+                                "Its checkpoint is preserved to prevent a duplicate paid submission; "
+                                "inspect the candidate and provider job before creating another candidate."
+                            )
                         saved_take = saved.get("take", 1) if saved is not None else 1
                         if type(saved_take) is not int or saved_take < 1:
                             saved_take = 1
@@ -576,7 +598,9 @@ def render_shooting_script(
                         save_shot(index, report)
                     shot_started = time.monotonic()
                     if not reuse_native:
-                        if (not use_previous_frame and "file" in portrait
+                        if frame_binding is not None:
+                            image_file = storyboard_assets.resolve_image(frame_binding, output.parent)
+                        elif (not use_previous_frame and "file" in portrait
                                 and _file_sha256(image_file) != portrait["sha256"]):
                             raise ValueError("Saved character portrait changed before rendering.")
                         report["runtime"] = renderer(
@@ -639,7 +663,7 @@ def render_shooting_script(
                     "runtime": runtime,
                     "continuity": continuity,
                     "sha256": report["sha256"],
-                    **({key: report[key] for key in ("character_assets", "native_sha256", "voice_conversion")
+                    **({key: report[key] for key in ("character_assets", "storyboard", "native_sha256", "voice_conversion")
                         if key in report}),
                     **({key: report[key] for key in (
                         "planned_prompt", "planned_shot_sha256", "prompt_template", "adaptation",
@@ -693,6 +717,7 @@ def render_shooting_script(
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "shots": summaries,
         "video": video_info,
+        **({"image_conditioning": "storyboard-first-frame"} if storyboard_bindings is not None else {}),
         **({"character_conditioning": "saved-character-assets-v1",
             "identity_review": "pending: compare portraits, voices, spoken words, and lip sync"}
            if asset_bindings is not None else {}),

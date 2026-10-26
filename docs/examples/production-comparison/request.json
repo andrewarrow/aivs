@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "screenplay": "screenplay.txt",
+  "baseline_plan": "baseline.json",
+  "controlled_plan": "controlled.json",
+  "storyboards": [
+    {
+      "shot": 1,
+      "image": "../../../experiments/character-consistency/references/desert-lena.png",
+      "description": "Sue, played by Lena, looks screen right at Joe off camera. Preserve her face, navy crewneck, station wagon and dusk lighting."
+    },
+    {
+      "shot": 2,
+      "image": "../../../experiments/character-consistency/references/desert-owen.png",
+      "description": "Reverse angle: Joe, played by Owen, looks screen left at Sue off camera. Preserve his face, denim overshirt, station wagon and matching dusk lighting."
+    },
+    {
+      "shot": 3,
+      "image": "../../../experiments/character-consistency/references/desert-lena.png",
+      "description": "Return to Sue for a restrained silent reaction. Her worry softens into resolve; she gives one small nod."
+    }
+  ],
+  "requirements": [
+    "Sue says exactly: We still have some time.",
+    "Joe replies exactly: Then let's keep going.",
+    "Sue's silent reaction makes her decision to continue clear through a small nod and a restrained change in expression.",
+    "Preserve the characters' identities, clothing, screen directions and dusk setting across the three shots."
+  ],
+  "candidate_seeds": [83, 1000086, 2000089],
+  "local_profile": "hq",
+  "premium_model": "ltx-2-5-pro"
+}
