@@ -1,236 +1,272 @@
 # AIVS
 
-A native Rust desktop workspace for local AI video generation, using egui 0.35,
-winit, and wgpu. The first migrated workflow is Hunter's **option 8**: LTX-2.5
-generates speech and video together from the screenplay shown in the workspace.
-Python still owns the MLX pipeline; Rust owns setup, controls, and process lifetime.
-The existing **Codex** menu and optional chat remain available after setup.
+AIVS turns a human-readable screenplay into an AI-generated video with speech.
+Write a scene, cast its characters, and choose **Generate video**. The app uses
+**Codex through its app-server protocol to turn the screenplay into a shooting
+script**, then uses **LTX-2.5 to render each shot's video and audio locally** on
+an Apple Silicon Mac.
 
-## Run
-
-Use an Apple Silicon Mac with Metal support and Rust 1.92 or newer, then run:
-
-```sh
-cargo run
-# Or choose a directory for local setup, video outputs, and Codex:
-cargo run -- /path/to/workspace
+```text
+Screenplay + cast
+       ↓
+Codex app-server → shooting script (timing, staging, dialogue, camera, sound)
+       ↓
+Python validates the plan → LTX-2.5 renders connected shots
+       ↓
+Speech and video checks → FFmpeg assembly → video.mp4
 ```
 
-On startup AIVS checks the selected workspace before showing its controls:
+The desktop app is Rust; the video pipeline is Python using MLX on Apple's GPU.
+Codex planning uses your configured Codex service and login. Video inference and
+speech verification run locally.
 
-- `.env` must contain a nonempty `HF_API`. If missing, the blocking setup modal
-  links to Hugging Face access tokens and shows where to create the file. AIVS
-  does not create or copy credentials. See `.env.example`, then use **Check again**.
-- `.venv/bin/python` must be Python 3.12 with the tested packages and pinned MLX
-  runtime. Setup uses `uv` directly, without the old shell menus.
-- `.cache/huggingface` must contain the pinned LTX-2.5 q8 checkpoint, text encoder,
-  configuration, audio VAE, and vocoder. Startup checks every required file,
-  safetensors headers and lengths, and an actual Apple GPU calculation.
+## The core workflow, with a real example
 
-Missing Python packages and model files are installed automatically after the
-token is present. If `uv`, FFmpeg, or `whisper-cpp` is missing, setup installs them through an
-existing Homebrew installation. Without Homebrew, it shows an installation error
-and **Retry setup**. Python installation shows activity; model downloads report
-file/byte progress. Initial model setup downloads about **43 GB** and requires
-**50 GiB free**. Cached files are reused, and interrupted downloads can be retried.
-Speech verification also caches a checksum-verified Whisper small model (about
-488 MB) in `.cache/whisper`; transcription runs locally on the CPU.
-Errors keep setup locked. A ready installation skips the setup modal.
+These files come from run `2026-10-26_04-12-06-092171_1035559519`.
+Copies live in the repository so you can read them without a local render:
+[screenplay.txt](docs/examples/desert-road/screenplay.txt) →
+[shooting-script.txt](docs/examples/desert-road/shooting-script.txt).
 
-Choose **Generate video** to plan and film the displayed screenplay as connected
-4–12 second shots with native jointly generated speech at **1280×704 and 24 fps**.
-The planner budgets the exact dialogue and source actions, with a brief settling
-beat instead of a mandatory silent ending. Timing remains a heuristic, not a
-guarantee that the model completes every action. **Stop**
-interrupts the Python process group, including FFmpeg. Closing AIVS also stops
-its active work.
-Each run saves its prompt, random seed, dialogue timing, runtime details, and
-status in `outputs/<timestamp>_<seed>/render.json`. Screenplay renders check each
-take's recognized words against the source dialogue before continuing. The
-assembled video must also pass speech, decoded-frame, and audio/video timing
-checks before it is published as `video.mp4`.
-The progress bar estimates overall completion and time remaining using measured
-transformer blocks, denoising steps, and decoder tiles, with time reserved for
-encoding and validation. Successful runs save phase timings so later estimates
-adapt to this Mac. Estimates can change with GPU load and cache performance;
-100% is reserved for a validated result.
+### 1. Start with a screenplay
 
-While Codex prepares the shooting script, an elapsed timer and spinner show that
-the job is active. Activity opens automatically and displays Codex messages and
-diagnostics as they arrive, with periodic updates during quiet stretches and
-visible validation retries. Raw Codex events and diagnostics are saved as they
-arrive in the run's output directory, including when planning times out or stops.
+The input describes the story in terms a writer understands: a setting, actions,
+characters, and dialogue. Here is the original text:
 
-The director instructions live in `python/shooting-script-instructions.txt`.
-Codex resolves physical staging, prop handoffs, dialogue timing, and quiet
-reactions there, then reviews the plan for continuity before returning it.
-Each shot prompt must include its essential opening state and sound through the
-end of the take; the separate start/end notes are for continuity review and are
-not passed to the model. Python checks source dialogue, beat order, duration,
-and token limits. Story-specific fixes belong in the director instructions,
-rather than Python rules for particular objects or actions.
+```text
+INT. DESERT ROAD - DUSK
 
-Within a scene, every shot after the first starts from the previous shot's final
-decoded frame. The planner must preserve that opening composition; a new camera
-angle must develop through a continuous move. This carries actual clothes,
-faces, positions, and props into the next generation. New scenes reset the frame
-reference. This backend cannot independently lock each person's identity across
-new locations, and first-frame guidance cannot guarantee freedom from later drift.
+A two-lane road and cuts through red rock. An old station wagon sits on the shoulder, its hood raised.
 
-Speech verification sends only generated audio to Whisper, never the expected
-script. Missing, substituted, repeated, or extra recognized words stop the run;
-completed takes remain available for review. Each shot and the final assembly
-save `speech-recognition.json`, `speech-transcript.txt`, and
-`speech-validation.json`. Missing recognition tools or weights also stop the run
-before video inference. Recognition can mishear valid dialogue or miss
-unintelligible sounds; an exact transcript match is not proof of a flawless
-performance, correct speaker, or lip synchronization. Picture and sound still
-need review. The raw-prompt CLI path retains its existing structural checks.
+SUE, 30s, turns a battered postcard over in her hands. JOE, late 20s, emerges from behind the engine.
 
-Completed videos appear inside AIVS with native macOS playback controls for
-play/pause, seeking, volume, and fullscreen, including the generated audio.
-**Show files** opens the output directory. Playback pauses when its preview is
-hidden, and previous results remain playable while another render runs.
+JOE: "Good news. It's definitely the car."
 
-The left workspace starts with a 50/50 split: an editable screenplay above the
-video controls. Drag the horizontal divider to give the screenplay 30–70% of the
-height, or double-click it to restore 50%. With the divider focused, use Up/Down
-to resize or Home to reset.
+Sue almost smiles. She looks down the empty road.
 
-Click script text to edit scene headings, action, character cues, parenthetical
-instructions, dialogue, and transitions. The element selector changes the selected
-paragraph's format. **+ Insert** adds an element after it; **Edit** moves or deletes
-it, or renames a character throughout the script while preserving its casting.
-The paper grows as you write; this first pass has no print pagination or Final
-Draft file import/export.
+SUE: "My dad said you could see the ocean from here."
 
-- **Enter** creates the next element: heading → action, character → dialogue,
-  dialogue → character. **Shift+Enter** adds a line break within an element.
-- **Tab** after a character or within dialogue adds **(instructions)** with the
-  cursor inside the parentheses. **Enter** finishes the instruction and continues
-  dialogue. Inserting an instruction mid-speech preserves the remaining words.
-- **Tab** on an empty action paragraph changes it to a character cue.
-  **Shift+Tab** changes to the previous element type.
-- **Up/Down** at the start/end moves between elements. **Backspace** deletes text
-  normally; once the element is empty, each press moves back through instructions
-  → dialogue → character → action → scene heading, ready for `INT.` or `EXT.`.
-  Another press on an empty scene heading removes it and places the cursor at
-  the end of the previous element. Keep pressing to shorten the script; one blank
-  heading remains so you can start writing again. **Edit → Delete element** also
-  removes a paragraph.
-  **Undo/Redo** and **⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z** cover text,
-  formatting, insertion, deletion, and casting.
+JOE (looking around): "He was an optimistic man."
 
-Script text and cast assignments autosave to `screenplay.json` in the selected
-workspace and reload on launch. **⌘/Ctrl+S** saves immediately. Save errors are
-shown with a retry control; an unreadable document is preserved and must be
-reloaded before editing. Undo history lasts for the current session. Generation
-uses the edited script, including added scenes, and requires a cast for each role.
+FADE OUT.
+```
 
-Character reference images appear in a scrollable gallery beside the workspace.
-Gallery selection browses the library. Drag a character's name or portrait onto
-any role cue, parenthetical, or dialogue to cast that role throughout the script.
-Click or keyboard-activate the **Uncast / played by** label beside a character cue
-to choose or clear its cast. Every occurrence shows the assigned performer. The
-sample script's roles are **Sue and Joe**; for example, cast **Ava as Sue** and
-**Eli as Joe**. Script names and dialogue stay unchanged when casting or recasting.
-Python resolves the assigned `@name` references and adds appearance and voice
-descriptions, with explicit performer-to-role bindings in the render prompt.
-GUI renders do not infer cast from bare names in the script, even when a role
-shares a saved character's name.
-The GUI uses the saved descriptions for the first shot of each scene, then carries
-the previous frame through subsequent shots. The director chooses framing that
-keeps the source actions visible. No joint image is required. Cast resolution
-has no two-character limit. The renderer's image inputs anchor complete frames, rather than separate
-per-person identities, so the GUI does not feed solo portraits into an ensemble
-scene. Saved photos remain available for a future identity-conditioning backend;
-text guidance does not guarantee exact likeness or voice identity.
+### 2. Codex turns the story into directions the video model can use
 
-For image-guided CLI renders, a character
-may include an optional `scene_image` record pointing to `scene-reference.png`;
-it supplies the whole first video frame and is anchored again at the end to hold
-the composition. The `image` (`reference.png`) remains the gallery portrait and
-is the first-frame fallback when there is no scene image. Square portraits may
-be cropped or frame the character too closely for landscape video.
-All nine imported characters include wide references for the default desert scene
-while keeping their original portraits in the gallery. The built-in imagegen
-prompts are saved beside the images as `scene-reference.txt`. For a different
-setting, provide a matching scene reference or use `--character-text-only`.
-Each render saves copies of its character profiles and reference assets beside
-the original and expanded prompts. Native
-speech follows the voice description; voice samples do not lock voice identity.
-The gallery and renderer use the workspace's `characters/` directory, falling back
-to this checkout's imported library. CLI renders also accept `--character NAME`
-(repeatable) and `--character-text-only` for scenes with multiple character images.
+The app sends the screenplay, cast descriptions, ordered story beats, and
+[director instructions](python/shooting-script-instructions.txt) to Codex.
+A **beat** is one source action or dialogue line. Codex divides those beats into
+timed shots and specifies where people stand, what they do, how the camera sees
+them, and what should be heard.
 
-An opt-in [character consistency prototype](experiments/character-consistency/README.md)
-uses saved portraits for shot starting images and fixed Kokoro dialogue to drive
-video. It compares Lena and Owen in two locations and keeps takes pending identity
-review. Setup, commands, and known limitations are documented there; the broader
-implementation plan is in [PLAN.md](PLAN.md).
-Alternate renderers, speech synthesis, and the remaining
-Hunter menu options have not been migrated. Generation uses local cached models;
-structural file checks do not establish performance quality or lip synchronization.
-The Python sources currently ship in this checkout; keep `python/` alongside the
-source when building. `.env`, `.venv`, `.cache`, and generated outputs are ignored
-by Git. No runtime path points back to the Hunter checkout.
+In this example, it produces **two shots totaling 21 seconds**:
 
-Codex is resolved from `AIVS_CODEX_PATH`, a binary alongside AIVS (or in a macOS
-bundle's `Contents/Resources`), then `PATH`. For example:
+| Shot | Duration | Source beats | Planned action |
+| --- | --- | --- | --- |
+| 1 | 10 seconds | 1–4 | Establish the wagon and postcard; Joe steps into view and delivers his first line; Sue almost smiles and looks down the road. |
+| 2 | 11 seconds | 5–6 | Sue delivers her line about the ocean; Joe looks around and replies; the scene ends on a quiet reaction. |
+
+An excerpt from the actual first shot shows the added physical detail:
+
+> SUE stands on the gravel screen left beside the front passenger door, holding a battered postcard in both hands. JOE stands on the ground screen right alongside the engine bay, empty hands clear of the engine, upper body partly screened by the raised hood. His feet and route along the near fender remain visible.
+
+The plan also directs sound and the end of the action:
+
+> Finish on this quiet reaction with environmental sound only: dry wind, faint cooling-engine ticks, and gravel crunch synchronized with JOE's step.
+
+The [full shooting script](docs/examples/desert-road/shooting-script.txt) includes
+exact dialogue, appearance and voice descriptions, and start/end continuity notes
+for each shot. This translation is the core of AIVS: turning a short human scene
+into explicit, timed instructions for a video model.
+
+This saved example is a historical planning artifact, not a guarantee of visual
+quality or a template for every current rule. For example, its second shot calls
+for a tighter framing; the current renderer carries forward the previous frame,
+and current director instructions require reframing to develop through camera
+movement within a scene.
+
+### 3. Validate, render, and assemble
+
+Python checks that the plan covers the source beats in order, preserves dialogue,
+and fits duration and model token limits. It fills dialogue placeholders with the
+source lines and saves both `shooting-script.json` for the renderer and
+`shooting-script.txt` for people to inspect. Invalid plans get one correction
+attempt through Codex before the run fails.
+
+LTX-2.5 generates video and speech together in **4–12 second shots at 1280×704,
+24 fps**. Within a scene, each shot after the first starts from the previous
+shot's final decoded frame to carry forward faces, clothing, positions, and props.
+A new scene resets that frame reference. The model receives each shot's complete
+prompt; the separate start/end notes support continuity review.
+
+Whisper transcribes each take locally and the app compares the recognized words
+with the source dialogue. FFmpeg assembles the shots and applies the final fade
+when requested. The assembled result must pass speech, decoded-frame, and
+audio/video timing checks before it is published as `video.mp4`.
+
+## Run your first scene
+
+### Prerequisites
+
+- An **Apple Silicon Mac with Metal support** and **Rust 1.92+**.
+- **Homebrew**, so setup can install `uv`, FFmpeg, and `whisper-cpp` if missing.
+- A **Hugging Face access token** for downloading models.
+- The **Codex CLI**, signed in and available on `PATH` (or set `AIVS_CODEX_PATH`).
+  Codex is required for screenplay planning; the chat panel is optional.
+- **50 GiB of free disk space** for first setup. Video model downloads are about
+  **43 GB**; speech verification also caches a roughly **488 MB** Whisper model.
+
+From this checkout:
+
+1. Create `.env` if it does not already exist, using [.env.example](.env.example)
+   as a template. Set `HF_API` to your Hugging Face token.
+2. Start the app:
+
+   ```sh
+   cargo run
+   ```
+
+3. Let setup prepare Python 3.12 in `.venv`, install the pinned packages, download
+   models, and verify the GPU. Downloads reuse the cache. Use **Check again**
+   after adding a token, or **Retry setup** after fixing a setup error.
+4. If needed, choose **Codex → Sign in with ChatGPT** and finish in your browser.
+   An existing Codex login is reused.
+5. Edit the screenplay and cast every role. Drag a gallery character onto a role,
+   or use its **Uncast / played by** control. For the sample, try **Ava as Sue**
+   and **Eli as Joe**. Casting keeps the script's role names and dialogue intact.
+6. Choose **Generate video**. **Activity** shows planning and rendering progress.
+   When complete, play the result in the app or choose **Show files**.
+
+**Stop** interrupts the render and its child processes; closing AIVS also stops
+active work. Partial outputs remain available for inspection.
+
+By default, the current directory is the workspace. To keep scripts, caches,
+and outputs elsewhere, pass an existing directory:
 
 ```sh
+cargo run -- /path/to/workspace
+# To select a specific Codex executable:
 AIVS_CODEX_PATH=/absolute/path/to/codex cargo run
 ```
 
-Choose **Codex → Sign in with ChatGPT** if needed, finish in your browser, then
-enable **Show chat**. Install the Codex CLI to use this optional feature. An
-existing Codex ChatGPT login is picked up automatically.
-Send messages with **Send** or **⌘/Ctrl+Enter**; **Stop** interrupts the current turn.
-On narrow windows chat fills the content area. Closing chat restores the video workspace.
+Put `.env` in the selected workspace. Keep this checkout's `python/` directory
+alongside the source when building; it contains the runtime pipeline.
 
-## Integration
+### Editing and casting
 
-`src/main.rs` owns the one-window native event/render loop. `src/app.rs` owns
-the setup gate, video workspace, and optional chat UI. `src/video.rs` runs
-setup/render processes on a worker thread and reads Python's prefixed JSON events
-and activity logs. `src/playback.rs` embeds AVKit in the native window.
-`python/video.py` is the entry point; `render_estimate.py` learns phase budgets
-from successful reports. `quality_backend.py`,
-`quality_progress.py`, `dialogue_helpers.py`, and `validation.py` preserve the
-needed Hunter render, progress, timing, and validation behavior.
-`src/codex.rs` is the adapted Studio
-app-server client: it runs a background child process and exchanges newline-delimited
-JSON over stdin/stdout using the [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server).
-It initializes the connection, reads the account, starts browser login, creates
-a thread, streams turns, interrupts work, and kills/reaps the child on shutdown.
+Scripts and cast assignments autosave to `screenplay.json` in the workspace.
+**⌘/Ctrl+S** saves immediately. Click text to edit; use the element selector,
+**+ Insert**, and **Edit** for formatting, insertion, deletion, and role renaming.
 
-The Codex CLI manages credentials and login callbacks; AIVS does not copy or
-store tokens. It inherits the user's Codex model and reasoning defaults.
-Threads use `workspace-write` scoped to the selected directory, with network
-access disabled and `approvalPolicy: never`, matching Studio's basic setup.
-Requests needing unsupported interactive client methods receive an RPC error.
-Conversations are not restored in the GUI after reconnecting or restarting.
-**Reconnect** starts a fresh connection and chat while preserving the unsent draft.
+- **Enter** creates the next screenplay element; **Shift+Enter** inserts a line break.
+- **Tab** in dialogue adds a parenthetical instruction. On an empty action, it
+  changes the element to a character cue; **Shift+Tab** selects the previous type.
+- **Backspace** on an empty element steps backward through its formats, then
+  removes it. One blank scene heading remains when the script is cleared.
+- **⌘/Ctrl+Z** and **⌘/Ctrl+Shift+Z** undo and redo edits, including casting.
 
-No Studio dashboards or deployment integrations are included.
-The adapted source retains Studio's GPL-3.0-only license; see `LICENSE`.
+The gallery supplies saved appearance and voice descriptions. The GUI uses these
+for a scene's first shot, then carries frames forward. Solo gallery portraits
+are not supplied as separate identity references to an ensemble render.
 
-## Verify
+## Where to start in the code
+
+Follow the main path: **UI → Python entry point → Codex planner → shot renderer**.
+
+| File | Responsibility |
+| --- | --- |
+| [src/app.rs](src/app.rs) | Desktop workspace, setup gate, and optional chat UI. |
+| [src/screenplay.rs](src/screenplay.rs) | Screenplay editor, casting, and document persistence. |
+| [src/video.rs](src/video.rs) | Starts setup/render workers, handles cancellation, and reads Python progress events. |
+| [python/video.py](python/video.py) | Pipeline entry point; `generate_screenplay()` coordinates planning and rendering. |
+| [python/shooting_script.py](python/shooting_script.py) | Parses story beats, calls Codex, validates the plan, and saves shooting scripts. |
+| [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
+| [python/shot_renderer.py](python/shot_renderer.py) | Renders sequential shots, carries frames forward, checks speech, and assembles the result. |
+| [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
+| [python/speech_validation.py](python/speech_validation.py), [python/validation.py](python/validation.py) | Speech matching and media checks. |
+| [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration. |
+| [src/main.rs](src/main.rs), [src/playback.rs](src/playback.rs) | Native egui/winit/wgpu window and macOS AVKit playback. |
+
+### How the Codex integration works
+
+AIVS launches `codex app-server` and exchanges newline-delimited JSON over
+stdin/stdout using the [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server).
+The planner in `python/shooting_script.py` initializes a connection, creates an
+ephemeral read-only thread, and starts a turn with the screenplay and a JSON
+output schema. It streams activity into the UI, then validates the returned plan.
+
+The Rust client in `src/codex.rs` handles login and optional chat separately.
+**Show chat** opens that panel; chat threads use `workspace-write` in the selected
+workspace, with network access disabled and `approvalPolicy: never`. Reconnecting
+starts a fresh chat. The Codex CLI owns credentials, and AIVS inherits its model
+and reasoning defaults.
+
+Change story direction in the director instructions. Keep Python responsible for
+source fidelity, timing bounds, and rendering contracts rather than rules tied
+to particular story props.
+
+## Inspect and debug a run
+
+Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
+
+| Artifact | What to inspect |
+| --- | --- |
+| `screenplay.txt`, `screenplay-request.json` | Original script and cast bindings. |
+| `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |
+| `shooting-script-request-*`, `shooting-script-response-*` | What the planner sent to Codex and received back. |
+| `shooting-script-events-*.jsonl`, `shooting-script-errors-*.txt` | Live protocol events and diagnostics, including failed or stopped planning. |
+| `shots/001/`, `shots/002/`, … | Individual takes and their reports. |
+| `speech-recognition.json`, `speech-transcript.txt`, `speech-validation.json` | Speech evidence for individual shots and the final assembly. |
+| `render.json` | Seed, status, prompts, timing, runtime details, and errors. |
+| `video.mp4` | Final validated assembly, present after a successful render. |
+
+For planning work, you can skip video inference after completing setup. From the
+checkout using its default workspace:
+
+```sh
+.venv/bin/python python/video.py render \
+  --script-file docs/examples/desert-road/screenplay.txt \
+  --cast SUE=ava --cast JOE=eli \
+  --plan-only
+```
+
+This still calls Codex and uses the cached tokenizer. It generates a new plan,
+which may differ from the saved example. Remove `--plan-only` to render as well.
+`--shooting-script /path/to/shooting-script.json` reuses a plan after revalidating
+it against the current script and cast.
+
+## Verify changes
 
 ```sh
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 -m unittest discover -s python -v
-# Optional: installs Python into a temporary workspace, using an existing cache.
+```
+
+The suites cover editing, casting, setup, planning, cancellation, media validation,
+Codex protocol handling, and responsive UI layout. Optional integration checks:
+
+```sh
+# Reuse an existing model cache while testing setup in a temporary workspace.
 AIVS_TEST_CACHE=/absolute/path/to/.cache/huggingface \
   cargo test live_setup_installs_python_then_skips_installation_on_the_next_launch -- --ignored
-# Optional: uses the existing ChatGPT login and a small inference request.
+# Use an existing ChatGPT login for a small live Codex request.
 cargo test live_app_server_streams_a_complete_reply -- --ignored
 ```
 
-Tests cover the startup lock, missing credentials, model completeness, failed
-renders, process-group cancellation, real FFmpeg validation, and GUI layout at
-narrow, tablet, laptop, and desktop sizes, plus the existing Codex protocol tests.
-Browser OAuth completion requires an interactive sign-in. The optional setup
-test reuses a cache without downloading model files or using real credentials.
+## Current limits
+
+Timing is estimated, and generated actions, faces, voices, and lip sync still
+need human review. Frame continuity helps within a scene but does not lock
+identity across new locations. Whisper can mishear dialogue; a matching transcript
+does not prove the correct speaker or a convincing performance. Speech mismatches
+stop the run and leave completed takes available for review.
+
+The editor has no print pagination or Final Draft import/export. Other renderers
+and separate speech synthesis are outside the main workflow. An opt-in
+[character consistency experiment](experiments/character-consistency/README.md)
+explores portrait-guided starting images and fixed dialogue audio; it has separate
+setup and limitations.
+
+`.env`, `.venv`, `.cache`, `screenplay.json`, and generated `outputs/` stay out of Git.
+The adapted Studio source retains its **GPL-3.0-only** license; see [LICENSE](LICENSE).
