@@ -249,9 +249,7 @@ impl App {
             .exact_size(gallery_width)
             .resizable(false)
             .show(ui, |ui| {
-                if let Some(character) = self.characters.ui(ui) {
-                    self.video.select_character(character);
-                }
+                self.characters.ui(ui);
             });
         if self.chat_open {
             if ui.available_width() < 680.0 {

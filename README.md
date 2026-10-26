@@ -2,7 +2,7 @@
 
 A native Rust desktop workspace for local AI video generation, using egui 0.35,
 winit, and wgpu. The first migrated workflow is Hunter's **option 8**: LTX-2.5
-generates speech and video together using the original Nancy default prompt.
+generates speech and video together from the screenplay shown in the workspace.
 Python still owns the MLX pipeline; Rust owns setup, controls, and process lifetime.
 The existing **Codex** menu and optional chat remain available after setup.
 
@@ -35,9 +35,9 @@ file/byte progress. Initial model setup downloads about **43 GB** and requires
 **50 GiB free**. Cached files are reused, and interrupted downloads can be retried.
 Errors keep setup locked. A ready installation skips the setup modal.
 
-Choose **Generate video** to run the displayed prompt as one continuous shot
-with native jointly generated speech. Dialogue determines the duration: the
-default produces **8 seconds at 1280×704 and 24 fps**. **Stop** interrupts the
+Choose **Generate video** to perform the displayed screenplay as one continuous
+shot with native jointly generated speech at **1280×704 and 24 fps**. All spoken
+lines determine the duration. **Stop** interrupts the
 Python process group, including FFmpeg. Closing AIVS also stops its active work.
 Each run saves its prompt, random seed, dialogue timing, runtime details, and
 status in `outputs/<timestamp>_<seed>/render.json`. Only a video that passes
@@ -56,13 +56,21 @@ hidden, and previous results remain playable while another render runs.
 The left workspace starts with a 50/50 split: a one-page screenplay preview above
 the existing video context. Drag the horizontal divider to give the screenplay
 30–70% of the height, or double-click it to restore 50%. With the divider focused,
-use Up/Down to resize or Home to reset. The sample scene is a preview; video
-generation still uses the prompt below it.
+use Up/Down to resize or Home to reset. The page and generation share the same
+scene data, with explicit speaker labels for all five lines of dialogue.
 
 Character reference images appear in a scrollable gallery beside the workspace.
-Click a character's name or portrait to select them and update the prompt and
-spoken introduction. Like Hunter, Python resolves saved names and `@name` references
-outside quoted dialogue and adds appearance and voice descriptions. A character
+Gallery selection browses the library; the screenplay determines the cast.
+Python resolves saved names and `@name` references outside quoted dialogue and
+adds appearance and voice descriptions. The current scene uses **Ava and Eli**.
+The GUI renders from their saved descriptions, with fixed-camera, wide-framing
+instructions and no required joint image. Cast resolution has no two-character
+limit. The renderer's image inputs anchor complete frames, rather than separate
+per-person identities, so the GUI does not feed solo portraits into an ensemble
+scene. Saved photos remain available for a future identity-conditioning backend;
+text guidance does not guarantee exact likeness or voice identity.
+
+For image-guided CLI renders, a character
 may include an optional `scene_image` record pointing to `scene-reference.png`;
 it supplies the whole first video frame and is anchored again at the end to hold
 the composition. The `image` (`reference.png`) remains the gallery portrait and

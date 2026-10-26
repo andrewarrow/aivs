@@ -14,7 +14,6 @@ use std::{
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/video.py");
 const REQUIREMENTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/requirements.txt");
-const DEFAULT_PROMPT: &str = include_str!("../python/default-prompt.txt");
 
 #[derive(Debug, PartialEq)]
 enum Setup {
@@ -185,7 +184,12 @@ impl Worker {
 
     fn render(&self, prompt: &str) -> Result<(), String> {
         let mut command = self.python("render");
-        command.arg("--prompt").arg(prompt);
+        // Hunter's successful two-person native renders use both saved profiles
+        // without imposing either character's solo portrait on the whole scene.
+        command
+            .arg("--prompt")
+            .arg(prompt)
+            .arg("--character-text-only");
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
@@ -368,7 +372,6 @@ fn read_output(
 
 pub struct VideoWorkspace {
     root: PathBuf,
-    prompt: String,
     setup: Setup,
     job: Option<Job>,
     rendering: bool,
@@ -394,7 +397,6 @@ impl VideoWorkspace {
     fn idle(root: PathBuf) -> Self {
         Self {
             root,
-            prompt: DEFAULT_PROMPT.trim().to_owned(),
             setup: Setup::Checking,
             job: None,
             rendering: false,
@@ -512,22 +514,6 @@ impl VideoWorkspace {
         self.setup == Setup::Ready
     }
 
-    pub fn select_character(&mut self, character: &crate::characters::Character) {
-        let name = &character.name;
-        self.prompt = format!(
-            "A single continuous cinematic shot of {name}. \
-             Frame this as a locked-off medium shot with {name}'s entire head and torso visible down to the waist, \
-             leaving landscape around them throughout. \
-             {name} makes eye contact with the camera, and speaks a short line directly to the viewer \
-             \"hello everyone my name is {name} and I am so excited to be here talking with you\", \
-             with clear natural mouth movement synced to their words. Their facial features remain \
-             consistent, and their expression is calm and believable. A fixed tripod camera at eye level \
-             holds a constant focal length and camera-to-subject distance for the entire shot. {name} \
-             stays at the same distance while speaking, with only natural head and body motion. The scene is filled with cool \
-             early-morning light, open space, drifting sand, and dramatic rock formations in the background."
-        );
-    }
-
     pub fn setup_ui(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show(ui, |ui| {
             if self.setup == Setup::Checking {
@@ -592,9 +578,6 @@ impl VideoWorkspace {
                         .wrap(),
                 );
                 ui.add_space(16.0);
-                ui.strong("Prompt");
-                ui.add(egui::Label::new(&self.prompt).wrap().selectable(true));
-                ui.add_space(16.0);
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
@@ -603,7 +586,7 @@ impl VideoWorkspace {
                         )
                         .clicked()
                     {
-                        self.start(Task::Render(self.prompt.clone()));
+                        self.start(Task::Render(crate::screenplay::render_prompt()));
                     }
                     if self.rendering
                         && ui

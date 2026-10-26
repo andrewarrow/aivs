@@ -153,7 +153,9 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
 
 #[test]
 fn sample_screenplay_fits_one_letter_page_at_supported_scales() {
-    for width in [230.0, 612.0, 900.0] {
+    // Narrow panes intentionally scroll horizontally; test paper bounds with
+    // enough viewport width to paint the entire page at each supported scale.
+    for width in [560.0, 612.0, 900.0] {
         let ctx = egui::Context::default();
         let output = ctx.run_ui(
             egui::RawInput {
@@ -263,7 +265,7 @@ fn screenplay_divider_drags_to_limits_and_resets_with_mouse_and_keyboard() {
 }
 
 #[test]
-fn clicking_character_names_and_portraits_replaces_the_displayed_prompt() {
+fn gallery_selection_keeps_the_screenplay_and_hides_the_old_prompt() {
     let (mut app, _commands) = app();
     let ctx = egui::Context::default();
     let frame = |app: &mut App, events| {
@@ -309,34 +311,21 @@ fn clicking_character_names_and_portraits_replaces_the_displayed_prompt() {
                 },
             ],
         );
-        let prompt = output
+        let labels = output
             .shapes
             .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::epaint::Shape::Text(text)
-                    if text
-                        .galley
-                        .text()
-                        .starts_with("A single continuous cinematic shot") =>
-                {
-                    Some(text.galley.text())
-                }
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text()),
                 _ => None,
             })
-            .expect("prompt must be visible");
-        assert!(prompt.starts_with(&format!("A single continuous cinematic shot of {name}.")));
-        assert!(prompt.contains(&format!(
-            "locked-off medium shot with {name}'s entire head and torso visible down to the waist"
-        )));
-        assert!(prompt.contains("leaving landscape around them throughout"));
-        assert!(prompt.contains(
-            "fixed tripod camera at eye level holds a constant focal length and camera-to-subject distance for the entire shot"
-        ));
-        assert!(prompt.contains(&format!(
-            "{name} stays at the same distance while speaking, with only natural head and body motion"
-        )));
-        assert!(prompt.contains(&format!("my name is {name}")));
-        assert!(!prompt.contains("nancy"));
-        assert!(prompt.contains("dramatic rock formations"));
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"EXT. DESERT ROAD - DUSK"));
+        assert!(labels.contains(&"Generate video"));
+        assert!(!labels.contains(&"Prompt"));
+        assert!(
+            !labels
+                .iter()
+                .any(|text| text.starts_with("A single continuous cinematic shot"))
+        );
     }
 }

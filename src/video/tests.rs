@@ -219,7 +219,7 @@ fn child_failure_cannot_be_mistaken_for_a_ready_environment() {
 
 #[cfg(unix)]
 #[test]
-fn renderer_receives_the_selected_prompt_as_a_single_argument() {
+fn screenplay_reaches_python_with_both_saved_characters_and_all_dialogue() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -230,9 +230,16 @@ fn renderer_receives_the_selected_prompt_as_a_single_argument() {
         r#"#!/usr/bin/env python3
 import json, pathlib, sys
 pathlib.Path('args.json').write_text(json.dumps(sys.argv[1:]))
-output = pathlib.Path('video.mp4').resolve()
-output.touch()
-print('AIVS_EVENT ' + json.dumps({'event': 'complete', 'output': str(output)}))
+sys.path.insert(0, str(pathlib.Path(sys.argv[2]).parent))
+import video
+video.check_environment = lambda: None
+def render(prompt, seed, frames, output, **options):
+    assert not options.get('image_file'), 'a solo portrait must not replace the ensemble scene'
+    output.write_bytes(b'test video')
+    return {'output_frames': frames}
+video.render = render
+sys.argv = sys.argv[2:]
+raise SystemExit(video.main())
 "#,
     )
     .unwrap();
@@ -243,12 +250,81 @@ print('AIVS_EVENT ' + json.dumps({'event': 'complete', 'output': str(output)}))
         sender,
         cancel: Arc::default(),
     };
-    let prompt = "A shot of @Eli. Eli says \"Hello, I'm Eli.\"\nThe camera follows.";
-    worker.render(prompt).unwrap();
+    let prompt = crate::screenplay::render_prompt();
+    worker.render(&prompt).unwrap();
     let args: Vec<String> =
         serde_json::from_slice(&std::fs::read(root.path().join("args.json")).unwrap()).unwrap();
-    assert_eq!(args, ["-u", SCRIPT, "render", "--prompt", prompt]);
-    assert!(matches!(events.recv().unwrap(), Event::Complete(path) if path.is_file()));
+    assert_eq!(
+        args,
+        [
+            "-u",
+            SCRIPT,
+            "render",
+            "--prompt",
+            &prompt,
+            "--character-text-only"
+        ]
+    );
+    let path = events
+        .try_iter()
+        .find_map(|event| match event {
+            Event::Complete(path) => Some(path),
+            _ => None,
+        })
+        .expect("Python should complete the mocked inference");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.parent().unwrap().join("render.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["original_prompt"], prompt);
+    assert_eq!(report["character_text_only"], true);
+    assert!(report.get("image_source").is_none());
+    let profiles = report["characters"].as_array().unwrap();
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["eli", "ava"]
+    );
+    let expanded = report["prompt"].as_str().unwrap();
+    for profile in profiles {
+        assert!(expanded.contains(profile["description"].as_str().unwrap()));
+        assert!(expanded.contains(profile["voice_description"].as_str().unwrap()));
+    }
+    for direction in [
+        "locked-off wide shot",
+        "entire head and torso",
+        "down to the waist",
+        "constant focal length and camera-to-subject distance",
+        "No zoom",
+    ] {
+        assert!(expanded.contains(direction));
+    }
+    assert_eq!(report["dialogue_timing"]["turn_count"], 5);
+    assert_eq!(report["dialogue_timing"]["word_count"], 31);
+    assert_eq!(
+        report["dialogue_timing"]["dialogue"],
+        serde_json::json!([
+            "Good news. It's definitely the car.",
+            "My dad said you could see the ocean from here.",
+            "He was an optimistic man.",
+            "He made it sound closer.",
+            "We've still got some light."
+        ])
+    );
+    for turn in [
+        "ELI: \"Good news. It's definitely the car.\"",
+        "AVA: \"My dad said you could see the ocean from here.\"",
+        "ELI (looking around): \"He was an optimistic man.\"",
+        "AVA: \"He made it sound closer.\"",
+        "ELI: \"We've still got some light.\"",
+    ] {
+        assert!(expanded.contains(turn));
+    }
+    assert_eq!(
+        report["runtime"]["output_frames"].as_u64().unwrap(),
+        report["seconds"].as_u64().unwrap() * 24
+    );
 }
 
 #[cfg(unix)]
