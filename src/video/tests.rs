@@ -75,6 +75,74 @@ fn setup_errors_and_missing_token_stay_locked_until_a_ready_event() {
 }
 
 #[test]
+fn fatal_generation_errors_alert_once_without_a_ui_frame() {
+    let mut workspace = VideoWorkspace::ready_for_test(PathBuf::from("/workspace"));
+    let (sender, events) = mpsc::channel();
+    workspace.job = Some(Job {
+        events,
+        cancel: Arc::default(),
+        thread: None,
+    });
+    workspace.rendering = true;
+    workspace.remaining_seconds = Some(200.0);
+    sender.send(Event::Log("Retrying a take".into())).unwrap();
+    workspace.poll(&egui::Context::default());
+    assert!(workspace.take_failure_alert().is_none());
+    assert!(workspace.has_job());
+    sender.send(Event::Failed("GPU error".into())).unwrap();
+    workspace.poll(&egui::Context::default());
+    assert_eq!(workspace.take_failure_alert().as_deref(), Some("GPU error"));
+    assert_eq!(workspace.status, "Video generation failed.");
+    assert!(workspace.remaining_seconds.is_none());
+    assert_eq!(workspace.error.as_deref(), Some("GPU error"));
+    assert!(!workspace.has_job());
+    assert!(!workspace.is_rendering());
+    workspace.poll(&egui::Context::default());
+    assert!(workspace.take_failure_alert().is_none());
+    // A duplicate terminal event cannot alert again after the job has ended.
+    workspace.handle_event(Event::Failed("GPU error".into()));
+    assert!(workspace.take_failure_alert().is_none());
+}
+
+#[test]
+fn setup_stop_success_and_cancel_races_do_not_alert() {
+    let mut workspace = VideoWorkspace::idle(PathBuf::from("/workspace"));
+    workspace.handle_event(Event::Failed("Setup failed".into()));
+    assert!(workspace.take_failure_alert().is_none());
+    workspace.handle_event(Event::Ready);
+    workspace.rendering = true;
+    workspace.handle_event(Event::Stopped);
+    assert!(workspace.take_failure_alert().is_none());
+    workspace.rendering = true;
+    workspace.handle_event(Event::Complete(PathBuf::from("/workspace/video.mp4")));
+    assert!(workspace.take_failure_alert().is_none());
+    workspace.rendering = true;
+    workspace.stopping = true;
+    workspace.handle_event(Event::Failed("Renderer exited while stopping".into()));
+    assert!(workspace.take_failure_alert().is_none());
+}
+
+#[test]
+fn unexpectedly_disconnected_workers_fail_and_alert_unless_cancelled() {
+    for cancelled in [false, true] {
+        let mut workspace = VideoWorkspace::ready_for_test(PathBuf::from("/workspace"));
+        let (sender, events) = mpsc::channel();
+        drop(sender);
+        workspace.rendering = true;
+        workspace.job = Some(Job {
+            events,
+            cancel: Arc::new(AtomicBool::new(cancelled)),
+            thread: None,
+        });
+        workspace.poll(&egui::Context::default());
+        assert!(!workspace.has_job());
+        assert!(!workspace.is_rendering());
+        assert_eq!(workspace.take_failure_alert().is_some(), !cancelled);
+        assert_eq!(workspace.error.is_some(), !cancelled);
+    }
+}
+
+#[test]
 fn render_progress_keeps_estimates_separate_from_logs_and_completes_only_on_success() {
     let (sender, events) = mpsc::channel();
     let stream = br#"AIVS_EVENT {"event":"render_progress","label":"Stage 1/2 denoising","fraction":0.35,"remaining_seconds":240}

@@ -417,6 +417,22 @@ impl App {
         self.video.playback_target.as_ref()
     }
 
+    pub fn poll_background(&mut self, ctx: &egui::Context) {
+        self.video.poll(ctx);
+    }
+
+    pub fn has_video_job(&self) -> bool {
+        self.video.has_job()
+    }
+
+    pub fn is_generating_video(&self) -> bool {
+        self.video.is_rendering()
+    }
+
+    pub fn take_generation_failure(&mut self) -> Option<String> {
+        self.video.take_failure_alert()
+    }
+
     pub fn set_playback_error(&mut self, error: Option<String>) {
         self.video.playback_error = error;
     }

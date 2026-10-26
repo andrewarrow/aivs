@@ -157,6 +157,15 @@ From this checkout:
 **Stop** interrupts the render and its child processes; closing AIVS also stops
 active work. Partial outputs remain available for inspection.
 
+If generation or Resume fails, AIVS sounds the system alert, bounces its Dock
+icon, adds a red **!** badge, and posts a notification with the error summary.
+Failure detection continues while the window is minimized or hidden. Returning
+to AIVS or starting another generation clears the Dock alert; the full error
+remains in the app. Stop and recoverable take retries do not trigger alerts.
+Notifications use macOS AppleScript so they also work with `cargo run`; allow
+Script Editor notifications in System Settings → Notifications if banners do
+not appear. Focus settings and system sound volume still apply.
+
 Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
 directory to continue that run in place. Resume uses its saved screenplay, cast,
 seed, and shooting script; Codex runs only if planning never finished. Existing

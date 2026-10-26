@@ -421,6 +421,7 @@ pub struct VideoWorkspace {
     current_log_stream: Option<String>,
     error: Option<String>,
     output: Option<PathBuf>,
+    failure_alert: Option<String>,
     reveal_output: bool,
     pub playback_target: Option<crate::playback::PlaybackTarget>,
     pub playback_error: Option<String>,
@@ -449,6 +450,7 @@ impl VideoWorkspace {
             current_log_stream: None,
             error: None,
             output: None,
+            failure_alert: None,
             reveal_output: false,
             playback_target: None,
             playback_error: None,
@@ -460,6 +462,7 @@ impl VideoWorkspace {
             return;
         }
         self.error = None;
+        self.failure_alert = None;
         self.logs.clear();
         self.current_log_stream = None;
         self.fraction = None;
@@ -480,8 +483,23 @@ impl VideoWorkspace {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
-        while let Some(event) = self.job.as_ref().and_then(|job| job.events.try_recv().ok()) {
+        while let Some(job) = &self.job {
+            let event = match job.events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if job.cancel.load(Ordering::Relaxed) {
+                        Event::Stopped
+                    } else {
+                        Event::Failed(
+                            "The video worker stopped unexpectedly. See Activity for details."
+                                .into(),
+                        )
+                    }
+                }
+            };
             let finished = self.handle_event(event);
+            ctx.request_repaint();
             if finished {
                 self.job = None;
                 break;
@@ -490,6 +508,18 @@ impl VideoWorkspace {
         if self.job.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+    }
+
+    pub fn has_job(&self) -> bool {
+        self.job.is_some()
+    }
+
+    pub fn is_rendering(&self) -> bool {
+        self.rendering
+    }
+
+    pub fn take_failure_alert(&mut self) -> Option<String> {
+        self.failure_alert.take()
     }
 
     fn handle_event(&mut self, event: Event) -> bool {
@@ -549,10 +579,20 @@ impl VideoWorkspace {
                 return true;
             }
             Event::Failed(error) => {
+                if self.rendering && !self.stopping {
+                    self.failure_alert = Some(error.clone());
+                }
                 if !self.is_ready() {
                     self.setup = Setup::Failed;
                 }
+                self.status = if self.rendering {
+                    "Video generation failed."
+                } else {
+                    "Setup failed."
+                }
+                .into();
                 self.rendering = false;
+                self.remaining_seconds = None;
                 self.error = Some(error);
                 return true;
             }

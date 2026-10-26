@@ -4,6 +4,7 @@
 )]
 
 mod app;
+mod attention;
 mod characters;
 mod codex;
 mod playback;
@@ -154,6 +155,7 @@ struct Desktop {
     next_repaint: Option<Instant>,
     startup_error: Option<Box<dyn Error>>,
     proxy: EventLoopProxy<Instant>,
+    alerts: attention::GenerationAlerts,
 }
 
 impl Desktop {
@@ -200,6 +202,7 @@ impl ApplicationHandler<Instant> for Desktop {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(true) => self.alerts.clear(&desktop.window),
             WindowEvent::Resized(size) => {
                 if let (Some(width), Some(height)) =
                     (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -220,17 +223,33 @@ impl ApplicationHandler<Instant> for Desktop {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(desktop) = &self.window {
+            // Hidden/minimized windows may receive no RedrawRequested events.
+            // Drain worker events on the native loop so a failed background
+            // render still alerts immediately.
+            self.app.poll_background(&desktop.context);
+            if let Some(error) = self.app.take_generation_failure() {
+                self.alerts.failed(&desktop.window, &error);
+            }
+            if self.app.is_generating_video() {
+                self.alerts.clear(&desktop.window);
+            }
+        }
         match self.next_repaint {
             Some(deadline) if deadline <= Instant::now() => {
                 self.next_repaint = None;
                 if let Some(desktop) = &self.window {
                     desktop.window.request_redraw();
                 }
-                event_loop.set_control_flow(ControlFlow::Wait);
             }
-            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
+            _ => {}
         }
+        let mut deadline = self.next_repaint;
+        if self.app.has_video_job() {
+            let poll = Instant::now() + std::time::Duration::from_millis(100);
+            deadline = Some(deadline.map_or(poll, |repaint| repaint.min(poll)));
+        }
+        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -262,6 +281,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         next_repaint: None,
         startup_error: None,
         proxy: event_loop.create_proxy(),
+        alerts: attention::GenerationAlerts::default(),
     };
     event_loop.run_app(&mut desktop)?;
     if let Some(error) = desktop.startup_error {
