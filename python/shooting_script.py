@@ -197,8 +197,10 @@ def _line_text(beat: dict) -> str:
     return f'{beat["speaker"]}{cue} says, "{beat["text"]}".'
 
 
-def _cast_context(source: dict) -> str:
+def _cast_context(source: dict, cast_identity: list[dict] | None = None, *,
+                  visible_roles: list[str] | None = None, speaking_roles: set[str] | None = None) -> str:
     by_id = {profile["id"]: profile for profile in source["characters"]}
+    identities = {item["role"]: item for item in cast_identity or []}
 
     def phrase(value: str) -> str:
         value = value.strip().rstrip(".")
@@ -211,9 +213,13 @@ def _cast_context(source: dict) -> str:
     for binding in source["cast"]:
         profile = by_id[binding["character"]]
         role = binding["role"]
-        parts.append(f"{role} looks like {phrase(profile['description'])}")
-        voice = (profile.get("voice_description") or "").strip()
-        if voice:
+        # New plans separate performer identity from costume, expression and
+        # story state. Keep the old expansion only for legacy saved plans.
+        identity = identities.get(role, profile)
+        if visible_roles is None or role in visible_roles:
+            parts.append(f"{role} looks like {phrase(identity['description'])}")
+        voice = (identity.get("voice_description") or "").strip()
+        if voice and (speaking_roles is None or role in speaking_roles):
             parts.append(f"{role} speaks with {phrase(voice)}")
     return ". ".join(parts).rstrip(". ") + ". " if parts else ""
 
@@ -254,6 +260,18 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
     if candidate.get("render_format") != request.get("render_format") and "source_sha256" in candidate:
         raise ValueError("Saved shooting script has a different render format; generate a new plan.")
     proposed = candidate["shots"]
+    cast_identity = candidate.get("cast_identity")
+    if cast_identity is not None:
+        if not isinstance(cast_identity, list) or len(cast_identity) != len(source["cast"]):
+            raise ValueError("Cast identity must describe every bound role exactly once.")
+        for binding, identity in zip(source["cast"], cast_identity):
+            if (not isinstance(identity, dict) or set(identity) != {"role", "description", "voice_description"}
+                    or identity["role"] != binding["role"]):
+                raise ValueError("Cast identity must use source roles in cast order.")
+            _bounded(identity["description"], f"Stable identity for {binding['role']}", 800)
+            voice = identity["voice_description"]
+            if not isinstance(voice, str) or len(voice) > 800 or "\x00" in voice:
+                raise ValueError(f"Stable voice for {binding['role']} must be text of at most 800 characters.")
     if not 1 <= len(proposed) <= 64:
         raise ValueError("Shooting script needs 1 to 64 shots.")
     source_beats = source["beats"]
@@ -288,6 +306,13 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
                 f"Shot {index} must continue the previous shot within the same scene: "
                 "use continue_previous true and preserve its ending composition in the opening frame."
             )
+        visible_roles = item.get("visible_roles")
+        if cast_identity is not None:
+            known_roles = {binding["role"] for binding in source["cast"]}
+            if (not isinstance(visible_roles, list)
+                    or any(not isinstance(role, str) or role not in known_roles for role in visible_roles)
+                    or len(set(visible_roles)) != len(visible_roles)):
+                raise ValueError(f"Shot {index} visible_roles must list its visible source roles exactly once.")
         template = _bounded(item.get("prompt_template"), f"Shot {index} prompt template")
         start = _bounded(item.get("start_state"), f"Shot {index} start state", 1200)
         end = _bounded(item.get("end_state"), f"Shot {index} end state", 1200)
@@ -317,8 +342,18 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             "After the final word, mouths rest unless the source action requires otherwise. "
             if required else "There is no spoken dialogue in this shot. "
         )
+        if cast_identity is not None:
+            speech_direction = (
+                "Deliver the quoted dialogue exactly once in order. During each line, listeners' lips rest. "
+                "After the final line, mouths rest except for explicitly staged source actions. "
+                "Nonverbal vocal sounds occur only at their specified source moments. "
+                if required else "No spoken words. Only the staged environmental sounds and source nonverbal vocal actions are audible. "
+            )
         framing = framing_prompt(request["render_format"]) if "render_format" in request else ""
-        prompt = (action_prompt + " " + framing + _cast_context(source) + speech_direction
+        cast = _cast_context(source, cast_identity,
+                             visible_roles=visible_roles if cast_identity is not None else None,
+                             speaking_roles={by_id[n]["speaker"] for n in required} if cast_identity is not None else None)
+        prompt = (action_prompt + " " + framing + cast + speech_direction
                   + "No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
@@ -327,6 +362,7 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             raise ValueError(f"Shot {index} needs at least {minimum} seconds for its dialogue and action.")
         shots.append({"seconds": seconds, "beat_ids": ids, "prompt_template": template,
                       "prompt": prompt, "start_state": start, "end_state": end,
+                      **({"visible_roles": visible_roles} if cast_identity is not None else {}),
                       "continue_previous": continue_previous, "scene": scene_markers[0],
                       "scene_id": scene_ids[0]})
     if expected != len(source_beats) + 1:
@@ -336,6 +372,7 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             if "prompt" in proposed_shot and proposed_shot["prompt"] != filled["prompt"]:
                 raise ValueError("Saved shot prompt does not match the source dialogue.")
     return {"version": 1, "source_sha256": source["source_sha256"],
+            **({"cast_identity": cast_identity} if cast_identity is not None else {}),
             **({"render_format": request["render_format"]} if "render_format" in request else {}),
             "seconds": sum(shot["seconds"] for shot in shots), "fade_out": source["fade_out"],
             "source": source, "shots": shots}
@@ -351,6 +388,15 @@ def load_shooting_script(path: Path, request: dict, profiles: list[dict], *, tok
     artifact = validate_shooting_script(saved, request, profiles, token_counter=token_counter)
     if saved.get("version") != 1 or saved.get("seconds") != artifact["seconds"] or saved.get("fade_out") != artifact["fade_out"]:
         raise ValueError("Saved shooting-script metadata is invalid.")
+    if "cast_identity" in saved and "preproduction_review" not in saved:
+        raise ValueError("This preproduction draft has no final approval; generate an approved shooting script before rendering.")
+    if "preproduction_review" in saved:
+        review = saved["preproduction_review"]
+        if (not isinstance(review, dict) or review.get("version") != 1
+                or review.get("plan_sha256") != _plan_fingerprint(artifact)):
+            raise ValueError("Saved preproduction approval does not match this shooting script.")
+        _validate_review(review.get("report"), artifact)
+        artifact["preproduction_review"] = review
     return artifact
 
 
@@ -358,10 +404,18 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
     """Save an already validated plan as machine and readable artifacts."""
     if not isinstance(plan, dict) or plan.get("version") != 1 or not isinstance(plan.get("shots"), list):
         raise ValueError("Cannot save an invalid shooting-script plan.")
+    if "cast_identity" in plan:
+        review = plan.get("preproduction_review")
+        if (not isinstance(review, dict) or review.get("version") != 1
+                or review.get("plan_sha256") != _plan_fingerprint(plan)):
+            raise ValueError("Cannot publish a preproduction draft without matching final approval.")
+        _validate_review(review.get("report"), plan)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "shooting-script.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     display = []
+    if "preproduction_review" in plan:
+        display.extend(("Preproduction: draft, intent revision, physical rehearsal, final approval completed.", ""))
     if "render_format" in plan:
         spec = resolve_format(plan["render_format"])
         display.extend((f"Render: {spec['width']} × {spec['height']} | {spec['aspect_ratio']} | {spec['name']}", ""))
@@ -373,14 +427,133 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
     (run_dir / "shooting-script.txt").write_text("\n".join(display).rstrip() + "\n", encoding="utf-8")
 
 
-_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["shots"],
-           "properties": {"shots": {"type": "array",
+_SCHEMA = {"type": "object", "additionalProperties": False,
+           "required": ["cast_identity", "shots", "revision_notes"],
+           "properties": {
+             "cast_identity": {"type": "array", "items": {
+               "type": "object", "additionalProperties": False, "required": ["role", "description", "voice_description"],
+               "properties": {"role": {"type": "string"}, "description": {"type": "string"},
+                              "voice_description": {"type": "string"}}}},
+             "revision_notes": {"type": "array", "items": {"type": "string"}},
+             "shots": {"type": "array",
              "items": {"type": "object", "additionalProperties": False,
-               "required": ["seconds", "beat_ids", "prompt_template", "start_state", "end_state", "continue_previous"],
+               "required": ["seconds", "beat_ids", "visible_roles", "prompt_template", "start_state", "end_state", "continue_previous"],
                "properties": {"seconds": {"type": "integer"},
                  "beat_ids": {"type": "array", "items": {"type": "integer"}},
+                 "visible_roles": {"type": "array", "items": {"type": "string"}},
                  "prompt_template": {"type": "string"}, "start_state": {"type": "string"},
                  "end_state": {"type": "string"}, "continue_previous": {"type": "boolean"}}}}}}
+
+
+def _object_schema(properties: dict) -> dict:
+    return {"type": "object", "additionalProperties": False,
+            "required": list(properties), "properties": properties}
+
+
+_REVIEW_SCHEMA = _object_schema({
+    "approved": {"type": "boolean"},
+    "summary": {"type": "string"},
+    "beat_reviews": {"type": "array", "items": _object_schema({
+        "beat_id": {"type": "integer"}, "shot_number": {"type": "integer"},
+        "intent": {"type": "string"}, "evidence": {"type": "string"},
+    })},
+    "shot_reviews": {"type": "array", "items": _object_schema({
+        "shot_number": {"type": "integer"}, "staging": {"type": "string"},
+        "identity_and_state": {"type": "string"},
+        "timeline": {"type": "array", "items": _object_schema({
+            "start_seconds": {"type": "number"}, "end_seconds": {"type": "number"},
+            "action": {"type": "string"},
+        })},
+    })},
+    "issues": {"type": "array", "items": {"type": "string"}},
+})
+
+_PLANNING_PASSES = (
+    ("draft", "Draft source-faithful coverage",
+     "Read the whole screenplay first. Identify the purpose, motivation, addressee and "
+     "audience reveal of every beat before drafting. Return cast_identity, shots, and "
+     "revision_notes recording the important interpretation and staging decisions."),
+    ("intent", "Revise against screenplay intent",
+     "Treat the previous draft as fallible. Compare every source clause, subtext, cause, "
+     "reaction, reveal and line addressee against the FULLY ASSEMBLED prompts. Fix lost "
+     "intent and source order, not just missing words. Check that normal human behavior "
+     "has its correct purpose (for example, a covered phone microphone makes a private "
+     "aside to someone in the room, with the actor's own mouth clear). Remove mutable "
+     "costume or emotion from cast_identity; put these in the chronological staging. "
+     "Return the complete revised plan and specific revision_notes describing defects "
+     "and fixes, with beat/shot references. Do not merely endorse the draft."),
+    ("rehearsal", "Revise physical staging and timing",
+     "Rehearse the previous draft second by second as actors, camera operator and script "
+     "supervisor. Check what is visible at the actual first frame, thresholds, free hands, "
+     "prop contact, garment mechanics, wetness, body reveals, dialogue recipients, and "
+     "listening intervals. Budget individual serial movements, not one second per source "
+     "paragraph. A dialogue line's speech estimate is not its listening/pause allowance. "
+     "Split overloaded takes at source beat boundaries, keeping source order and inherited "
+     "composition. Read the FULLY ASSEMBLED prompts for contradictions, including identity "
+     "and voice defaults. Use concise chronological positive descriptions of filmable "
+     "action. Return the entire repaired plan and specific revision_notes. Leave no "
+     "known defect for the final approval reviewer to fix."),
+)
+
+
+def _plan_fingerprint(plan: dict) -> str:
+    # Approval belongs to these exact compiled prompts, durations and continuity
+    # states, not merely to the unchanged screenplay.
+    content = {key: plan.get(key) for key in ("source_sha256", "cast_identity", "shots", "fade_out")}
+    return hashlib.sha256(_json(content).encode("utf-8")).hexdigest()
+
+
+def _validate_review(report: dict, plan: dict, *, require_approval: bool = True) -> None:
+    if not isinstance(report, dict) or type(report.get("approved")) is not bool:
+        raise ValueError("Preproduction review needs an explicit approval decision.")
+    _bounded(report.get("summary"), "Review summary")
+    beat_reviews = report.get("beat_reviews")
+    beats = plan["source"]["beats"]
+    if not isinstance(beat_reviews, list) or len(beat_reviews) != len(beats):
+        raise ValueError("Preproduction review must account for every source beat.")
+    shot_for_beat = {beat: number for number, shot in enumerate(plan["shots"], 1)
+                     for beat in shot["beat_ids"]}
+    for beat, review in zip(beats, beat_reviews):
+        if (not isinstance(review, dict) or type(review.get("beat_id")) is not int
+                or review["beat_id"] != beat["id"]
+                or type(review.get("shot_number")) is not int
+                or review["shot_number"] != shot_for_beat[beat["id"]]):
+            raise ValueError("Beat reviews must map every source beat to its actual shot, in order.")
+        _bounded(review.get("intent"), f"Intent of beat {beat['id']}")
+        _bounded(review.get("evidence"), f"Prompt evidence for beat {beat['id']}")
+    shot_reviews = report.get("shot_reviews")
+    if not isinstance(shot_reviews, list) or len(shot_reviews) != len(plan["shots"]):
+        raise ValueError("Preproduction review must rehearse every shot.")
+    for number, (shot, review) in enumerate(zip(plan["shots"], shot_reviews), 1):
+        if (not isinstance(review, dict) or type(review.get("shot_number")) is not int
+                or review["shot_number"] != number):
+            raise ValueError("Shot reviews must be in shot order.")
+        _bounded(review.get("staging"), f"Shot {number} staging review")
+        _bounded(review.get("identity_and_state"), f"Shot {number} identity/state review")
+        timeline = review.get("timeline")
+        if not isinstance(timeline, list) or not timeline:
+            raise ValueError(f"Shot {number} needs a timed physical rehearsal.")
+        cursor = 0
+        for interval in timeline:
+            if not isinstance(interval, dict):
+                raise ValueError(f"Shot {number} has an invalid rehearsal interval.")
+            start, end = interval.get("start_seconds"), interval.get("end_seconds")
+            if (type(start) not in (int, float) or type(end) not in (int, float)
+                    or not math.isfinite(start) or not math.isfinite(end)
+                    or abs(start - cursor) > 0.01 or not 0 <= start < end <= shot["seconds"]):
+                raise ValueError(f"Shot {number} rehearsal must continuously cover its actual duration.")
+            _bounded(interval.get("action"), f"Shot {number} rehearsal action")
+            cursor = end
+        if abs(cursor - shot["seconds"]) > 0.01:
+            raise ValueError(f"Shot {number} rehearsal does not cover its full duration.")
+    issues = report.get("issues")
+    if not isinstance(issues, list):
+        raise ValueError("Preproduction review needs an issues list.")
+    for issue in issues:
+        _bounded(issue, "Unresolved review issue")
+    if require_approval and (not report["approved"] or issues):
+        detail = "; ".join(issues) or report["summary"]
+        raise ValueError(f"Preproduction review blocked rendering: {detail}")
 
 
 def _instruction(source: dict, correction: str | None) -> str:
@@ -417,7 +590,7 @@ def _executable(executable) -> str:
 
 
 def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, response_path,
-                  on_activity, on_activity_delta):
+                  on_activity, on_activity_delta, output_schema=None):
     """Use app-server notifications; exec --json only exposes completed text items."""
     with events_path.open("wb") as events, \
             errors_path.open("wb") as errors, selectors.DefaultSelector() as selector:
@@ -494,7 +667,7 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
                         "threadId": thread_id, "input": [{"type": "text", "text": instruction}],
                         "cwd": str(cwd), "approvalPolicy": "never",
                         "sandboxPolicy": {"type": "readOnly"},
-                        "summary": "detailed", "outputSchema": _SCHEMA}})
+                        "summary": "detailed", "outputSchema": output_schema or _SCHEMA}})
                 return
             params = event.get("params", {})
             item_id = params.get("itemId", "")
@@ -600,43 +773,93 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
 
 def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *, executable=None,
                            token_counter=None, on_activity=None, on_activity_delta=None) -> dict:
-    """Ask the signed-in local Codex CLI for staging, with one validation retry."""
+    """Draft, revise twice, and independently approve before publishing a plan."""
     source = parse_request(request, profiles)
     codex = _executable(executable)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + _CODEX_TIMEOUT_SECONDS
     activity = on_activity or (lambda message: None)
-    correction = None
     with tempfile.TemporaryDirectory(prefix="aivs-shooting-") as temp:
         (run_dir / "shooting-script-schema.json").write_text(json.dumps(_SCHEMA, indent=2), encoding="utf-8")
-        for attempt in (1, 2):
-            instruction = _instruction(source, correction)
-            (run_dir / f"shooting-script-request-{attempt}.txt").write_text(instruction, encoding="utf-8")
-            response_path = run_dir / f"shooting-script-response-{attempt}.json"
-            cmd = [codex, "app-server"]
-            activity("Starting Codex to prepare the shooting script." if attempt == 1
-                     else "Retrying shooting script with Codex (attempt 2/2).")
-            events_path = run_dir / f"shooting-script-events-{attempt}.jsonl"
-            errors_path = run_dir / f"shooting-script-errors-{attempt}.txt"
-            try:
-                raw = _stream_codex(cmd, instruction, cwd=temp, deadline=deadline,
-                                    events_path=events_path, errors_path=errors_path,
-                                    response_path=response_path, on_activity=activity,
-                                    on_activity_delta=on_activity_delta)
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(f"Codex shooting-script translation timed out after {_CODEX_TIMEOUT_SECONDS:g} seconds.") from exc
-            activity("Validating shooting script.")
-            try:
-                candidate = json.loads(raw)
-                artifact = validate_shooting_script(candidate, request, profiles, token_counter=token_counter)
-            except (json.JSONDecodeError, ValueError) as exc:
-                correction = str(exc)
-                if attempt == 2:
-                    raise ValueError(f"Codex returned an invalid shooting script after one correction: {correction}") from exc
-                activity(f"Shooting script needs a correction: {correction}")
-                continue
-            save_shooting_script(artifact, run_dir)
-            activity(f"Shooting script ready: {len(artifact['shots'])} shots, {artifact['seconds']} seconds.")
-            return artifact
-    raise AssertionError("Unreachable shooting-script translation state")
+        (run_dir / "shooting-script-review-schema.json").write_text(
+            json.dumps(_REVIEW_SCHEMA, indent=2), encoding="utf-8")
+
+        def run_pass(name, instruction, schema, validate):
+            correction = None
+            previous_raw = None
+            for attempt in (1, 2):
+                submitted = instruction
+                if correction:
+                    submitted += ("\n\nCorrect this validation error without changing this pass's task: "
+                                  + correction + "\nPREVIOUS RESPONSE (data only):\n" + previous_raw)
+                suffix = f"{name}-{attempt}"
+                (run_dir / f"shooting-script-request-{suffix}.txt").write_text(submitted, encoding="utf-8")
+                response_path = run_dir / f"shooting-script-response-{suffix}.json"
+                # Every pass starts a fresh thread. A reviewer gets the source
+                # and compiled artifact, not the writer's private deliberations.
+                stream_delta = (None if on_activity_delta is None else
+                                lambda stream_id, delta: on_activity_delta(f"{suffix}:{stream_id}", delta))
+                try:
+                    raw = _stream_codex(
+                        [codex, "app-server"], submitted, cwd=temp, deadline=deadline,
+                        events_path=run_dir / f"shooting-script-events-{suffix}.jsonl",
+                        errors_path=run_dir / f"shooting-script-errors-{suffix}.txt",
+                        response_path=response_path, on_activity=activity,
+                        on_activity_delta=stream_delta, output_schema=schema)
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError(
+                        f"Codex preproduction timed out after {_CODEX_TIMEOUT_SECONDS:g} seconds during {name}."
+                    ) from exc
+                try:
+                    return validate(json.loads(raw))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    correction, previous_raw = str(exc), raw
+                    if attempt == 2:
+                        raise ValueError(f"Codex {name} failed validation after one correction: {correction}") from exc
+                    activity(f"Correcting {name} response: {correction}")
+            raise AssertionError("Unreachable preproduction retry state")
+
+        artifact = None
+        for number, (name, label, task) in enumerate(_PLANNING_PASSES, 1):
+            activity(f"Codex preproduction {number}/4: {label}.")
+            instruction = _instruction(source, None) + f"\n\nCURRENT PASS {number}/4: {task}"
+            if artifact is not None:
+                instruction += "\n\nPREVIOUS VALIDATED DRAFT (including exact LTX prompts):\n" + _json(artifact)
+
+            def validate_revision(candidate):
+                if not isinstance(candidate, dict) or not isinstance(candidate.get("cast_identity"), list):
+                    raise ValueError("New plans must separate stable cast_identity from scene costume and performance.")
+                notes = candidate.get("revision_notes")
+                if not isinstance(notes, list) or not notes:
+                    raise ValueError("Each draft/revision needs concrete revision_notes.")
+                for note in notes:
+                    _bounded(note, "Revision note")
+                plan = validate_shooting_script(candidate, request, profiles, token_counter=token_counter)
+                return plan
+
+            artifact = run_pass(name, instruction, _SCHEMA, validate_revision)
+            # Drafts are inspectable but never mistaken for the renderable plan.
+            (run_dir / f"shooting-script-draft-{number}-{name}.json").write_text(
+                json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        activity("Codex preproduction 4/4: Independent approval of the final LTX prompts.")
+        direction = Path(__file__).with_name("shooting-script-review-instructions.txt").read_text(encoding="utf-8")
+        instruction = direction.rstrip() + "\n\n" + _json(artifact)
+
+        def validate_report(report):
+            # A well-formed rejection is a result, not a format error to retry
+            # until the reviewer agrees with us.
+            _validate_review(report, artifact, require_approval=False)
+            return report
+
+        report = run_pass("approval", instruction, _REVIEW_SCHEMA, validate_report)
+        (run_dir / "shooting-script-review.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _validate_review(report, artifact)
+        artifact["preproduction_review"] = {
+            "version": 1, "plan_sha256": _plan_fingerprint(artifact), "report": report,
+        }
+        save_shooting_script(artifact, run_dir)
+        activity(f"Shooting script approved: {len(artifact['shots'])} shots, {artifact['seconds']} seconds; four passes complete.")
+        return artifact

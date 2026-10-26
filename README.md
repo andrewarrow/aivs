@@ -90,11 +90,34 @@ movement within a scene.
 
 ### 3. Validate, render, and assemble
 
-Python checks that the plan covers the source beats in order, preserves dialogue,
-and fits duration and model token limits. It fills dialogue placeholders with the
-source lines and saves both `shooting-script.json` for the renderer and
-`shooting-script.txt` for people to inspect. Invalid plans get one correction
-attempt through Codex before the run fails.
+Before rendering, Codex completes four separate preproduction turns:
+
+1. Draft coverage from the screenplay's actions, motivations, reveals, and dialogue recipients.
+2. Compare the assembled prompts against the screenplay and revise lost or conflicting intent.
+3. Rehearse the physical action and timing; revise overloaded takes, prop handling, and continuity.
+4. Independently approve or reject the exact final prompts, with evidence for every beat and a timed rehearsal of every shot.
+
+Each turn starts a fresh read-only thread. Revisions receive the original source
+and previous compiled plan; final approval cannot silently rewrite the plan it
+reviews. Python checks ordered beat coverage, exact dialogue, duration and token
+limits after each draft. Each malformed response gets one correction attempt.
+A completed rejection stops before video inference and saves its findings; it is
+not retried merely to obtain approval.
+
+New plans separate stable performer appearance and voice from costume, wetness,
+body reveals, expression, and emotional delivery. Appearance is appended only
+for roles visible in that shot; voice identity only for its dialogue speakers.
+The reviewers see these complete prompts, including appended text. Approved
+plans are saved as `shooting-script.json` and `shooting-script.txt`, with approval
+bound to the exact prompts, durations and continuity states. Drafts and review
+reports remain available separately. Review establishes script readiness, not a
+guarantee that the video model will execute every instruction.
+
+The director guidance follows the official
+[LTX-2.5 prompt guide](https://ltx.io/blog/ltx-2-5-prompt-guide): focused,
+chronological action, visible emotional cues, and explicit sound. The
+[image-to-video guide](https://docs.ltx.io/open-source-model/usage-guides/image-to-video)
+explains why continued shots must work from their actual inherited image.
 
 LTX-2.5 generates video and speech together in **4–12 second shots at 24 fps**.
 Choose **File → Settings…** for **1280×720 (16:9)** or **1080×1920 (9:16)** delivery.
@@ -263,9 +286,12 @@ Follow the main path: **UI → Python entry point → Codex planner → shot ren
 
 AIVS launches `codex app-server` and exchanges newline-delimited JSON over
 stdin/stdout using the [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server).
-The planner in `python/shooting_script.py` initializes a connection, creates an
-ephemeral read-only thread, and starts a turn with the screenplay and a JSON
-output schema. It streams activity into the UI, then validates the returned plan.
+For each preproduction pass, the planner in `python/shooting_script.py` initializes
+a connection, creates an ephemeral read-only thread, and starts a turn with the
+source, pass-specific instructions and JSON output schema. It streams activity
+into the UI and validates each result. The final pass uses
+[review instructions](python/shooting-script-review-instructions.txt) and returns
+an evidence report instead of another draft.
 
 The Rust client in `src/codex.rs` handles login and optional chat separately.
 **Show chat** opens that panel; chat threads use `workspace-write` in the selected
@@ -285,6 +311,8 @@ Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
 | --- | --- |
 | `screenplay.txt`, `screenplay-request.json` | Original script and cast bindings. |
 | `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |
+| `shooting-script-draft-*` | Compiled draft, intent revision, and physical rehearsal revision; these are not approved render inputs. |
+| `shooting-script-review.json` | Final approval or rejection, source-beat evidence, shot timelines, and unresolved issues. |
 | `shooting-script-request-*`, `shooting-script-response-*` | What the planner sent to Codex and received back. |
 | `shooting-script-events-*.jsonl`, `shooting-script-errors-*.txt` | Live protocol events and diagnostics, including failed or stopped planning. |
 | `shots/001/`, `shots/002/`, … | Individual takes and their reports. |
@@ -303,12 +331,15 @@ checkout using its default workspace:
   --plan-only
 ```
 
-This still calls Codex and uses the cached tokenizer. It generates a new plan,
+This still runs all four Codex passes and uses the cached tokenizer. It generates a new plan,
 which may differ from the saved example. Remove `--plan-only` to render as well.
 Add `--render-format portrait` for 1080×1920; `--script-file` defaults to landscape.
 `--shooting-script /path/to/shooting-script.json` reuses a plan after revalidating
-it against the current script, cast, and render format. Changing format requires
-a new shooting script.
+it against the current script, cast, and render format. New plans also require
+matching final preproduction approval; an unapproved draft cannot be reused.
+Legacy saved plans remain compatible and are not retroactively reviewed by Resume
+or `--shooting-script`. Generate a fresh plan to apply the new workflow to an old
+scene. Changing format requires a new shooting script.
 
 To resume an existing run from the command line:
 
