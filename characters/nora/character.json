@@ -9,6 +9,10 @@
     "file": "reference.png",
     "sha256": "a37ee92d0a02b383127b55027836a1750703b10f8f5eea33997c087511ac2916"
   },
+  "scene_image": {
+    "file": "scene-reference.png",
+    "sha256": "41374fb6237bb7be81360ad65771934ed60a55ef719712fa29bf8f4fdaa6477d"
+  },
   "voice_sample": {
     "file": "voice.wav",
     "sha256": "08b686c5ea51eb66836fb0c66c39b504c84558b2608e26840585b3f5f62bc796"
