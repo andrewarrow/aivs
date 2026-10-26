@@ -62,10 +62,12 @@ it supplies the whole first video frame and is anchored again at the end to hold
 the composition. The `image` (`reference.png`) remains the gallery portrait and
 is the first-frame fallback when there is no scene image. Square portraits may
 be cropped or frame the character too closely for landscape video.
-Eli includes a wide reference for the default desert scene while keeping the
-original portrait in the gallery. For a different setting, provide a matching
-scene reference or use `--character-text-only`. Each render saves copies of its
-character profiles and reference assets beside the original and expanded prompts. Native
+All nine imported characters include wide references for the default desert scene
+while keeping their original portraits in the gallery. The built-in imagegen
+prompts are saved beside the images as `scene-reference.txt`. For a different
+setting, provide a matching scene reference or use `--character-text-only`.
+Each render saves copies of its character profiles and reference assets beside
+the original and expanded prompts. Native
 speech follows the voice description; voice samples do not lock voice identity.
 The gallery and renderer use the workspace's `characters/` directory, falling back
 to this checkout's imported library. CLI renders also accept `--character NAME`

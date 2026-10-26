@@ -90,36 +90,41 @@ class RenderTests(unittest.TestCase):
                         pass
 
     def test_selected_prompt_reaches_renderer_timing_and_report_through_cli(self):
-        prompt = 'A cinematic shot of Eli, an adult man. He says "hello my name is Eli".'
         library = Path(video.__file__).resolve().parents[1]
-        profile = video.characters.load_character("eli", root=library)
-        expanded = video.characters.expand_prompt(prompt, [profile], image_conditioned=True)
+        for profile_path in sorted((library / "characters").glob("*/character.json")):
+            char_id = profile_path.parent.name
+            with self.subTest(character=char_id):
+                profile = video.characters.load_character(char_id, root=library)
+                name = profile["name"]
+                prompt = f'A cinematic shot of {name}. {name} says "hello my name is {name}".'
+                expanded = video.characters.expand_prompt(prompt, [profile], image_conditioned=True)
+                relative_image = Path("characters") / char_id / "scene-reference.png"
 
-        def render(actual_prompt, seed, frames, output, *, on_progress, image_file, hold_image_framing):
-            self.assertEqual(actual_prompt, expanded)
-            self.assertEqual(seed, 42)
-            self.assertEqual(frames, duration_estimate(prompt)["seconds"] * backend.FPS)
-            self.assertEqual(image_file, output.parent / "characters/eli/scene-reference.png")
-            self.assertEqual(image_file.read_bytes(), (library / "characters/eli/scene-reference.png").read_bytes())
-            self.assertTrue(hold_image_framing)
-            output.write_bytes(b"validated video")
-            return {}
+                def render(actual_prompt, seed, frames, output, *, on_progress, image_file, hold_image_framing):
+                    self.assertEqual(actual_prompt, expanded)
+                    self.assertEqual(seed, 42)
+                    self.assertEqual(frames, duration_estimate(prompt)["seconds"] * backend.FPS)
+                    self.assertEqual(image_file, output.parent / relative_image)
+                    self.assertEqual(image_file.read_bytes(), (library / relative_image).read_bytes())
+                    self.assertTrue(hold_image_framing)
+                    output.write_bytes(b"validated video")
+                    return {}
 
-        with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), patch.object(video, "check_environment"), patch.object(video, "render", side_effect=render) as renderer, patch("sys.argv", ["video.py", "render", "--seed", "42", "--prompt", prompt]), patch("sys.stdout", new_callable=io.StringIO):
-            self.assertEqual(video.main(), 0)
-            renderer.assert_called_once()
-            report = json.loads(next(Path(directory).glob("outputs/*/render.json")).read_text())
-            self.assertEqual(report["original_prompt"], prompt)
-            self.assertEqual(report["prompt"], expanded)
-            self.assertEqual(report["characters"], [profile])
-            self.assertEqual(report["dialogue_timing"], duration_estimate(prompt))
-            self.assertEqual(report["image_source"]["file"], "characters/eli/scene-reference.png")
-            self.assertEqual(report["image_source"]["conditioning"], "whole-first-and-last-frame")
-            self.assertEqual(
-                report["image_source"]["anchor_frames"],
-                [0, duration_estimate(prompt)["seconds"] * backend.FPS - 1],
-            )
-            video.characters.verify_snapshots([profile], next(Path(directory).glob("outputs/*")))
+                with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), patch.object(video, "check_environment"), patch.object(video, "render", side_effect=render) as renderer, patch("sys.argv", ["video.py", "render", "--seed", "42", "--prompt", prompt]), patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(video.main(), 0)
+                    renderer.assert_called_once()
+                    report = json.loads(next(Path(directory).glob("outputs/*/render.json")).read_text())
+                    self.assertEqual(report["original_prompt"], prompt)
+                    self.assertEqual(report["prompt"], expanded)
+                    self.assertEqual(report["characters"], [profile])
+                    self.assertEqual(report["dialogue_timing"], duration_estimate(prompt))
+                    self.assertEqual(report["image_source"]["file"], str(relative_image))
+                    self.assertEqual(report["image_source"]["conditioning"], "whole-first-and-last-frame")
+                    self.assertEqual(
+                        report["image_source"]["anchor_frames"],
+                        [0, duration_estimate(prompt)["seconds"] * backend.FPS - 1],
+                    )
+                    video.characters.verify_snapshots([profile], next(Path(directory).glob("outputs/*")))
 
     def test_workspace_character_library_overrides_checkout_and_explicit_selector_works(self):
         profile = {"schema_version": 1, "id": "eli", "name": "Eli",
