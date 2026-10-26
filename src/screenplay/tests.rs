@@ -575,3 +575,88 @@ fn long_scripts_grow_the_paper_and_keep_the_last_element_inside() {
         }
     }
 }
+
+#[test]
+fn tab_after_a_character_adds_instructions_and_enter_resumes_existing_dialogue() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    let count = screenplay.document.blocks.len();
+    let dialogue = screenplay.document.blocks[4].clone();
+    editor.focus(&mut screenplay, 3, 3);
+    editor.key(&mut screenplay, egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks[3].text, "JOE");
+    assert_eq!(screenplay.document.blocks[4].kind, Element::Parenthetical);
+    assert_eq!(screenplay.document.blocks[4].text, "()");
+    editor.type_text(&mut screenplay, "softly");
+    assert_eq!(screenplay.document.blocks[4].text, "(softly)");
+    editor.key(&mut screenplay, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks.len(), count + 1);
+    assert_eq!(screenplay.active, dialogue.id);
+    assert_eq!(screenplay.document.blocks[5], dialogue);
+    screenplay.assign("JOE", character("Eli"));
+    screenplay.assign("SUE", character("Ava"));
+    let request: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+    assert!(
+        request["script"]
+            .as_str()
+            .unwrap()
+            .contains("JOE (softly): \"Good news. It's definitely the car.\"")
+    );
+}
+
+#[test]
+fn tab_within_dialogue_preserves_speech_and_enter_continues_after_instructions() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    let count = screenplay.document.blocks.len();
+    editor.focus(&mut screenplay, 4, 10);
+    editor.key(&mut screenplay, egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks[4].text, "Good news.");
+    assert_eq!(screenplay.document.blocks[5].kind, Element::Parenthetical);
+    assert_eq!(screenplay.document.blocks[5].text, "()");
+    assert_eq!(screenplay.document.blocks[6].kind, Element::Dialogue);
+    assert_eq!(
+        screenplay.document.blocks[6].text,
+        " It's definitely the car."
+    );
+    editor.type_text(&mut screenplay, "a beat");
+    editor.key(&mut screenplay, egui::Key::Enter, egui::Modifiers::NONE);
+    assert_eq!(screenplay.active, screenplay.document.blocks[6].id);
+    assert_eq!(screenplay.document.blocks.len(), count + 2);
+    editor.type_text(&mut screenplay, "Actually,");
+    assert_eq!(
+        screenplay.document.blocks[6].text,
+        "Actually, It's definitely the car."
+    );
+    screenplay.assign("JOE", character("Eli"));
+    screenplay.assign("SUE", character("Ava"));
+    let request: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+    assert!(
+        request["script"].as_str().unwrap().contains(
+            "JOE: \"Good news.\"\n\nJOE (a beat): \"Actually, It's definitely the car.\""
+        )
+    );
+}
+
+#[test]
+fn tab_at_the_end_of_dialogue_adds_an_instruction_then_a_new_spoken_line() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    let count = screenplay.document.blocks.len();
+    let end = screenplay.document.blocks[4].text.chars().count();
+    editor.focus(&mut screenplay, 4, end);
+    editor.key(&mut screenplay, egui::Key::Tab, egui::Modifiers::NONE);
+    editor.type_text(&mut screenplay, "whispering");
+    editor.key(&mut screenplay, egui::Key::Enter, egui::Modifiers::NONE);
+    editor.type_text(&mut screenplay, "We should go.");
+    assert_eq!(screenplay.document.blocks.len(), count + 2);
+    assert_eq!(screenplay.document.blocks[5].text, "(whispering)");
+    assert_eq!(screenplay.document.blocks[6].kind, Element::Dialogue);
+    assert_eq!(screenplay.document.blocks[6].text, "We should go.");
+    editor.key(&mut screenplay, egui::Key::Z, egui::Modifiers::COMMAND);
+    editor.key(&mut screenplay, egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(screenplay.document.blocks.len(), count + 1);
+    assert_eq!(screenplay.document.blocks[5].kind, Element::Parenthetical);
+}

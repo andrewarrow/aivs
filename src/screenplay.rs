@@ -421,15 +421,36 @@ impl Screenplay {
             Block {
                 id,
                 kind,
-                text: String::new(),
+                text: if kind == Element::Parenthetical {
+                    "()".into()
+                } else {
+                    String::new()
+                },
             },
         );
         self.active = id;
-        self.focus = Some((id, 0));
+        self.focus = Some((id, usize::from(kind == Element::Parenthetical)));
     }
 
     fn split(&mut self, selection: std::ops::Range<usize>) {
         let index = self.active_index();
+        if self.document.blocks[index].kind == Element::Parenthetical {
+            let instruction = self.document.blocks[index]
+                .text
+                .trim()
+                .trim_matches(['(', ')'])
+                .trim();
+            self.document.blocks[index].text = format!("({instruction})");
+            if let Some(next) = self.document.blocks.get(index + 1)
+                && next.kind == Element::Dialogue
+            {
+                self.active = next.id;
+                self.focus = Some((next.id, 0));
+            } else {
+                self.insert(Element::Dialogue);
+            }
+            return;
+        }
         let block = &mut self.document.blocks[index];
         let kind = block.kind.next();
         let before = block.text.chars().take(selection.start).collect::<String>();
@@ -438,6 +459,51 @@ impl Screenplay {
         self.insert(kind);
         let index = self.active_index();
         self.document.blocks[index].text = after;
+    }
+
+    fn tab(&mut self, backward: bool, selection: std::ops::Range<usize>) {
+        let index = self.active_index();
+        let kind = self.document.blocks[index].kind;
+        if backward {
+            let current = Element::ALL.iter().position(|k| *k == kind).unwrap();
+            self.document.blocks[index].kind = Element::ALL[(current + 5) % 6];
+            if kind == Element::Parenthetical && self.document.blocks[index].text == "()" {
+                self.document.blocks[index].text.clear();
+                self.focus = Some((self.active, 0));
+            }
+            return;
+        }
+        if kind == Element::Parenthetical {
+            self.split(selection);
+            return;
+        }
+        if kind == Element::Dialogue && !self.document.blocks[index].text.is_empty() {
+            // Preserve both sides of the caret when inserting an instruction
+            // into an existing speech. Enter will resume the continuation.
+            self.split(selection);
+            let continuation_index = self.active_index();
+            self.document.blocks[continuation_index].kind = Element::Dialogue;
+            self.active = self.document.blocks[index].id;
+            self.insert(Element::Parenthetical);
+            if self.document.blocks[continuation_index + 1].text.is_empty() {
+                self.document.blocks.remove(continuation_index + 1);
+            }
+            return;
+        }
+        let target = match kind {
+            Element::Character | Element::Dialogue => Element::Parenthetical,
+            Element::Action => Element::Character,
+            _ => kind.next(),
+        };
+        if self.document.blocks[index].text.is_empty() {
+            self.document.blocks[index].kind = target;
+            if target == Element::Parenthetical {
+                self.document.blocks[index].text = "()".into();
+                self.focus = Some((self.active, 1));
+            }
+        } else {
+            self.insert(target);
+        }
     }
 
     fn delete(&mut self) {
@@ -663,7 +729,10 @@ impl Screenplay {
                 ui.label("Click any text to edit.");
                 ui.label("Enter: next screenplay element");
                 ui.label("Shift+Enter: line break within an element");
-                ui.label("Tab / Shift+Tab: change element type");
+                ui.label("Tab in dialogue: add (instructions)");
+                ui.label("Enter after instructions: continue dialogue");
+                ui.label("Tab after a character: add (instructions) before dialogue");
+                ui.label("Shift+Tab: previous element type");
                 ui.label("Up / Down at the start / end: previous / next element");
                 ui.label("⌘/Ctrl+Z: undo · ⌘/Ctrl+Shift+Z: redo");
                 ui.label("Use Edit → Rename character to change every cue.");
@@ -777,6 +846,7 @@ impl Screenplay {
         // Continuous paper grows with the script. Elements retain stable widget IDs
         // through insertions and moves, so cursor state stays attached to the text.
         let mut split = None;
+        let mut tab = None;
         let mut remove = false;
         egui::Frame::new()
             .fill(egui::Color32::from_gray(48))
@@ -794,13 +864,13 @@ impl Screenplay {
                         let mut y = 72.0 * scale;
                         let mut role = String::new();
                         let mut role_top = y;
-                        let mut role_index = 0;
                         for index in 0..self.document.blocks.len() {
                             let id = self.document.blocks[index].id;
                             let kind = self.document.blocks[index].kind;
                             let widget_id = editor_id.with(("text", id));
                             let focused = ui.memory(|m| m.has_focus(widget_id));
                             let mut enter = false;
+                            let mut tab_pressed = None;
                             if focused {
                                 let range = egui::TextEdit::load_state(ui.ctx(), widget_id)
                                     .and_then(|state| state.cursor.char_range())
@@ -849,15 +919,15 @@ impl Screenplay {
                                         egui::Modifiers::NONE,
                                         egui::Key::Enter,
                                     );
-                                    let backward =
-                                        input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
+                                    let backward = consume_exact(
+                                        input,
+                                        egui::Modifiers::SHIFT,
+                                        egui::Key::Tab,
+                                    );
                                     let forward =
-                                        input.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
+                                        consume_exact(input, egui::Modifiers::NONE, egui::Key::Tab);
                                     if backward || forward {
-                                        let current =
-                                            Element::ALL.iter().position(|k| *k == kind).unwrap();
-                                        self.document.blocks[index].kind = Element::ALL
-                                            [(current + if backward { 5 } else { 1 }) % 6];
+                                        tab_pressed = Some(backward);
                                     }
                                 });
                             }
@@ -934,6 +1004,9 @@ impl Screenplay {
                                 if enter {
                                     split = Some(range.clone());
                                 }
+                                if let Some(backward) = tab_pressed {
+                                    tab = Some((backward, range));
+                                }
                             }
                             let height = output.response.rect.height();
                             if self.active == id {
@@ -949,7 +1022,6 @@ impl Screenplay {
                                 Element::Character => {
                                     role = role_name(&self.document.blocks[index].text);
                                     role_top = y;
-                                    role_index = index;
                                     if !role.is_empty() {
                                         let annotation = self.document.cast.get(&role).map_or_else(
                                             || "Uncast".into(),
@@ -993,7 +1065,7 @@ impl Screenplay {
                                     ui,
                                     &role,
                                     &self.document.blocks[index].text.clone(),
-                                    role_index + self.document.blocks.len(),
+                                    index + self.document.blocks.len(),
                                     target,
                                     characters,
                                 );
@@ -1018,6 +1090,10 @@ impl Screenplay {
             });
         if let Some(range) = split {
             self.split(range);
+            typed = None;
+        }
+        if let Some((backward, range)) = tab {
+            self.tab(backward, range);
             typed = None;
         }
         if remove {

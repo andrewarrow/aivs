@@ -72,21 +72,42 @@ play/pause, seeking, volume, and fullscreen, including the generated audio.
 **Show files** opens the output directory. Playback pauses when its preview is
 hidden, and previous results remain playable while another render runs.
 
-The left workspace starts with a 50/50 split: a one-page screenplay preview above
-the existing video context. Drag the horizontal divider to give the screenplay
-30–70% of the height, or double-click it to restore 50%. With the divider focused,
-use Up/Down to resize or Home to reset. The page and generation share the same
-scene data, with explicit speaker labels for all five lines of dialogue.
+The left workspace starts with a 50/50 split: an editable screenplay above the
+video controls. Drag the horizontal divider to give the screenplay 30–70% of the
+height, or double-click it to restore 50%. With the divider focused, use Up/Down
+to resize or Home to reset.
+
+Click script text to edit scene headings, action, character cues, parenthetical
+instructions, dialogue, and transitions. The element selector changes the selected
+paragraph's format. **+ Insert** adds an element after it; **Edit** moves or deletes
+it, or renames a character throughout the script while preserving its casting.
+The paper grows as you write; this first pass has no print pagination or Final
+Draft file import/export.
+
+- **Enter** creates the next element: heading → action, character → dialogue,
+  dialogue → character. **Shift+Enter** adds a line break within an element.
+- **Tab** after a character or within dialogue adds **(instructions)** with the
+  cursor inside the parentheses. **Enter** finishes the instruction and continues
+  dialogue. Inserting an instruction mid-speech preserves the remaining words.
+- **Tab** on an empty action paragraph changes it to a character cue.
+  **Shift+Tab** changes to the previous element type.
+- **Up/Down** at the start/end moves between elements. **Backspace** removes an
+  empty element. **Undo/Redo** and **⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z** cover text,
+  formatting, insertion, deletion, and casting.
+
+Script text and cast assignments autosave to `screenplay.json` in the selected
+workspace and reload on launch. **⌘/Ctrl+S** saves immediately. Save errors are
+shown with a retry control; an unreadable document is preserved and must be
+reloaded before editing. Undo history lasts for the current session. Generation
+uses the edited script, including added scenes, and requires a cast for each role.
 
 Character reference images appear in a scrollable gallery beside the workspace.
 Gallery selection browses the library. Drag a character's name or portrait onto
 any role cue, parenthetical, or dialogue to cast that role throughout the script.
-You can also click or keyboard-activate a dialogue block to choose or clear its
-cast. Every occurrence shows the assigned performer. The current script's roles
-are **Sue and Joe**; for example, cast **Ava as Sue** and **Eli as Joe**. Script
-names and dialogue stay unchanged when casting or recasting. Both roles must be
-cast before **Generate video** becomes available. Assignments last for the current
-session.
+Click or keyboard-activate the **Uncast / played by** label beside a character cue
+to choose or clear its cast. Every occurrence shows the assigned performer. The
+sample script's roles are **Sue and Joe**; for example, cast **Ava as Sue** and
+**Eli as Joe**. Script names and dialogue stay unchanged when casting or recasting.
 Python resolves the assigned `@name` references and adds appearance and voice
 descriptions, with explicit performer-to-role bindings in the render prompt.
 GUI renders do not infer cast from bare names in the script, even when a role
