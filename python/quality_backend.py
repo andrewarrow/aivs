@@ -128,7 +128,7 @@ def doctor():
 
 
 def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
-           audio_file=None, width=WIDTH, height=HEIGHT):
+           audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False):
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
     from render_estimate import RenderEstimate
@@ -205,7 +205,8 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
             if audio is not None:
                 info["supplied_audio"] = validate_supplied_audio(partial, Path(audio["source_file"]), duration)
         partial.replace(output)
-        native.unlink()
+        if not keep_native:
+            native.unlink()
     return {
         "backend": "mlx", "model": MODEL_REPO, "model_revision": MODEL_REVISION,
         "runtime_revision": RUNTIME_REVISION,

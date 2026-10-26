@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "recorded_at": "2026-10-26T03:34:11.482017-07:00",
+  "status": "awaiting-human-audiovisual-review",
+  "label": "diagnostic-native-voice",
+  "milestone_a_passed": false,
+  "fixed_voice_acceptance": false,
+  "run": "outputs/2026-10-26_native-reference-control",
+  "commands": [
+    ".venv/bin/python python/native_reference.py --run-dir outputs/2026-10-26_native-reference-control",
+    ".venv/bin/python experiments/character-consistency/review_native.py outputs/2026-10-26_native-reference-control"
+  ],
+  "reproduction_note": "Use a new --run-dir for a new take; existing runs and review evidence cannot be overwritten.",
+  "settings": {
+    "seed": 83,
+    "frames": 96,
+    "fps": 24,
+    "width": 1280,
+    "height": 704,
+    "image_conditioning": "whole-first-frame",
+    "hold_image_framing": false,
+    "audio_input": null
+  },
+  "runtime": {
+    "backend": "mlx",
+    "model": "dgrauet/ltx-2.5-mlx-q8",
+    "model_revision": "746ca9aacb697d2c739f544d68b584214dedcc75",
+    "runtime_revision": "14a3ddd6054736beb45b4d836135fa4d44490531",
+    "pipeline": "distilled-two-stage",
+    "stage1_steps": 8,
+    "stage2_steps": 3,
+    "quantization": "int8",
+    "audio": "generated",
+    "inference_frames": 97,
+    "output_frames": 96,
+    "elapsed_seconds": 237.81,
+    "phase_seconds": {
+      "runtime": 0.001,
+      "cache": 0.187,
+      "pipeline": 0.002,
+      "prompt": 6.372,
+      "stage1": 76.59,
+      "upscale": 0.507,
+      "refine": 0.513,
+      "stage2": 130.932,
+      "decoders": 0.037,
+      "decode": 22.129,
+      "encode": 0.276,
+      "validate": 0.242
+    },
+    "source_image": {
+      "source_file": "/Users/aa/os/aivs/outputs/2026-10-26_native-reference-control/start.png",
+      "source_sha256": "4a63111ab8764240e5600a4bdab68d0727d16c71f884d3ee49013dedb552ddae",
+      "width": 1672,
+      "height": 940,
+      "conditioning": "whole-first-frame",
+      "strength": 1.0
+    },
+    "source_audio": null,
+    "peak_decode_mlx_memory_gib": 13.97,
+    "video": {
+      "codec_name": "h264",
+      "codec_type": "video",
+      "width": 1280,
+      "height": 704,
+      "pix_fmt": "yuv420p",
+      "r_frame_rate": "24/1",
+      "start_time": "0.000000",
+      "duration": "4.000000",
+      "nb_read_frames": "96",
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "48000",
+        "channels": 2,
+        "r_frame_rate": "0/0",
+        "start_time": "0.000000",
+        "duration": "4.000000",
+        "nb_read_frames": "188"
+      }
+    },
+    "software": {
+      "mlx": "0.32.4",
+      "mlx-metal": "0.32.4",
+      "mlx-arsenal": "0.17.0",
+      "ltx-core-mlx": "0.18.0",
+      "ltx-pipelines-mlx": "0.18.0",
+      "transformers": "5.20.2"
+    }
+  },
+  "source": {
+    "manifest": {
+      "file": "outputs/2026-10-26_native-reference-control/manifest.json",
+      "sha256": "d75f6ec11d1dade65a11356391d2263b09ca6fc4e8001d72bc0d1583ac0b262a"
+    },
+    "render_report": {
+      "file": "outputs/2026-10-26_native-reference-control/render.json",
+      "sha256": "b43cbb53200b6b390ced405bc0bf92c55a6fe73b0db8a73dddba3dc025fb95f7"
+    },
+    "prompt": "A natural live-action medium close-up of the woman in the reference image, in the same setting: desert road at dusk. She looks toward an off-camera conversation partner to the right. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition. She speaks naturally and calmly: \u201cWe still have some time.\u201d Leave a brief quiet moment at the beginning and end, with clean isolated speech.",
+    "hashes": {
+      "request": "f7f8b0f6cc083fff670bede7db80959c6ad8e130e1515285f4cfc16371fdf498",
+      "starting_image": "4a63111ab8764240e5600a4bdab68d0727d16c71f884d3ee49013dedb552ddae",
+      "canonical_portrait": "774875555657107e07a4e9a544ef4e78693df71436d5cd44f8ec9f70365d0ae8",
+      "reference_provenance": "f97e6fb305ac4e9c1b16942412cda01e22007b73e6b8965f4d7104b53e2b582b"
+    },
+    "git_head": "dbe1a557b6215faffccd3aa539d0ba3250d00a1a",
+    "source_copies": {
+      "character_milestone.py": {
+        "file": "source/character_milestone.py",
+        "sha256": "c3838f3628932fd9c2ba45dc1c6ce648062d9a11233a5430db8824df6068efdd"
+      },
+      "characters.py": {
+        "file": "source/characters.py",
+        "sha256": "890593fe20032c13d773f6f67671a0e6ddf41685369415eaa5eb9d1e2953cff6"
+      },
+      "dialogue_helpers.py": {
+        "file": "source/dialogue_helpers.py",
+        "sha256": "b186f8295922c7843b59ec5c57344ba33364ad1e6524ab2c9cb10ad66a53728d"
+      },
+      "native_reference.py": {
+        "file": "source/native_reference.py",
+        "sha256": "f3078b2303cfd8babd764e7dbe457ec46aabad11b469837bf0370a8e69d179e2"
+      },
+      "quality_backend.py": {
+        "file": "source/quality_backend.py",
+        "sha256": "91414a782177d17b38098ce51b806ec84284c39c07a8a88d6a4dc46da55bfcf1"
+      },
+      "quality_progress.py": {
+        "file": "source/quality_progress.py",
+        "sha256": "4eb007204a70fb2a31ab7853cd83ea5c39640b4b16f4acbbae71c8d4270ca0d4"
+      },
+      "render_estimate.py": {
+        "file": "source/render_estimate.py",
+        "sha256": "4049cf4ee84387ec2c56ab85bc08657009b8901b785807687c58feec7c89c9d9"
+      },
+      "requirements-voice.txt": {
+        "file": "source/requirements-voice.txt",
+        "sha256": "7ddd2f2b8bde61d2801431b3ee3cf59a379affa5905ffb555fafd2413da4f424"
+      },
+      "requirements.txt": {
+        "file": "source/requirements.txt",
+        "sha256": "1e0cd0ff3ebd2958bfc6ea1770ef4c258dc286c67eb518caeb220470c8751a46"
+      },
+      "shooting_script.py": {
+        "file": "source/shooting_script.py",
+        "sha256": "83d118d02fdeda0cbd6f50667b4464453decd94dfb34fcae4d3195d2cf037ea5"
+      },
+      "shot_renderer.py": {
+        "file": "source/shot_renderer.py",
+        "sha256": "b2dd4905f4c8520decedcb6f0c39bf035dd7531ef26b6b204481faff12dfc76f"
+      },
+      "speech.py": {
+        "file": "source/speech.py",
+        "sha256": "8b25fdb364ab7c2f473344a49529440bd6a4f72537bbdde9204c5c372188beb9"
+      },
+      "test_character_milestone.py": {
+        "file": "source/test_character_milestone.py",
+        "sha256": "88b00df5cd328feea53cb199265564eef2871e91d1ae04ad388a348d3b805f84"
+      },
+      "test_characters.py": {
+        "file": "source/test_characters.py",
+        "sha256": "000f95fc8e72fcedb575213277c304a360f0f9c1337592485177fffaba3a6557"
+      },
+      "test_dialogue_helpers.py": {
+        "file": "source/test_dialogue_helpers.py",
+        "sha256": "a6f45afc4404c44adcd2a8dd94147b20cd7ae4b3c7daa5910c514d97bc001123"
+      },
+      "test_native_reference.py": {
+        "file": "source/test_native_reference.py",
+        "sha256": "b7380226b66fbbd4377791b8902d48773d94e6e58edc27f2e092d58a91e15a2b"
+      },
+      "test_prepare_comparison.py": {
+        "file": "source/test_prepare_comparison.py",
+        "sha256": "0c733affaa3058c3e7a6051b094a2d20dbca8aac567ae0ec1cbc1d0879c771b8"
+      },
+      "test_render_estimate.py": {
+        "file": "source/test_render_estimate.py",
+        "sha256": "ec63090ec04136cc1a3fff27a2a3d7a898dcfddccd5b7762357eeb6b8e895a94"
+      },
+      "test_shooting_script.py": {
+        "file": "source/test_shooting_script.py",
+        "sha256": "6e203095e92738e474806d5c5adaf18d2969bb220818ef86a5891109d1a26ba1"
+      },
+      "test_shot_renderer.py": {
+        "file": "source/test_shot_renderer.py",
+        "sha256": "a800fd56ee9f7d73d95af339be6784d7f1e189bb0bd56e3148bcea22cb0b1c53"
+      },
+      "test_video.py": {
+        "file": "source/test_video.py",
+        "sha256": "8e059ebad93e0555f97b17ade3e09b8a280c7e57c15f521a2cbdfa5f0f73b1df"
+      },
+      "validation.py": {
+        "file": "source/validation.py",
+        "sha256": "8df4a3af614cba704e13b22be81c7510681dd15deaf3dde92f0abfa09d0764de"
+      },
+      "video.py": {
+        "file": "source/video.py",
+        "sha256": "dfaf36037dbbd53d981e5e7ea76386105991ce33418be5113ea688bcecf7532e"
+      }
+    }
+  },
+  "outputs": {
+    "video": {
+      "file": "outputs/2026-10-26_native-reference-control/video.mp4",
+      "sha256": "176b37daf6e3a9dca8d57aa65deb9a5d89e0199e50b9aa264a0cdf7a34eb2ad1"
+    },
+    "original_native_video": {
+      "file": "outputs/2026-10-26_native-reference-control/video.native.mp4",
+      "sha256": "79d4109f226e314fea6b7e0496dea8938b98d7ed4bdd8c3776543fe6486eb9dc"
+    },
+    "native_audio": {
+      "file": "outputs/2026-10-26_native-reference-control/native-audio.wav",
+      "sha256": "8a9e883f0693eb5e68d4d9d9cd1cc43b4641e0b74dd2b46079d9a403b89030e4"
+    }
+  },
+  "audio_derivation": "native-audio.wav is 48 kHz stereo 16-bit PCM decoded from the final video AAC stream, not a lossless pre-encoding waveform. Original native media is retained separately.",
+  "automated_observations": {
+    "transcript": {
+      "expected": "We still have some time.",
+      "observed": "We still have some time.",
+      "normalized_expected": "we still have some time",
+      "normalized_observed": "we still have some time",
+      "automated_result": "match",
+      "method": "whisper.cpp base.en, CPU, no initial prompt; verify by listening"
+    },
+    "ocr": {
+      "frames_inspected": 96,
+      "text_bearing_frames": 0,
+      "candidates": [],
+      "automated_result": "no-text-detected",
+      "limitation": "OCR misses are possible; inspect whole frames for captions and overlays.",
+      "vision_revision": 3
+    },
+    "faces": {
+      "frames_with_detected_face": 96,
+      "frames_with_multiple_faces": 0,
+      "frames_inspected": 96,
+      "vision_revision": 3,
+      "limitation": "Face detection and landmarks do not establish Lena's identity or lip sync."
+    },
+    "evidence": {
+      "file": "outputs/2026-10-26_native-reference-control/review/evidence.json",
+      "sha256": "492c9cfcc835311ac8f38aa4223231ec675e05eb19c45f67bd78bf39ee3d98e0"
+    }
+  },
+  "visual_review": {
+    "reviewer": "assistant",
+    "method": "Canonical portrait and scene starting image compared with every decoded face frame (96 frames), first/middle/last whole frames and 6fps whole-frame contact sheet.",
+    "face_identity": "Visually consistent in reviewed frames; short dark bob, side part, eyebrow, eye and nose shape remain consistent with the canonical portrait. Facial expression changes and brief motion softness during speech; no obvious identity swap or persistent deformation observed.",
+    "captions": "No captions or other overlay text visible in the 6fps whole-frame samples; all-frame OCR also detected none.",
+    "limitations": "Visual comparison is not a calibrated identity measurement. Static frames do not establish audiovisual lip sync. The assistant did not listen to the clip or claim audiovisual acceptance.",
+    "sheets": {
+      "faces-00-23.png": {
+        "file": "outputs/2026-10-26_native-reference-control/review/faces-00-23.png",
+        "sha256": "fa5c908340c1af4428e71122b3f6038c0913ccc2c097d42181612bc9b99626be"
+      },
+      "faces-24-47.png": {
+        "file": "outputs/2026-10-26_native-reference-control/review/faces-24-47.png",
+        "sha256": "d508461ce8b8e6ed12c4d99a77105095ac6299e5a0d433f66b38c46e649b1516"
+      },
+      "faces-48-71.png": {
+        "file": "outputs/2026-10-26_native-reference-control/review/faces-48-71.png",
+        "sha256": "dfdeeee072fdd653b630bc53e58619fb376c163f3dc4a48e359ee77c3dd20822"
+      },
+      "faces-72-95.png": {
+        "file": "outputs/2026-10-26_native-reference-control/review/faces-72-95.png",
+        "sha256": "57f510af80d6f08de5b27f3981dd2bd8774f0f5c10994a37103bb3d45a22101b"
+      },
+      "portrait-first-middle-last.png": {
+        "file": "outputs/2026-10-26_native-reference-control/review/portrait-first-middle-last.png",
+        "sha256": "24008c0d93edfa5dbff47e0c55ac1e52484454883e9ad93e5635a95ffb92f2fb"
+      },
+      "whole-frames-6fps.png": {
+        "file": "outputs/2026-10-26_native-reference-control/review/whole-frames-6fps.png",
+        "sha256": "d8ebfd6dd4d7f07f8ee91d181f3d7c82fa9077df4557b38d801a9238bfbb3b11"
+      }
+    }
+  },
+  "human_review": {
+    "status": "pending",
+    "lip_sync": "pending",
+    "face_identity": "pending-human-confirmation",
+    "spoken_words_and_audio_quality": "pending-human-listening",
+    "assistant_audio_review": false
+  },
+  "validation": {
+    "python_tests": {
+      "command": ".venv/bin/python -m unittest discover -s python",
+      "passed": 84
+    },
+    "media": {
+      "codec_name": "h264",
+      "codec_type": "video",
+      "width": 1280,
+      "height": 704,
+      "pix_fmt": "yuv420p",
+      "r_frame_rate": "24/1",
+      "start_time": "0.000000",
+      "duration": "4.000000",
+      "nb_read_frames": "96",
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "48000",
+        "channels": 2,
+        "r_frame_rate": "0/0",
+        "start_time": "0.000000",
+        "duration": "4.000000",
+        "nb_read_frames": "188"
+      }
+    }
+  },
+  "interpretation": "Audio mode and resolution both changed from the rejected A2V take. A perceived improvement cannot isolate either factor. Temporary generated voice does not establish saved voice identity.",
+  "next_step": "Obtain human audiovisual review of this exact video before voice conversion. No additional diagnostic renders or conversion have been performed."
+}

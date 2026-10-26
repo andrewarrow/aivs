@@ -224,11 +224,17 @@ class FixedAudioBackendTests(unittest.TestCase):
             root = Path(directory)
             source = root / "speech.wav"
             write_audio(source, seconds=4)
-            for supplied, frequency in [(True, 440), (False, 880)]:
-                with self.subTest(supplied=supplied):
+            for supplied, frequency, keep_native in [(True, 440, False), (False, 880, False),
+                                                      (False, 880, True)]:
+                with self.subTest(supplied=supplied, keep_native=keep_native):
                     output = root / f"{supplied}.mp4"
                     result = backend.render("A person speaks.", 83, 96, output, width=128, height=64,
-                                            audio_file=source if supplied else None)
+                                            audio_file=source if supplied else None, keep_native=keep_native)
+                    native = root / "video.native.mp4"
+                    self.assertEqual(native.is_file(), keep_native)
+                    if keep_native:
+                        native_info = validation.validate_video(native, 97, 128, 64)
+                        self.assertEqual(native_info["nb_read_frames"], "97")
                     self.assertEqual(result["audio"], "supplied" if supplied else "generated")
                     self.assertEqual(calls[-1][0], "AudioPipeline" if supplied else "Pipeline")
                     self.assertEqual(calls[-1][1], not supplied)

@@ -6,6 +6,41 @@ the original portraits; `reference-provenance.json` records their exact prompts.
 `request.json` pins portrait and starting-image checksums. Existing GUI screenplay
 rendering continues to use its current path while this experiment is evaluated.
 
+## Native-reference control (PLAN2 Milestone A)
+
+The next experiment in [PLAN2.md](../../PLAN2.md) restores joint audio/video
+generation with Lena's existing desert starting image:
+
+```sh
+.venv/bin/python python/native_reference.py
+```
+
+This renders one four-second, 1280×704 shot at 24 fps with seed 83 and the exact
+line “We still have some time.” It uses the pinned `DistilledPipeline`, the
+workspace GPU lock, and first-frame image conditioning. It does not change GUI
+defaults. Every invocation requires a new output directory; an existing take
+cannot be overwritten. An optional `--run-dir outputs/<new-run>` sets its location.
+
+The `diagnostic-native-voice` run saves the complete prompt, source request,
+original starting image, canonical character snapshots, code and dependency
+snapshots, hashes, model/runtime revisions, raw `video.native.mp4`, and final
+`video.mp4`. `native-audio.wav` is 48 kHz stereo PCM decoded from the final video's
+AAC soundtrack, so it retains the reviewed take's performance; it is not the
+pre-encoding waveform. The raw native output also remains available.
+
+Run independent transcription, all-frame OCR, and face-sheet preparation with:
+
+```sh
+.venv/bin/python experiments/character-consistency/review_native.py outputs/<new-run>
+```
+
+This uses the existing cached Whisper model and Apple Vision, records their
+provenance, and writes evidence under the run's `review/` directory. Review the
+images against the canonical portrait and play the video with sound. Technical
+checks leave human lip-sync acceptance pending. The generated voice is temporary
+diagnostic audio and does not satisfy fixed-voice acceptance. Voice conversion
+begins only after the saved-face native performance is accepted.
+
 ## Prepare speech and reference assets
 
 The optional CPU voice environment avoids changing the pinned MLX dependencies.
