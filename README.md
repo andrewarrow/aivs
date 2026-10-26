@@ -112,16 +112,22 @@ prompt; the separate start/end notes support continuity review.
 Whisper transcribes each take locally and the app compares the recognized words
 with the source dialogue. FFmpeg assembles the shots and applies the final fade
 when requested. The assembled result must pass speech, decoded-frame, and
-audio/video timing checks before it is published as `video.mp4`.
+audio/video timing checks before it is published as `video.mp4`. Assembly uses
+the same speech policy for each shot, including its accepted variations.
 
-A shot with mismatched dialogue gets up to two retakes with new seeds. Rejected
-takes and their transcripts are preserved in `takes/<shot>/<take>/`. Recognizer
-or file errors stop the run immediately. If the retakes also fail, the error
-shows the differing words and keeps the latest take available for review.
+Speech mismatches never trigger automatic retakes. Each shot may retain one
+brief added interjection (`oh`, `um`, `uh`, or `hmm`) or one adjacent repeated
+greeting (`hi`, `hello`, or `hey`) when all scripted words remain intact and in
+order. The report records this as an accepted variation, preserving the actual
+transcript and differences. Missing or substituted words, invented sentences,
+and other additions stop for review; they do not spend another render. Recognizer
+or file errors also stop the run. Existing takes and their transcripts remain
+available, including archived replacements in `takes/<shot>/<take>/`.
 
 Speech matching ignores case and punctuation and folds Latin diacritics (so
-“Allô” and “Allo” compare equally); it still checks word order, repetition, and
-lexical changes. Standalone repeated “ha” syllables are ignored only when an
+“Allô” and “Allo” compare equally). There is no percentage-match allowance for
+changed dialogue, and shots without dialogue do not allow added words.
+Standalone repeated “ha” syllables are ignored only when an
 action beat in the source explicitly calls for laughter and the segment falls
 inside that shot's time range. Raw Whisper segments remain in the report. This
 small rule does not classify mixed dialogue or other forms of vocalization.
@@ -179,11 +185,12 @@ Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>
 directory to continue that run in place. Resume uses its saved screenplay, cast,
 seed, render format, and shooting script; Codex runs only if planning never finished.
 Current settings do not change a resumed run, including older 1280×704 runs. Existing
-shots are checked and accepted takes are reused without video inference. A take
-saved before speech verification failed is rechecked, then retaken if its words
-still mismatch. Each explicit Resume allows up to two further retakes per shot;
-take numbers and seeds continue from the saved history. Missing or invalid shots
-are rendered before assembly. Continuation shots are reused only when their
+shots and compatible archived takes are checked under the current speech policy;
+acceptable takes are reused without video inference. Resume does not grant a new
+retry budget: an unresolved speech mismatch stops for review with the saved footage
+intact. Missing shots are rendered only after checking saved candidates. Invalid
+saved footage stops for review when no usable saved alternative is available.
+Continuation shots are reused only when their
 recorded input matches the preceding take, including across interruptions.
 
 By default, the current directory is the workspace. To keep scripts, caches,
@@ -334,10 +341,10 @@ cargo test live_app_server_streams_a_complete_reply -- --ignored
 Timing is estimated, and generated actions, faces, voices, and lip sync still
 need human review. Frame continuity helps within a scene but does not lock
 identity across new locations. Whisper can mishear dialogue; a matching transcript
-does not prove the correct speaker or a convincing performance. Persistent speech
-mismatches stop the run after bounded retakes and leave every take available for
-review. An assembled-video speech mismatch stops for review without automatically
-regenerating accepted shots.
+does not prove the correct speaker or a convincing performance. Speech differences
+outside the narrow natural-delivery allowance stop for review and leave the take
+available. Neither a shot mismatch nor an assembled-video mismatch automatically
+regenerates footage.
 
 The editor has no print pagination or Final Draft import/export. Other renderers
 and separate speech synthesis are outside the main workflow. An opt-in

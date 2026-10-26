@@ -27,7 +27,10 @@ MODEL_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1"
 MODEL_FILENAME = "ggml-small.bin"
 MODEL_SHA256 = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
 MODEL_BYTES = 487601967
+POLICY_VERSION = "natural-delivery-v1"
 _TIMEOUT_SECONDS = 180
+_INTERJECTIONS = frozenset(("oh", "um", "uh", "hmm"))
+_GREETINGS = frozenset(("hi", "hello", "hey"))
 _LAUGHTER_SYLLABLES = re.compile(r"(?:ha){2,}", re.IGNORECASE)
 _HA_SYLLABLE = re.compile(r"(?:ha+)+", re.IGNORECASE)
 _LAUGHTER_CUE = re.compile(
@@ -211,14 +214,42 @@ def _is_expected_laughter(text: str) -> bool:
                for word in normalize_words(text))
 
 
+def is_accepted(report: dict) -> bool:
+    """Keep exact matches distinct from explicitly accepted delivery variations."""
+    return isinstance(report, dict) and report.get("status") in ("passed", "accepted_variation")
+
+
 def compare_transcript(expected_text: str, transcript: str) -> dict:
+    """Allow one brief delivery addition while retaining every scripted word.
+
+    The allowance belongs to one shot. It is never a word-error percentage:
+    substitutions, omissions, negation changes, and invented phrases still need
+    review. Differences remain in the report even when a take is accepted.
+    """
     expected, actual = normalize_words(expected_text), normalize_words(transcript)
     differences = []
     for operation, a, b, c, d in SequenceMatcher(None, expected, actual, autojunk=False).get_opcodes():
         if operation != "equal":
             differences.append({"operation": operation, "expected": expected[a:b], "recognized": actual[c:d],
                                 "expected_word_range": [a, b], "recognized_word_range": [c, d]})
-    return {"status": "passed" if expected == actual else "mismatch",
+    status = "passed" if expected == actual else "mismatch"
+    reason = "The normalized dialogue matches the screenplay." if status == "passed" else None
+    if expected and len(actual) == len(expected) + 1:
+        for index, word in enumerate(actual):
+            if actual[:index] + actual[index + 1:] != expected:
+                continue
+            if word in _INTERJECTIONS:
+                status = "accepted_variation"
+                reason = f"One brief interjection ({word}) was added; all scripted words remain in order."
+                break
+            adjacent_greeting = (index > 0 and actual[index - 1] == word
+                                 or index + 1 < len(actual) and actual[index + 1] == word)
+            if word in _GREETINGS and adjacent_greeting:
+                status = "accepted_variation"
+                reason = f"One adjacent greeting ({word}) was repeated; all scripted words remain in order."
+                break
+    return {"status": status, "policy_version": POLICY_VERSION,
+            "acceptance_reason": reason, "requires_review": status == "mismatch",
             "expected_text": expected_text, "transcript": transcript,
             "expected_words": expected, "recognized_words": actual,
             "differences": differences}
@@ -280,16 +311,27 @@ def _read_transcript(raw: dict, duration: float) -> tuple[str, list[dict]]:
 
 def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None = None,
                         *, root: Path | None = None,
-                        scripted_laughter_intervals: tuple[tuple[float, float], ...] = ()) -> dict:
-    """Reject missing, repeated, substituted, or extra recognized words.
+                        scripted_laughter_intervals: tuple[tuple[float, float], ...] = (),
+                        audio_start_seconds: float = 0.0,
+                        audio_duration_seconds: float | None = None) -> dict:
+    """Check dialogue with a bounded allowance for natural delivery variations.
 
     All failures save a report and raise ``SpeechValidationError``. An exact
     normalized transcript match does not prove absence of unintelligible sound;
     speech timing, identity, and performance still require audiovisual review.
-    No audio is removed or replaced by this check.
+    No audio is removed or replaced by this check. Optional audio bounds let
+    assembly use the same per-shot policy. Reported segment timestamps and
+    scripted laughter intervals are local to that extracted audio range.
     """
     if not isinstance(expected_text, str):
         raise TypeError("Expected dialogue must be a string.")
+    if (type(audio_start_seconds) not in (int, float)
+            or not math.isfinite(audio_start_seconds) or audio_start_seconds < 0):
+        raise ValueError("Audio start must be a finite, nonnegative number of seconds.")
+    if (audio_duration_seconds is not None
+            and (type(audio_duration_seconds) not in (int, float)
+                 or not math.isfinite(audio_duration_seconds) or audio_duration_seconds <= 0)):
+        raise ValueError("Audio duration must be a finite, positive number of seconds.")
     clip = Path(clip).resolve()
     directory = Path(report_dir).resolve() if report_dir is not None else clip.parent
     directory.mkdir(parents=True, exist_ok=True)
@@ -297,11 +339,16 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
     transcript_file = directory / "speech-transcript.txt"
     report_file = directory / "speech-validation.json"
     report = {"status": "failed", "expected_text": expected_text,
+              "policy_version": POLICY_VERSION, "acceptance_reason": None,
+              "requires_review": True,
               "clip": str(clip), "recognition_file": raw_file.name,
               "transcript_file": transcript_file.name,
               "method": "independent-transcript-word-comparison",
               "limitations": "Recognition can miss unintelligible sounds or mishear valid words; speaker identity and lip sync are not checked.",
               "normalization_policy": "Case and punctuation are ignored; Latin combining diacritics are folded, while other scripts, word order, repetitions, contractions, and digits remain distinct.",
+              "acceptance_policy": "One added oh, um, uh, or hmm, or one adjacent repeated hi, hello, or hey is allowed per dialogue shot only when every scripted word remains in order. Other differences require review.",
+              "audio_start_seconds": audio_start_seconds,
+              "audio_duration_seconds": audio_duration_seconds,
               "scripted_laughter_intervals": [list(interval) for interval in scripted_laughter_intervals],
               "ignored_segments": []}
     raw_file.unlink(missing_ok=True)
@@ -311,15 +358,24 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
         report["recognizer"] = identity
         with tempfile.TemporaryDirectory(prefix="aivs-speech-", dir=directory) as temporary:
             wav_file = Path(temporary) / "audio.wav"
-            subprocess.run([
+            extraction = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                "-i", str(clip), "-map", "0:a:0", "-vn", "-ar", "16000", "-ac", "1",
-                "-c:a", "pcm_s16le", str(wav_file),
-            ], check=True, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS)
+                "-i", str(clip),
+            ]
+            if audio_start_seconds:
+                extraction.extend(("-ss", str(audio_start_seconds)))
+            if audio_duration_seconds is not None:
+                extraction.extend(("-t", str(audio_duration_seconds)))
+            extraction.extend(("-map", "0:a:0", "-vn", "-ar", "16000", "-ac", "1",
+                               "-c:a", "pcm_s16le", str(wav_file)))
+            subprocess.run(extraction, check=True, capture_output=True, text=True,
+                           timeout=_TIMEOUT_SECONDS)
             with wave.open(str(wav_file), "rb") as stream:
                 duration = stream.getnframes() / stream.getframerate()
             if duration <= 0:
                 raise ValueError("Generated audio is empty.")
+            if audio_duration_seconds is not None and duration + 0.05 < audio_duration_seconds:
+                raise ValueError("Generated audio ends before the requested shot range.")
             command = [
                 identity["executable"], "--model", identity["model"], "--file", str(wav_file),
                 "--language", "auto", "--no-gpu", "--threads", "4",
@@ -356,15 +412,17 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
         report["last_speech_end_seconds"] = max((segment["end_seconds"] for segment in spoken_segments), default=None)
         if report["last_speech_end_seconds"] is not None:
             report["trailing_seconds_estimate"] = round(duration - report["last_speech_end_seconds"], 3)
-        if report["status"] != "passed":
+        if not is_accepted(report):
             detail = mismatch_summary(report)
-            report["error"] = (f"Generated speech does not match the screenplay: {detail} "
-                               "Review speech-validation.json and the shot audio.")
+            report["error"] = (f"Generated speech needs review: {detail} "
+                               "Recognition can mishear audio. Review speech-validation.json and the shot audio; "
+                               "a mismatch does not authorize another render.")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, wave.Error) as exc:
-        report.update(status="failed", error=f"Could not verify generated speech: {exc}")
+        report.update(status="failed", requires_review=True, acceptance_reason=None,
+                      error=f"Could not verify generated speech: {exc}")
         if isinstance(exc, subprocess.CalledProcessError):
             (directory / "speech-recognition.log").write_text(exc.stderr or "", encoding="utf-8")
     _atomic_json(report_file, report)
-    if report["status"] != "passed":
+    if not is_accepted(report):
         raise SpeechValidationError(report["error"], report)
     return report

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -19,7 +20,6 @@ WIDTH = quality_backend.WIDTH
 HEIGHT = quality_backend.HEIGHT
 _SEED_MODULUS = 2**31
 _RETAKE_SEED_STRIDE = 1_000_003
-_MAX_SPEECH_RETRIES = 2
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -160,7 +160,14 @@ def _saved_report(shot_dir: Path) -> dict | None:
         report = json.loads((shot_dir / "render.json").read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return None
-    return report if isinstance(report, dict) else None
+    if (not isinstance(report, dict) or not isinstance(report.get("prompt"), str)
+            or type(report.get("seed")) is not int
+            or type(report.get("seconds")) is not int
+            or not isinstance(report.get("beat_ids"), list)
+            or not isinstance(report.get("continuity"), dict)
+            or type(report.get("take", 1)) is not int or report.get("take", 1) < 1):
+        return None
+    return report
 
 
 def _last_archived_take(archive_dir: Path) -> int:
@@ -238,8 +245,33 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
                 if _file_sha256(frame) != reference["source_sha256"]:
                     return False
     if saved.get("sha256") is not None and saved["sha256"] != _file_sha256(clip):
-        return False
+        raise ValueError(f"Saved video changed: {clip}. Review it before replacing the take.")
     return True
+
+
+def _restore_take(source: Path, shot_dir: Path, archive_dir: Path,
+                  saved: dict, speech: dict, review_dir: Path) -> None:
+    """Restore an accepted archive without losing it or the current attempt."""
+    with tempfile.TemporaryDirectory(prefix=".restore-take-", dir=shot_dir.parent) as temporary:
+        staged = Path(temporary) / "take"
+        shutil.copytree(source, staged)
+        (staged / "archive.json").unlink(missing_ok=True)
+        for name in ("speech-recognition.json", "speech-transcript.txt", "speech-recognition.log"):
+            if (review_dir / name).is_file():
+                shutil.copy2(review_dir / name, staged / name)
+        speech["original_clip"] = speech["clip"]
+        speech["clip"] = str((shot_dir / "video.mp4").resolve())
+        _atomic_json(staged / "speech-validation.json", speech)
+        restored = dict(saved, status="verifying", speech_validation=speech,
+                        restored_from=str(source), reused=True)
+        restored.pop("error", None)
+        _atomic_json(staged / "render.json", restored)
+        if any(shot_dir.iterdir()):
+            current = _saved_report(shot_dir) or {}
+            take = current.get("take", 1)
+            _archive_take(shot_dir, archive_dir, take if type(take) is int and take > 0 else 1)
+        shot_dir.rmdir()
+        staged.rename(shot_dir)
 
 
 def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *,
@@ -298,15 +330,15 @@ def render_shooting_script(
 
     ``render_fn`` follows ``quality_backend.render``. Completed shot files and
     their atomic reports remain available if a later shot or assembly fails.
-    With ``resume``, matching saved takes are checked and reused before any new
-    video inference. Speech mismatches receive at most two fresh-seed retakes
-    per invocation. Rejected takes and their diagnostics remain available.
+    With ``resume``, matching current and archived takes are checked and reused
+    before any new video inference. Speech mismatches stop for review and never
+    trigger a fresh render. Every saved take remains available.
     """
     shots, seconds, fade_out = _validate_plan(plan)
     spec = resolve_format(plan["render_format"]) if "render_format" in plan else None
     width, height = (spec["model_width"], spec["model_height"]) if spec else (WIDTH, HEIGHT)
     dialogue = _expected_dialogue(plan, shots)
-    shot_laughter_intervals, assembly_laughter_intervals = _scripted_laughter_intervals(plan, shots)
+    shot_laughter_intervals, _ = _scripted_laughter_intervals(plan, shots)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("seed must be an integer.")
     # Fail before GPU inference if verification cannot run. Missing ASR is not
@@ -377,27 +409,27 @@ def render_shooting_script(
             }
 
             reused = False
+            speech = None
             saved = _saved_report(shot_dir)
-            if resume and clip.is_file() and saved is not None:
-                try:
-                    if _matches_saved_take(saved, report, clip, previous_clip):
-                        emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved video")
-                        validate_video(clip, frames, width, height, expect_audio=True)
-                        take = saved.get("take", 1)
-                        report.update(take=take, seed=saved["seed"], runtime=saved.get("runtime"))
-                        report["reused"] = True
-                        reused = True
-                except (ValueError, KeyError, RuntimeError, subprocess.CalledProcessError):
-                    # Invalid media can be replaced; missing tools and filesystem
-                    # errors propagate instead of triggering expensive inference.
-                    reused = False
-            if not reused and any(shot_dir.iterdir()):
-                saved_take = saved.get("take", 1) if saved is not None else 1
-                if type(saved_take) is not int or saved_take < 1:
-                    saved_take = 1
-                take = _archive_take(shot_dir, archive_dir, saved_take) + 1
-                report.update(take=take, seed=_take_seed(base_seed, take))
-            save_shot(index, report)
+            report_committed = False
+
+            def save_failure(status, error=None):
+                # Verification must not relabel old footage with the seed and
+                # metadata of a proposed new take if it fails or is stopped.
+                checkpoint = report if report_committed else _saved_report(shot_dir)
+                failed = dict(checkpoint or report, status=status)
+                if error is not None:
+                    failed["error"] = str(error)
+                    if isinstance(error, speech_validation.SpeechValidationError):
+                        key = ("speech_validation" if error.report.get("clip") == str(clip.resolve())
+                               else "saved_take_review")
+                        failed[key] = error.report
+                if checkpoint is None and clip.is_file():
+                    # Do not invent provenance for an unidentifiable clip.
+                    if on_shot is not None:
+                        on_shot(index, failed)
+                else:
+                    save_shot(index, failed)
 
             shot_started = time.monotonic()
 
@@ -420,60 +452,95 @@ def render_shooting_script(
                 )
 
             try:
-                retries = 0
-                while True:
-                    if reused:
-                        runtime = report["runtime"]
-                        emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved speech")
-                    else:
-                        shot_started = time.monotonic()
-                        if use_previous_frame:
-                            _extract_last_frame(previous_clip, source_frame, image_file)
-                        runtime = renderer(
-                            shot["prompt"], report["seed"], frames, clip,
-                            on_progress=shot_progress,
-                            image_file=image_file,
-                            hold_image_framing=False,
-                            **({"width": width, "height": height} if spec else {}),
-                        )
-                        report["runtime"] = runtime
-                        emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
-                    report["sha256"] = _file_sha256(clip)
-                    # Persist the generated take before the recognizer runs so a
-                    # stop or tool failure can resume verification, not inference.
-                    report["status"] = "verifying"
-                    save_shot(index, report)
-                    try:
-                        speech = speech_validation.validate_shot_audio(
-                            clip, dialogue[index], shot_dir, root=quality_backend.ROOT,
-                            scripted_laughter_intervals=shot_laughter_intervals[index],
-                        )
+                if resume:
+                    candidates = [(shot_dir, saved)]
+                    if archive_dir.is_dir():
+                        candidates.extend((path, _saved_report(path)) for path in sorted(
+                            (path for path in archive_dir.iterdir()
+                             if path.is_dir() and path.name.isdecimal()),
+                            key=lambda path: int(path.name),
+                        ))
+                    failures = []
+                    for candidate_dir, candidate in candidates:
+                        candidate_clip = candidate_dir / "video.mp4"
+                        if not candidate_clip.is_file():
+                            continue
+                        if candidate is None:
+                            failures.append((candidate_dir, candidate, RuntimeError(
+                                "Saved video has no valid render report; its provenance needs review.")))
+                            continue
+                        try:
+                            if not _matches_saved_take(candidate, report, candidate_clip, previous_clip):
+                                continue
+                            emit_progress(last_fraction,
+                                          f"Shot {index + 1}/{total_shots}: Checking saved take {candidate.get('take', 1)}")
+                            validate_video(candidate_clip, frames, width, height, expect_audio=True)
+                        except (ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as exc:
+                            failures.append((candidate_dir, candidate, exc))
+                            continue
+                        # Historical reports stay intact. Rechecks of archives
+                        # are saved separately until a candidate is restored.
+                        review_dir = (shot_dir if candidate_dir == shot_dir else
+                                      shot_dir / "saved-take-reviews" / candidate_dir.name)
+                        try:
+                            candidate_speech = speech_validation.validate_shot_audio(
+                                candidate_clip, dialogue[index], review_dir, root=quality_backend.ROOT,
+                                scripted_laughter_intervals=shot_laughter_intervals[index],
+                            )
+                        except speech_validation.SpeechValidationError as exc:
+                            if exc.report.get("status") != "mismatch":
+                                raise
+                            failures.append((candidate_dir, candidate, exc))
+                            continue
+                        if candidate_dir != shot_dir:
+                            _restore_take(candidate_dir, shot_dir, archive_dir,
+                                          candidate, candidate_speech, review_dir)
+                            report["restored_from"] = str(candidate_dir)
+                        report.update(take=candidate.get("take", 1), seed=candidate["seed"],
+                                      runtime=candidate.get("runtime"), reused=True)
+                        speech = candidate_speech
+                        reused = True
+                        report_committed = True
                         break
-                    except speech_validation.SpeechValidationError as exc:
-                        report.update(status="failed", error=str(exc), speech_validation=exc.report)
-                        save_shot(index, report)
-                        if exc.report.get("status") != "mismatch":
-                            raise
-                        detail = speech_validation.mismatch_summary(exc.report)
-                        if retries >= _MAX_SPEECH_RETRIES:
-                            raise speech_validation.SpeechValidationError(
-                                f"Shot {index + 1}: speech still differs after {retries} retakes. "
-                                f"{detail} Review shots/{index + 1:03d}/video.mp4 and its speech report. "
-                                "Resume will try fresh takes while keeping accepted shots.",
-                                exc.report,
-                            ) from exc
-                        retries += 1
-                        emit_progress(
-                            last_fraction,
-                            f"Shot {index + 1}/{total_shots}: {detail} Retaking ({retries}/{_MAX_SPEECH_RETRIES})",
-                        )
-                        take = _archive_take(shot_dir, archive_dir, report["take"]) + 1
-                        report.update(take=take, seed=_take_seed(base_seed, take),
-                                      status="running", runtime=None)
-                        for key in ("error", "speech_validation", "sha256", "reused"):
-                            report.pop(key, None)
-                        reused = False
-                        save_shot(index, report)
+                    if not reused and failures:
+                        candidate_dir, candidate, failure = failures[0]
+                        message = (f"Shot {index + 1} needs review: {failure} "
+                                   f"Saved take: {candidate_dir / 'video.mp4'}. "
+                                   "No automatic retake was made. Resume rechecks saved footage.")
+                        if isinstance(failure, speech_validation.SpeechValidationError):
+                            raise speech_validation.SpeechValidationError(message, failure.report) from failure
+                        raise RuntimeError(message) from failure
+
+                if not reused:
+                    if any(shot_dir.iterdir()):
+                        saved_take = saved.get("take", 1) if saved is not None else 1
+                        if type(saved_take) is not int or saved_take < 1:
+                            saved_take = 1
+                        take = _archive_take(shot_dir, archive_dir, saved_take) + 1
+                        report.update(take=take, seed=_take_seed(base_seed, take))
+                    report_committed = True
+                    save_shot(index, report)
+                    shot_started = time.monotonic()
+                    if use_previous_frame:
+                        _extract_last_frame(previous_clip, source_frame, image_file)
+                    report["runtime"] = renderer(
+                        shot["prompt"], report["seed"], frames, clip,
+                        on_progress=shot_progress,
+                        image_file=image_file,
+                        hold_image_framing=False,
+                        **({"width": width, "height": height} if spec else {}),
+                    )
+                runtime = report["runtime"]
+                report["sha256"] = _file_sha256(clip)
+                # A speech mismatch never authorizes another video render.
+                report["status"] = "verifying"
+                save_shot(index, report)
+                if speech is None:
+                    emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
+                    speech = speech_validation.validate_shot_audio(
+                        clip, dialogue[index], shot_dir, root=quality_backend.ROOT,
+                        scripted_laughter_intervals=shot_laughter_intervals[index],
+                    )
                 report.pop("error", None)
                 report.update(status="complete", speech_validation=speech)
                 clips.append(clip)
@@ -490,37 +557,75 @@ def render_shooting_script(
                     "speech_validation": speech,
                     "sha256": report["sha256"],
                     **({"reused": True} if reused else {}),
+                    **({"restored_from": report["restored_from"]} if "restored_from" in report else {}),
                 })
                 completed_seconds += shot["seconds"]
                 save_shot(index, report)
                 emit_progress(
                     min(0.97, 0.97 * completed_seconds / seconds),
-                    f"Shot {index + 1}/{total_shots} {'reused' if reused else 'complete'}",
+                    f"Shot {index + 1}/{total_shots} {'reused' if reused else 'complete'}"
+                    + (" (minor speech variation)" if speech.get("status") == "accepted_variation" else ""),
                 )
             except KeyboardInterrupt:
-                report["status"] = "interrupted"
-                save_shot(index, report)
+                save_failure("interrupted")
                 raise
             except Exception as exc:
-                report.update(status="failed", error=str(exc))
-                if isinstance(exc, speech_validation.SpeechValidationError):
-                    report["speech_validation"] = exc.report
-                save_shot(index, report)
+                save_failure("failed", exc)
                 raise
 
         emit_progress(0.97, "Assembling shots")
         def verify_assembly(clip):
             emit_progress(0.98, "Checking assembled dialogue after transitions")
-            return speech_validation.validate_shot_audio(
-                clip, " ".join(text for text in dialogue if text), output.parent,
-                root=quality_backend.ROOT,
-                scripted_laughter_intervals=assembly_laughter_intervals,
+            # Validate exact shot ranges so each keeps its own small delivery
+            # allowance. A whole-film comparison would either reject accepted
+            # additions or let one shot spend every other shot's allowance.
+            assembly = {
+                "status": "verifying", "policy_version": speech_validation.POLICY_VERSION,
+                "method": "per-shot-assembled-audio-comparison", "clip": str(clip.resolve()),
+                "expected_text": " ".join(text for text in dialogue if text),
+                "shots": [], "requires_review": False,
+            }
+            offset = 0
+            for index, shot in enumerate(shots):
+                review_dir = output.parent / "assembly-speech" / f"{index + 1:03d}"
+                try:
+                    speech = speech_validation.validate_shot_audio(
+                        clip, dialogue[index], review_dir, root=quality_backend.ROOT,
+                        scripted_laughter_intervals=shot_laughter_intervals[index],
+                        audio_start_seconds=offset, audio_duration_seconds=shot["seconds"],
+                    )
+                except speech_validation.SpeechValidationError as exc:
+                    assembly["shots"].append({"index": index, "speech_validation": exc.report})
+                    assembly.update(status=exc.report["status"], requires_review=True,
+                                    error=f"Assembled shot {index + 1} needs review: {exc}")
+                    _atomic_json(output.parent / "speech-validation.json", assembly)
+                    raise speech_validation.SpeechValidationError(assembly["error"], assembly) from exc
+                assembly["shots"].append({"index": index, "speech_validation": speech})
+                offset += shot["seconds"]
+            varied = any(item["speech_validation"]["status"] == "accepted_variation"
+                         for item in assembly["shots"])
+            assembly.update(
+                status="accepted_variation" if varied else "passed",
+                acceptance_reason="Every assembled shot satisfies the same speech policy as its source take.",
+                transcript=" ".join(item["speech_validation"].get("transcript", "")
+                                    for item in assembly["shots"]).strip(),
             )
+            _atomic_json(output.parent / "speech-validation.json", assembly)
+            (output.parent / "speech-transcript.txt").write_text(assembly["transcript"] + "\n", encoding="utf-8")
+            return assembly
 
         video_info = _assemble(
             clips, output, seconds, fade_out, verify_audio=verify_assembly,
             **({"width": spec["width"], "height": spec["height"], "crop": True} if spec else {}),
         )
+        # The verified partial file has now been renamed to the final movie.
+        assembly = video_info["speech_validation"]
+        assembly["clip"] = str(output.resolve())
+        for item in assembly["shots"]:
+            item["speech_validation"]["clip"] = str(output.resolve())
+            _atomic_json(output.parent / "assembly-speech" / f"{item['index'] + 1:03d}"
+                         / "speech-validation.json", item["speech_validation"])
+        _atomic_json(output.parent / "speech-validation.json", assembly)
         emit_progress(0.99, "Validating complete video")
     except KeyboardInterrupt:
         raise
