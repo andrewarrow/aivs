@@ -124,6 +124,42 @@ The door closes.
 
 
 class ValidationTests(unittest.TestCase):
+    def test_format_reaches_planner_and_model_and_invalidates_other_format_plans(self):
+        plans = []
+        for name, dimensions, canvas, aspect in (
+            ("landscape", (1280, 720), (1280, 768), "16:9"),
+            ("portrait", (1080, 1920), (1088, 1920), "9:16"),
+        ):
+            with self.subTest(format=name):
+                request = dict(REQUEST, render_format=name)
+                source = parse_request(request, PROFILES)
+                instruction = shooting_script._instruction(source, None)
+                data = json.loads(instruction.split("\nSOURCE DATA\n", 1)[1].strip())
+                spec = data["render_format"]
+                self.assertEqual((spec["width"], spec["height"]), dimensions)
+                self.assertEqual((spec["model_width"], spec["model_height"]), canvas)
+                self.assertEqual(spec["aspect_ratio"], aspect)
+                plan = validate_shooting_script(candidate(), request, PROFILES)
+                self.assertEqual(plan["render_format"], name)
+                self.assertTrue(all(aspect in shot["prompt"] for shot in plan["shots"]))
+                self.assertEqual(plan["seconds"], 18)
+                with tempfile.TemporaryDirectory() as directory:
+                    save_shooting_script(plan, Path(directory))
+                    self.assertIn(f"{dimensions[0]} × {dimensions[1]}",
+                                  (Path(directory) / "shooting-script.txt").read_text())
+                    self.assertEqual(load_shooting_script(
+                        Path(directory) / "shooting-script.json", request, PROFILES), plan)
+                plans.append(plan)
+        self.assertNotEqual(plans[0]["source_sha256"], plans[1]["source_sha256"])
+        for stale in (plans[0], validate_shooting_script(candidate(), REQUEST, PROFILES)):
+            with self.assertRaisesRegex(ValueError, "render format"):
+                validate_shooting_script(stale, dict(REQUEST, render_format="portrait"), PROFILES)
+
+    def test_unknown_or_malformed_format_is_rejected(self):
+        for value in (None, "square", "9:16", {}, True):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "Render format"):
+                parse_request(dict(REQUEST, render_format=value), PROFILES)
+
     def test_reference_asset_changes_invalidate_cached_plans_without_changing_description(self):
         profiles = copy.deepcopy(PROFILES)
         for field in ("image", "scene_image", "voice_sample"):

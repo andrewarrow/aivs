@@ -21,6 +21,7 @@ import characters
 import speech_validation
 from shooting_script import create_shooting_script, load_shooting_script, parse_request, save_shooting_script
 from shot_renderer import render_shooting_script
+from render_formats import resolve_format
 
 DEFAULT_PROMPT = Path(__file__).with_name("default-prompt.txt").read_text().strip()
 _token = ""
@@ -163,6 +164,7 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
     """Translate arbitrary human screenplay text and its cast, then film the plan."""
     if not isinstance(request, dict) or request.get("version") != 1:
         raise ValueError("Screenplay requests must use version 1.")
+    spec = resolve_format(request["render_format"]) if "render_format" in request else None
     cast = request.get("cast")
     if not isinstance(cast, list) or any(not isinstance(binding, dict) or not isinstance(binding.get("character"), str)
                                          for binding in cast):
@@ -184,7 +186,11 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
         (run_dir / "screenplay-request.json").write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
         report = {
             "status": "planning", "original_script": request["script"], "cast": request["cast"],
-            "seed": seed, "fps": FPS, "width": WIDTH, "height": HEIGHT, "audio": "generated",
+            "seed": seed, "fps": FPS,
+            "width": spec["width"] if spec else WIDTH, "height": spec["height"] if spec else HEIGHT,
+            **({"render_format": spec["name"], "model_width": spec["model_width"],
+                "model_height": spec["model_height"]} if spec else {}),
+            "audio": "generated",
             "characters": profiles, "shooting_script": "shooting-script.json",
         }
 
@@ -259,7 +265,10 @@ def resume_screenplay(directory):
         seed = report.get("seed")
         if not isinstance(profiles, list) or type(seed) is not int:
             raise ValueError("Cannot resume this directory: the saved cast or seed is missing.")
-        if (report.get("fps"), report.get("width"), report.get("height")) != (FPS, WIDTH, HEIGHT):
+        spec = resolve_format(request["render_format"]) if "render_format" in request else None
+        dimensions = (spec["width"], spec["height"]) if spec else (WIDTH, HEIGHT)
+        if ((report.get("fps"), report.get("width"), report.get("height")) != (FPS, *dimensions)
+                or report.get("render_format") != request.get("render_format")):
             raise ValueError("Cannot resume a run with different video dimensions or frame rate.")
         # Use the cast snapshot, independent of edits to the current screenplay
         # or gallery. Revalidating a saved plan never calls the Codex planner.
@@ -344,9 +353,13 @@ def main():
                         help="Bind a role in --script-file to a saved character; repeat for each role")
     parser.add_argument("--plan-only", action="store_true", help="Save the shooting script without running video inference")
     parser.add_argument("--shooting-script", type=Path, help="Reuse a shooting script matching this source and cast")
+    parser.add_argument("--render-format", choices=("landscape", "portrait"),
+                        help="Screenplay delivery format: landscape 1280×720 or portrait 1080×1920")
     args = parser.parse_args()
     try:
         if args.command == "resume":
+            if args.render_format is not None:
+                raise ValueError("Resume uses the run's saved render format; omit --render-format.")
             if args.output_dir is None:
                 raise ValueError("Resume requires --output-dir pointing to an existing AIVS output directory.")
             resume_screenplay(args.output_dir)
@@ -369,8 +382,16 @@ def main():
             elif args.cast:
                 raise ValueError("--cast requires --script-file; JSON requests include their own cast.")
             if request is not None:
+                if args.render_format is not None:
+                    if not isinstance(request, dict):
+                        raise ValueError("Screenplay request must be an object.")
+                    request = dict(request, render_format=args.render_format)
+                elif args.script_file is not None:
+                    request["render_format"] = "landscape"
                 generate_screenplay(request, args.seed, shooting_script=args.shooting_script, plan_only=args.plan_only)
             else:
+                if args.render_format is not None:
+                    raise ValueError("--render-format requires --screenplay-json or --script-file.")
                 if args.plan_only or args.shooting_script is not None:
                     raise ValueError("Shooting-script options require --screenplay-json or --script-file.")
                 generate(args.seed, args.prompt, character=args.character,

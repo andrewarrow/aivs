@@ -12,6 +12,7 @@ import time
 import quality_backend
 import speech_validation
 from validation import validate_video
+from render_formats import resolve_format
 
 FPS = quality_backend.FPS
 WIDTH = quality_backend.WIDTH
@@ -242,7 +243,7 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
 
 
 def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *,
-              width=None, height=None, verify_audio=None) -> dict:
+              width=None, height=None, verify_audio=None, crop=False) -> dict:
     width = WIDTH if width is None else width
     height = HEIGHT if height is None else height
     run_dir = output.parent
@@ -257,7 +258,8 @@ def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *,
     partial.unlink(missing_ok=True)
     frames = seconds * FPS
     video_filters = [
-        f"scale={width}:{height}:flags=lanczos", f"fps={FPS}", "format=yuv420p",
+        f"crop={width}:{height}" if crop else f"scale={width}:{height}:flags=lanczos",
+        "setsar=1", f"fps={FPS}", "format=yuv420p",
         "setpts=PTS-STARTPTS",
     ]
     audio_filters = ["aresample=48000", "apad", f"atrim=duration={seconds}", "asetpts=PTS-STARTPTS"]
@@ -301,6 +303,8 @@ def render_shooting_script(
     per invocation. Rejected takes and their diagnostics remain available.
     """
     shots, seconds, fade_out = _validate_plan(plan)
+    spec = resolve_format(plan["render_format"]) if "render_format" in plan else None
+    width, height = (spec["model_width"], spec["model_height"]) if spec else (WIDTH, HEIGHT)
     dialogue = _expected_dialogue(plan, shots)
     shot_laughter_intervals, assembly_laughter_intervals = _scripted_laughter_intervals(plan, shots)
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -361,6 +365,8 @@ def render_shooting_script(
                 "seed": _take_seed(base_seed, take),
                 "take": take,
                 "seconds": shot["seconds"],
+                "width": width,
+                "height": height,
                 "status": "running",
                 "runtime": None,
                 "start_state": shot["start_state"],
@@ -376,7 +382,7 @@ def render_shooting_script(
                 try:
                     if _matches_saved_take(saved, report, clip, previous_clip):
                         emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved video")
-                        validate_video(clip, frames, WIDTH, HEIGHT, expect_audio=True)
+                        validate_video(clip, frames, width, height, expect_audio=True)
                         take = saved.get("take", 1)
                         report.update(take=take, seed=saved["seed"], runtime=saved.get("runtime"))
                         report["reused"] = True
@@ -428,6 +434,7 @@ def render_shooting_script(
                             on_progress=shot_progress,
                             image_file=image_file,
                             hold_image_framing=False,
+                            **({"width": width, "height": height} if spec else {}),
                         )
                         report["runtime"] = runtime
                         emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
@@ -510,7 +517,10 @@ def render_shooting_script(
                 scripted_laughter_intervals=assembly_laughter_intervals,
             )
 
-        video_info = _assemble(clips, output, seconds, fade_out, verify_audio=verify_assembly)
+        video_info = _assemble(
+            clips, output, seconds, fade_out, verify_audio=verify_assembly,
+            **({"width": spec["width"], "height": spec["height"], "crop": True} if spec else {}),
+        )
         emit_progress(0.99, "Validating complete video")
     except KeyboardInterrupt:
         raise

@@ -27,6 +27,8 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
             status: String::new(),
             error: None,
             import_error: None,
+            settings_open: false,
+            settings_error: None,
             quit: false,
         },
         commands,
@@ -37,6 +39,110 @@ fn account() -> ChatGptAccount {
     ChatGptAccount {
         email: Some("person@example.com".into()),
         plan_type: Some("plus".into()),
+    }
+}
+
+#[test]
+fn file_settings_modal_selects_and_persists_format_at_supported_sizes() {
+    for (width, height) in [
+        (390.0, 844.0),
+        (768.0, 1024.0),
+        (1280.0, 800.0),
+        (1440.0, 900.0),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut app, _commands) = app();
+        app.root = root.path().to_owned();
+        app.video = crate::video::VideoWorkspace::ready_for_test(app.root.clone());
+        app.video.output_for_test(app.root.join("video.mp4"));
+        let ctx = egui::Context::default();
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+        let frame = |app: &mut App, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(bounds),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.ui(ui),
+            )
+        };
+        let text_rect = |output: &egui::FullOutput, label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label} should be visible at {width}×{height}"))
+        };
+        let click = |pos| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        let _ = frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        let _ = frame(&mut app, click(text_rect(&output, "File").center()));
+        let output = frame(&mut app, vec![]);
+        let _ = frame(&mut app, click(text_rect(&output, "Settings…").center()));
+        assert!(app.settings_open);
+        let output = frame(&mut app, vec![]);
+        assert!(
+            app.playback_target().is_none(),
+            "native player must not cover the modal"
+        );
+        for label in [
+            "Settings",
+            "Render format",
+            "1280 × 720 · 16:9",
+            "1080 × 1920 · 9:16",
+            "Done",
+        ] {
+            assert!(bounds.contains_rect(text_rect(&output, label)));
+        }
+        let output = frame(
+            &mut app,
+            click(text_rect(&output, "1080 × 1920 · 9:16").center()),
+        );
+        assert_eq!(
+            app.video.render_format,
+            crate::settings::RenderFormat::Portrait
+        );
+        assert_eq!(
+            crate::settings::RenderFormat::load(root.path()),
+            crate::settings::RenderFormat::Portrait
+        );
+        let _ = frame(&mut app, click(text_rect(&output, "Done").center()));
+        assert!(!app.settings_open);
+        app.settings_open = true;
+        let _ = frame(&mut app, vec![]);
+        let _ = frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(!app.settings_open, "Escape dismisses settings");
     }
 }
 

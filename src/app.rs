@@ -29,6 +29,8 @@ pub struct App {
     status: String,
     error: Option<String>,
     import_error: Option<String>,
+    settings_open: bool,
+    settings_error: Option<String>,
     pub quit: bool,
 }
 
@@ -56,6 +58,8 @@ impl App {
             status: String::new(),
             error: None,
             import_error: None,
+            settings_open: false,
+            settings_error: None,
             quit: false,
         }
     }
@@ -241,6 +245,11 @@ impl App {
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    if ui.button("Settings…").clicked() {
+                        ui.close();
+                        self.settings_open = true;
+                        self.settings_error = None;
+                    }
                     if ui
                         .add_enabled(
                             self.screenplay.can_import(),
@@ -311,6 +320,50 @@ impl App {
             }
         } else {
             egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
+        }
+        self.settings_ui(ui.ctx());
+        // The native AVKit view sits above egui; hide it while the modal is open.
+        if self.settings_open {
+            self.video.playback_target = None;
+        }
+    }
+
+    fn settings_ui(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let response = egui::Modal::new(egui::Id::new("settings")).show(ctx, |ui| {
+            ui.set_max_width((ctx.content_rect().width() - 64.0).clamp(200.0, 320.0));
+            ui.heading("Settings");
+            ui.add_space(8.0);
+            ui.label("Render format");
+            let mut format = self.video.render_format;
+            ui.spacing_mut().interact_size.y = 44.0;
+            for option in [
+                crate::settings::RenderFormat::Landscape,
+                crate::settings::RenderFormat::Portrait,
+            ] {
+                ui.radio_value(&mut format, option, option.label());
+            }
+            if format != self.video.render_format {
+                self.settings_error = format.save(&self.root).err();
+                if self.settings_error.is_none() {
+                    self.video.render_format = format;
+                }
+            }
+            if self.video.is_rendering() {
+                ui.label("Changes apply to the next generation.");
+            }
+            if let Some(error) = &self.settings_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            ui.add_space(8.0);
+            if ui.button("Done").clicked() {
+                self.settings_open = false;
+            }
+        });
+        if response.should_close() {
+            self.settings_open = false;
         }
     }
 

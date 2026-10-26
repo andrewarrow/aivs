@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import shot_renderer
+from render_formats import resolve_format
 
 
 def plan_for(*, fade_out=False, continuations=(False, True, False), scene_ids=None):
@@ -98,13 +99,15 @@ class ShotRendererTests(unittest.TestCase):
             self.addCleanup(mock.stop)
 
     def render_small_clip(self, prompt, seed, frames, output, *, on_progress,
-                          image_file, hold_image_framing):
+                          image_file, hold_image_framing, width=None, height=None):
         self.calls.append((prompt, seed, frames, image_file, hold_image_framing))
+        width = shot_renderer.WIDTH if width is None else width
+        height = shot_renderer.HEIGHT if height is None else height
         seconds = frames / shot_renderer.FPS
         subprocess.run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-f", "lavfi", "-i",
-            f"testsrc2=size={shot_renderer.WIDTH}x{shot_renderer.HEIGHT}:rate={shot_renderer.FPS}:duration={seconds}",
+            f"testsrc2=size={width}x{height}:rate={shot_renderer.FPS}:duration={seconds}",
             "-f", "lavfi", "-i", f"sine=frequency={440 + seed % 100}:sample_rate=48000:duration={seconds}",
             "-t", str(seconds), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-ar", "48000", "-ac", "2", str(output),
@@ -113,6 +116,38 @@ class ShotRendererTests(unittest.TestCase):
         on_progress(label="test render", fraction=0.5, remaining_seconds=2)
         on_progress(label="test render", fraction=1.0, remaining_seconds=0)
         return {"backend": "fake", "output_frames": frames, "seed": seed}
+
+    def test_exact_delivery_sizes_preserve_native_frame_handoff_and_resume_takes(self):
+        for name in ("landscape", "portrait"):
+            with self.subTest(format=name), tempfile.TemporaryDirectory() as directory:
+                self.calls = []
+                spec = resolve_format(name)
+                plan = dict(plan_for(continuations=(False, True), scene_ids=(1, 1)), render_format=name)
+                output = Path(directory) / "video.mp4"
+
+                def render(*args, **kwargs):
+                    self.assertEqual((kwargs["width"], kwargs["height"]),
+                                     (spec["model_width"], spec["model_height"]))
+                    return self.render_small_clip(*args, **kwargs)
+
+                result = shot_renderer.render_shooting_script(plan, 19, output, render_fn=render)
+                self.assertEqual((result["video"]["width"], result["video"]["height"]),
+                                 (spec["width"], spec["height"]))
+                self.assertEqual(result["video"]["sample_aspect_ratio"], "1:1")
+                self.assertEqual(len(self.calls), 2)
+                native = subprocess.check_output([
+                    "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                    "stream=width,height", "-of", "json", str(self.calls[1][3]),
+                ], text=True)
+                frame = json.loads(native)["streams"][0]
+                self.assertEqual((frame["width"], frame["height"]),
+                                 (spec["model_width"], spec["model_height"]))
+                with patch.object(shot_renderer.quality_backend, "render") as renderer:
+                    resumed = shot_renderer.render_shooting_script(plan, 19, output, resume=True)
+                    renderer.assert_not_called()
+                self.assertTrue(all(shot["reused"] for shot in resumed["shots"]))
+                self.assertEqual((resumed["video"]["width"], resumed["video"]["height"]),
+                                 (spec["width"], spec["height"]))
 
     def test_continuity_order_seeds_progress_assembly_and_validation(self):
         self.calls = []

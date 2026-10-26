@@ -119,6 +119,42 @@ class SetupTests(unittest.TestCase):
 
 
 class RenderTests(unittest.TestCase):
+    def test_portrait_run_resumes_with_saved_format_and_rejects_metadata_mismatch(self):
+        request = dict(screenplay_request(), render_format="portrait")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(video, "ROOT", Path(directory)), \
+                patch.object(video, "check_environment"), \
+                patch.object(video, "prompt_token_counter", return_value=lambda text: len(text.split())), \
+                patch.object(video, "create_shooting_script", side_effect=lambda req, profiles, *args, **kwargs:
+                             validated_screenplay_plan(req, profiles, token_counter=kwargs["token_counter"])) as planner, \
+                patch.object(video, "render_shooting_script") as renderer, \
+                patch("sys.stdout", new_callable=io.StringIO):
+            video.generate_screenplay(request, 41, plan_only=True)
+            run_dir = next((Path(directory) / "outputs").iterdir())
+            report_path = run_dir / "render.json"
+            report = json.loads(report_path.read_text())
+            self.assertEqual((report["width"], report["height"]), (1080, 1920))
+            self.assertEqual((report["model_width"], report["model_height"]), (1088, 1920))
+            planner.reset_mock()
+
+            def render(plan, seed, output, **kwargs):
+                self.assertEqual(plan["render_format"], "portrait")
+                self.assertEqual(seed, 41)
+                self.assertTrue(kwargs["resume"])
+                output.write_bytes(b"validated portrait video")
+                return {"output_frames": 96}
+
+            renderer.side_effect = render
+            video.resume_screenplay(run_dir)
+            planner.assert_not_called()
+            renderer.assert_called_once()
+            self.assertEqual(json.loads(report_path.read_text())["status"], "complete")
+            # Resume also rejects a format mismatch before its completed-file fast path.
+            report["render_format"] = "landscape"
+            report_path.write_text(json.dumps(report))
+            with self.assertRaisesRegex(ValueError, "dimensions"):
+                video.resume_screenplay(run_dir)
+
     def test_default_matches_option_eight_and_its_auto_duration(self):
         self.assertIn('"hello everyone my name is nancy and I am so excited to be here talking with you"', video.DEFAULT_PROMPT)
         timing = duration_estimate(video.DEFAULT_PROMPT)
@@ -291,7 +327,7 @@ class RenderTests(unittest.TestCase):
                         patch("sys.argv", argv):
                     self.assertEqual(video.main(), 0)
                 generate.assert_called_once_with(
-                    {"version": 1, "script": script, "cast": [
+                    {"version": 1, "script": script, "render_format": "landscape", "cast": [
                         {"role": "Vale", "character": "eli"},
                         {"role": "Mara", "character": "ava"},
                     ]},

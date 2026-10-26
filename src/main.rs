@@ -9,6 +9,7 @@ mod characters;
 mod codex;
 mod playback;
 mod screenplay;
+mod settings;
 mod video;
 
 use std::{error::Error, num::NonZeroU32, sync::Arc, time::Instant};

@@ -408,6 +408,7 @@ fn read_output(
 
 pub struct VideoWorkspace {
     root: PathBuf,
+    pub render_format: crate::settings::RenderFormat,
     setup: Setup,
     job: Option<Job>,
     selected_scene: Option<u64>,
@@ -421,6 +422,7 @@ pub struct VideoWorkspace {
     current_log_stream: Option<String>,
     error: Option<String>,
     output: Option<PathBuf>,
+    output_aspect: f32,
     failure_alert: Option<String>,
     reveal_output: bool,
     pub playback_target: Option<crate::playback::PlaybackTarget>,
@@ -436,6 +438,7 @@ impl VideoWorkspace {
 
     fn idle(root: PathBuf) -> Self {
         Self {
+            render_format: crate::settings::RenderFormat::load(&root),
             root,
             setup: Setup::Checking,
             job: None,
@@ -450,6 +453,7 @@ impl VideoWorkspace {
             current_log_stream: None,
             error: None,
             output: None,
+            output_aspect: 16.0 / 9.0,
             failure_alert: None,
             reveal_output: false,
             playback_target: None,
@@ -573,6 +577,16 @@ impl VideoWorkspace {
                 self.fraction = Some(1.0);
                 self.remaining_seconds = None;
                 self.playback_error = None;
+                self.output_aspect = path
+                    .parent()
+                    .and_then(|directory| std::fs::read(directory.join("render.json")).ok())
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .and_then(|report| {
+                        let width = report["width"].as_u64()?;
+                        let height = report["height"].as_u64()?;
+                        (width > 0 && height > 0).then_some(width as f32 / height as f32)
+                    })
+                    .unwrap_or(16.0 / 9.0);
                 self.output = Some(path);
                 self.reveal_output = true;
                 self.status = "Video ready.".into();
@@ -686,8 +700,11 @@ impl VideoWorkspace {
                 ui.set_max_width(ui.available_width().min(760.0));
                 ui.heading("Talking video");
                 ui.add(
-                    egui::Label::new("LTX-2.5 · 1280 × 704 · 24 fps · generated speech and video")
-                        .wrap(),
+                    egui::Label::new(format!(
+                        "LTX-2.5 · {} · 24 fps · generated speech and video",
+                        self.render_format.label()
+                    ))
+                    .wrap(),
                 );
                 ui.add_space(16.0);
                 let scene_label = ui.label("Scene");
@@ -723,7 +740,7 @@ impl VideoWorkspace {
                 let request = self
                     .selected_scene
                     .ok_or_else(|| "Add a scene heading before generating.".to_owned())
-                    .and_then(|scene_id| screenplay.render_request(scene_id));
+                    .and_then(|scene_id| self.render_request(screenplay, scene_id));
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
@@ -802,8 +819,8 @@ impl VideoWorkspace {
                 self.activity_ui(ui, 240.0);
                 if let Some(path) = &self.output {
                     ui.add_space(8.0);
-                    let width = ui.available_width();
-                    let height = (width * 704.0 / 1280.0 + 40.0).min(460.0);
+                    let width = ui.available_width().min(420.0 * self.output_aspect);
+                    let height = width / self.output_aspect + 40.0;
                     let (rect, response) =
                         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
                     if self.reveal_output {
@@ -828,6 +845,18 @@ impl VideoWorkspace {
                     );
                 }
             });
+    }
+
+    fn render_request(
+        &self,
+        screenplay: &crate::screenplay::Screenplay,
+        scene_id: u64,
+    ) -> Result<String, String> {
+        let request = screenplay.render_request(scene_id)?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&request).map_err(|error| error.to_string())?;
+        value["render_format"] = self.render_format.id().into();
+        serde_json::to_string(&value).map_err(|error| error.to_string())
     }
 
     fn error_ui(&self, ui: &mut egui::Ui) {

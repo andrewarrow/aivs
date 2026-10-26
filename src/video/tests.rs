@@ -538,13 +538,14 @@ def create(request, profiles, run_dir, **options):
     options['on_activity']('Codex: Mapping dialogue to shots.')
     options['on_activity_delta']('codex-stream', 'Drafting shot ✨')
     pathlib.Path(run_dir, 'shooting-script.json').write_text('{}')
-    return {'version': 1, 'source_sha256': 'test', 'seconds': 8, 'fade_out': True, 'shots': [
+    return {'version': 1, 'render_format': request['render_format'], 'source_sha256': 'test', 'seconds': 8, 'fade_out': True, 'shots': [
         {'seconds': 8, 'beat_ids': [1], 'prompt_template': 'A traveler turns toward the road.',
          'prompt': 'Eli as JOE turns toward the road.', 'start_state': 'Beside the car.',
          'end_state': 'Facing the road.', 'continue_previous': False}
     ]}
 video.create_shooting_script = create
 def render(plan, seed, output, **options):
+    assert plan['render_format'] == 'portrait'
     assert plan['shots'][0]['prompt'] == 'Eli as JOE turns toward the road.'
     output.write_bytes(b'test video')
     return {'output_frames': plan['seconds'] * 24}
@@ -585,8 +586,10 @@ raise SystemExit(video.main())
             name: "Eli".into(),
         },
     );
-    let request = screenplay
-        .render_request(screenplay.scenes()[1].id)
+    let mut workspace = VideoWorkspace::ready_for_test(root.path().to_owned());
+    workspace.render_format = crate::settings::RenderFormat::Portrait;
+    let request = workspace
+        .render_request(&screenplay, screenplay.scenes()[1].id)
         .unwrap();
     let request_value: serde_json::Value = serde_json::from_str(&request).unwrap();
     assert_eq!(
@@ -594,6 +597,7 @@ raise SystemExit(video.main())
         "EXT. ROAD - DUSK\n\nJoe turns toward the road.\n\nJOE: \"Ready?\"\n\nSUE: \"Ready.\""
     );
     assert_eq!(request_value["cast"].as_array().unwrap().len(), 2);
+    assert_eq!(request_value["render_format"], "portrait");
     std::fs::write(
         root.path().join("expected-request.json"),
         serde_json::to_vec(&request_value).unwrap(),
@@ -629,6 +633,9 @@ raise SystemExit(video.main())
     assert_eq!(report["characters"][1]["id"], "ava");
     assert_eq!(report["shooting_script"], "shooting-script.json");
     assert_eq!(report["seconds"], 8);
+    assert_eq!(report["render_format"], "portrait");
+    assert_eq!(report["width"], 1080);
+    assert_eq!(report["height"], 1920);
     assert_eq!(
         report["shots"][0]["prompt"],
         "Eli as JOE turns toward the road."

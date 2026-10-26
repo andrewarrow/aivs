@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import time
 
+from render_formats import framing_prompt, resolve_format
 
 _HEADING = re.compile(r"^(?:INT\.?\s*/\s*EXT\.?|EXT\.?\s*/\s*INT\.?|I\s*/\s*E\.?|INT\.?|EXT\.?|EST\.?)\s+", re.I)
 _TRANSITION = re.compile(r"^(?:FADE\s+(?:IN|OUT)\.?|CUT TO:|DISSOLVE TO:|SMASH CUT TO:|THE END\.?|[A-Z][A-Z\s]+ TO:)\s*$", re.I)
@@ -73,6 +74,7 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
     """Validate input and parse ordered action/dialogue beats from human script."""
     if not isinstance(request, dict) or request.get("version") != 1:
         raise ValueError("Shooting-script request version must be 1.")
+    render_format = resolve_format(request["render_format"]) if "render_format" in request else None
     script = request.get("script")
     if not isinstance(script, str) or not script.strip() or len(script) > _MAX_SCRIPT or "\x00" in script:
         raise ValueError(f"Screenplay must be nonempty text of at most {_MAX_SCRIPT} characters.")
@@ -181,8 +183,12 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
         raise ValueError("Screenplay has no action or dialogue beats.")
     relevant = [{key: known[item["character"]].get(key) for key in _PROFILE_FIELDS}
                 for item in bindings]
-    digest = hashlib.sha256(_json({"script": script, "cast": bindings, "profiles": relevant}).encode("utf-8")).hexdigest()
+    identity = {"script": script, "cast": bindings, "profiles": relevant}
+    if render_format is not None:
+        identity["render_format"] = render_format
+    digest = hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
     return {"version": 1, "script": script, "cast": bindings, "characters": relevant,
+            **({"render_format": render_format} if render_format is not None else {}),
             "beats": beats, "fade_out": fade_out, "source_sha256": digest}
 
 
@@ -244,7 +250,9 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
     if not isinstance(candidate, dict) or not isinstance(candidate.get("shots"), list):
         raise ValueError("Codex response must contain a shots list.")
     if candidate.get("source_sha256", source["source_sha256"]) != source["source_sha256"]:
-        raise ValueError("Shooting script was made for a different screenplay or cast profile.")
+        raise ValueError("Shooting script was made for a different screenplay or cast profile, or render format.")
+    if candidate.get("render_format") != request.get("render_format") and "source_sha256" in candidate:
+        raise ValueError("Saved shooting script has a different render format; generate a new plan.")
     proposed = candidate["shots"]
     if not 1 <= len(proposed) <= 64:
         raise ValueError("Shooting script needs 1 to 64 shots.")
@@ -309,7 +317,8 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             "After the final word, mouths rest unless the source action requires otherwise. "
             if required else "There is no spoken dialogue in this shot. "
         )
-        prompt = (action_prompt + " " + _cast_context(source) + speech_direction
+        framing = framing_prompt(request["render_format"]) if "render_format" in request else ""
+        prompt = (action_prompt + " " + framing + _cast_context(source) + speech_direction
                   + "No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
@@ -327,6 +336,7 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             if "prompt" in proposed_shot and proposed_shot["prompt"] != filled["prompt"]:
                 raise ValueError("Saved shot prompt does not match the source dialogue.")
     return {"version": 1, "source_sha256": source["source_sha256"],
+            **({"render_format": request["render_format"]} if "render_format" in request else {}),
             "seconds": sum(shot["seconds"] for shot in shots), "fade_out": source["fade_out"],
             "source": source, "shots": shots}
 
@@ -352,6 +362,9 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "shooting-script.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     display = []
+    if "render_format" in plan:
+        spec = resolve_format(plan["render_format"])
+        display.extend((f"Render: {spec['width']} × {spec['height']} | {spec['aspect_ratio']} | {spec['name']}", ""))
     for index, shot in enumerate(plan["shots"], 1):
         display.append(f"SHOT {index} | {shot['seconds']}s | beats {', '.join(map(str, shot['beat_ids']))}")
         display.extend((f"Start: {shot['start_state']}", shot["prompt"], f"End: {shot['end_state']}", ""))
@@ -381,6 +394,7 @@ def _instruction(source: dict, correction: str | None) -> str:
             })
     body = {
         "script": source["script"], "cast": source["cast"], "characters": source["characters"],
+        **({"render_format": source["render_format"]} if "render_format" in source else {}),
         "beats": source["beats"], "fade_out_at_end": source["fade_out"],
         "timing_guidance": {
             "words_per_minute": 160, "settling_seconds": 0.5,

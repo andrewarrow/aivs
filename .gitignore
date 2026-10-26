@@ -11,3 +11,5 @@ outputs/
 __pycache__/
 screenplay.json
 .screenplay.json.tmp
+settings.json
+.settings.json.tmp

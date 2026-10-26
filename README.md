@@ -96,9 +96,16 @@ source lines and saves both `shooting-script.json` for the renderer and
 `shooting-script.txt` for people to inspect. Invalid plans get one correction
 attempt through Codex before the run fails.
 
-LTX-2.5 generates video and speech together in **4–12 second shots at 1280×704,
-24 fps**. Within a scene, each shot after the first starts from the previous
+LTX-2.5 generates video and speech together in **4–12 second shots at 24 fps**.
+Choose **File → Settings…** for **1280×720 (16:9)** or **1080×1920 (9:16)** delivery.
+The model requires dimensions divisible by 64, so it generates at 1280×768 or
+1088×1920 respectively. Final assembly crops 24 pixels from the top and bottom,
+or 4 pixels from each side; it does not stretch the picture. Within a scene,
+each shot after the first starts from the previous
 shot's final decoded frame to carry forward faces, clothing, positions, and props.
+A handoff uses the full model frame, before the delivery crop. Portrait planning
+uses the narrow frame from the outset: people staged in depth, visible speaker
+faces and handoffs, and continuous reframing rather than instant reverse angles.
 A new scene resets that frame reference. The model receives each shot's complete
 prompt; the separate start/end notes support continuity review.
 
@@ -149,7 +156,9 @@ From this checkout:
 5. Edit the screenplay and cast each role in the scene. Drag a gallery character
    onto a role, or use its **Uncast / played by** control. For the sample, try **Ava as Sue**
    and **Eli as Joe**. Casting keeps the script's role names and dialogue intact.
-6. Select a scene by its heading above **Generate video**, then choose
+6. Choose **File → Settings…** to select landscape or portrait. Landscape is the
+   default; the selection saves to `settings.json` in the workspace.
+7. Select a scene by its heading above **Generate video**, then choose
    **Generate video**. Only that scene and its cast are sent for generation.
    **Activity** shows planning and rendering progress.
    When complete, play the result in the app or choose **Show files**.
@@ -168,7 +177,8 @@ not appear. Focus settings and system sound volume still apply.
 
 Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
 directory to continue that run in place. Resume uses its saved screenplay, cast,
-seed, and shooting script; Codex runs only if planning never finished. Existing
+seed, render format, and shooting script; Codex runs only if planning never finished.
+Current settings do not change a resumed run, including older 1280×704 runs. Existing
 shots are checked and accepted takes are reused without video inference. A take
 saved before speech verification failed is rechecked, then retaken if its words
 still mismatch. Each explicit Resume allows up to two further retakes per shot;
@@ -288,8 +298,10 @@ checkout using its default workspace:
 
 This still calls Codex and uses the cached tokenizer. It generates a new plan,
 which may differ from the saved example. Remove `--plan-only` to render as well.
+Add `--render-format portrait` for 1080×1920; `--script-file` defaults to landscape.
 `--shooting-script /path/to/shooting-script.json` reuses a plan after revalidating
-it against the current script and cast.
+it against the current script, cast, and render format. Changing format requires
+a new shooting script.
 
 To resume an existing run from the command line:
 
@@ -333,5 +345,5 @@ and separate speech synthesis are outside the main workflow. An opt-in
 explores portrait-guided starting images and fixed dialogue audio; it has separate
 setup and limitations.
 
-`.env`, `.venv`, `.cache`, `screenplay.json`, and generated `outputs/` stay out of Git.
+`.env`, `.venv`, `.cache`, `screenplay.json`, `settings.json`, and generated `outputs/` stay out of Git.
 The adapted Studio source retains its **GPL-3.0-only** license; see [LICENSE](LICENSE).

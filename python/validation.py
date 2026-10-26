@@ -46,7 +46,7 @@ def validate_video(path: Path, frames: int, width: int, height: int,
                    expect_audio: bool = False) -> dict:
     result = subprocess.run([
         "ffprobe", "-v", "error", "-count_frames",
-        "-show_entries", "stream=codec_type,width,height,nb_read_frames,r_frame_rate,duration,codec_name,pix_fmt,start_time,sample_rate,channels",
+        "-show_entries", "stream=codec_type,width,height,sample_aspect_ratio,display_aspect_ratio,nb_read_frames,r_frame_rate,duration,codec_name,pix_fmt,start_time,sample_rate,channels",
         "-of", "json", str(path),
     ], check=True, capture_output=True, text=True)
     streams = json.loads(result.stdout)["streams"]
