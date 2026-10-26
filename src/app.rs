@@ -352,7 +352,7 @@ impl App {
         );
         context.set_clip_rect(ui.clip_rect().intersect(bottom));
         self.video
-            .ui(&mut context, &self.screenplay.render_prompt());
+            .ui(&mut context, &self.screenplay.render_request());
 
         let visuals = ui.style().interact(&response);
         ui.painter().rect_filled(divider, 0.0, visuals.bg_fill);

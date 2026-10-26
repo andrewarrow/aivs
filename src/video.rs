@@ -64,7 +64,7 @@ impl Job {
             };
             let result = match task {
                 Task::Setup => worker.setup(),
-                Task::Render(prompt) => worker.render(&prompt),
+                Task::Render(request) => worker.render(&request),
             };
             if let Err(error) = result {
                 worker.send(if worker.cancel.load(Ordering::Relaxed) {
@@ -182,15 +182,10 @@ impl Worker {
         Ok(())
     }
 
-    fn render(&self, prompt: &str) -> Result<(), String> {
+    fn render(&self, request: &str) -> Result<(), String> {
+        self.progress("Preparing shooting script…");
         let mut command = self.python("render");
-        // Hunter's successful two-person native renders use both saved profiles
-        // without imposing either character's solo portrait on the whole scene.
-        command
-            .arg("--prompt")
-            .arg(prompt)
-            .arg("--character-text-only")
-            .arg("--character-references-only");
+        command.arg("--screenplay-json").arg(request);
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
@@ -207,6 +202,7 @@ impl Worker {
         command
             .current_dir(&self.root)
             .env("AIVS_WORKSPACE", &self.root)
+            .env("AIVS_CODEX_PATH", crate::codex::codex_executable())
             .env("HF_HOME", self.root.join(".cache/huggingface"))
             .env("PYTHONUNBUFFERED", "1")
             .env("NO_COLOR", "1")
@@ -568,7 +564,7 @@ impl VideoWorkspace {
         });
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, prompt: &Result<String, String>) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, request: &Result<String, String>) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -582,13 +578,13 @@ impl VideoWorkspace {
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
-                            self.job.is_none() && prompt.is_ok(),
+                            self.job.is_none() && request.is_ok(),
                             egui::Button::new("Generate video").min_size(egui::vec2(128.0, 44.0)),
                         )
                         .clicked()
-                        && let Ok(prompt) = prompt
+                        && let Ok(request) = request
                     {
-                        self.start(Task::Render(prompt.clone()));
+                        self.start(Task::Render(request.clone()));
                     }
                     if self.rendering
                         && ui
@@ -612,7 +608,7 @@ impl VideoWorkspace {
                         self.open(parent);
                     }
                 });
-                if let Err(message) = prompt {
+                if let Err(message) = request {
                     ui.add(egui::Label::new(message).wrap());
                 }
                 ui.add_space(8.0);

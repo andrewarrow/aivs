@@ -12,30 +12,40 @@ fn casting_is_explicit_and_recasting_preserves_script_names_and_dialogue() {
     let mut screenplay = Screenplay::default();
     assert_eq!(roles(), ["JOE", "SUE"]);
     assert_eq!(
-        screenplay.render_prompt().unwrap_err(),
+        screenplay.render_request().unwrap_err(),
         "Assign characters to JOE and SUE before generating."
     );
     screenplay.assign("SUE", character("Ava"));
     assert_eq!(
-        screenplay.render_prompt().unwrap_err(),
+        screenplay.render_request().unwrap_err(),
         "Assign characters to JOE before generating."
     );
     screenplay.assign("JOE", character("Eli"));
-    let prompt = screenplay.render_prompt().unwrap();
-    assert!(prompt.contains("Cast: @eli plays JOE; @ava plays SUE."));
-    assert!(!prompt.contains("@sue"));
-    assert!(!prompt.contains("@joe"));
-    assert_eq!(prompt.matches("SUE: \"").count(), 2);
-    assert!(prompt.contains("JOE (looking around): \"He was an optimistic man.\""));
+    let request: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+    assert_eq!(request["version"], 1);
+    assert_eq!(
+        request["cast"],
+        serde_json::json!([
+            {"role": "JOE", "character": "eli"},
+            {"role": "SUE", "character": "ava"}
+        ])
+    );
+    let script = request["script"].as_str().unwrap();
+    assert_eq!(script.matches("SUE: \"").count(), 2);
+    assert!(script.contains("JOE (looking around): \"He was an optimistic man.\""));
     for &(element, text) in SCENE {
         if matches!(element, Element::Dialogue | Element::Action) {
-            assert!(prompt.contains(text));
+            assert!(script.contains(text));
         }
     }
     screenplay.assign("SUE", character("Nora"));
     screenplay.assign("UNKNOWN", character("Maya"));
-    let recast = screenplay.render_prompt().unwrap();
-    assert_eq!(recast, prompt.replace("@ava plays SUE", "@nora plays SUE"));
+    let recast: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+    assert_eq!(recast["script"], request["script"]);
+    assert_eq!(recast["cast"][0], request["cast"][0]);
+    assert_eq!(recast["cast"][1]["character"], "nora");
     assert_eq!(screenplay.cast.len(), 2);
 }
 

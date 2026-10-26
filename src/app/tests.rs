@@ -329,7 +329,7 @@ fn gallery_selection_keeps_the_screenplay_and_hides_the_old_prompt() {
                 .any(|text| text.starts_with("A single continuous cinematic shot"))
         );
         assert!(
-            app.screenplay.render_prompt().is_err(),
+            app.screenplay.render_request().is_err(),
             "browsing must not cast a role"
         );
     }
@@ -383,7 +383,7 @@ fn gallery_names_and_portraits_drag_onto_roles_and_recast_all_occurrences() {
         };
         let source = positions(name)[0] + egui::vec2(8.0, if portrait { 60.0 } else { 6.0 });
         let target_pos = positions(target)[occurrence] + egui::vec2(8.0, 6.0);
-        let previous = app.screenplay.render_prompt();
+        let previous = app.screenplay.render_request();
         frame(&mut app, vec![egui::Event::PointerMoved(source)]);
         frame(&mut app, vec![pointer(source, true)]);
         frame(
@@ -398,21 +398,21 @@ fn gallery_names_and_portraits_drag_onto_roles_and_recast_all_occurrences() {
         output = frame(&mut app, vec![]);
         if target == "SUE" && occurrence == 0 {
             assert_eq!(
-                app.screenplay.render_prompt().unwrap_err(),
+                app.screenplay.render_request().unwrap_err(),
                 "Assign characters to JOE before generating."
             );
         } else if target == "EXT. DESERT ROAD - DUSK" {
             assert_eq!(
-                app.screenplay.render_prompt(),
+                app.screenplay.render_request(),
                 previous,
                 "dropping on action must not change the cast"
             );
         } else {
-            let prompt = app.screenplay.render_prompt().unwrap();
-            assert!(prompt.contains("@eli plays JOE"));
+            let request: serde_json::Value =
+                serde_json::from_str(&app.screenplay.render_request().unwrap()).unwrap();
+            assert_eq!(request["cast"][0]["character"], "eli");
             if occurrence == 1 {
-                assert!(prompt.contains("@eli plays SUE"));
-                assert!(!prompt.contains("@ava"));
+                assert_eq!(request["cast"][1]["character"], "eli");
                 let annotations = output.shapes.iter().filter(|shape| {
                     matches!(&shape.shape, egui::epaint::Shape::Text(shape) if shape.galley.text() == "played by Eli")
                 }).count();
@@ -421,7 +421,7 @@ fn gallery_names_and_portraits_drag_onto_roles_and_recast_all_occurrences() {
                     "all five cues should show the shared casting"
                 );
             } else {
-                assert!(prompt.contains("@ava plays SUE"));
+                assert_eq!(request["cast"][1]["character"], "ava");
             }
         }
     }

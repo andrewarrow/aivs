@@ -221,7 +221,7 @@ fn child_failure_cannot_be_mistaken_for_a_ready_environment() {
 
 #[cfg(unix)]
 #[test]
-fn screenplay_reaches_python_with_both_saved_characters_and_all_dialogue() {
+fn screenplay_request_reaches_python_and_its_translated_shot_reaches_the_renderer() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -230,16 +230,33 @@ fn screenplay_reaches_python_with_both_saved_characters_and_all_dialogue() {
     std::fs::write(
         &python,
         r#"#!/usr/bin/env python3
-import json, pathlib, sys
+import json, os, pathlib, sys
 pathlib.Path('args.json').write_text(json.dumps(sys.argv[1:]))
 sys.path.insert(0, str(pathlib.Path(sys.argv[2]).parent))
 import video
 video.check_environment = lambda: None
-def render(prompt, seed, frames, output, **options):
-    assert not options.get('image_file'), 'a solo portrait must not replace the ensemble scene'
+assert os.environ.get('AIVS_CODEX_PATH'), 'the configured Codex executable must reach Python'
+expected_request = json.loads(pathlib.Path('expected-request.json').read_text())
+expected_profiles = [
+    {'id': 'eli', 'name': 'Eli', 'description': 'A dark-haired traveler.', 'voice_description': 'Warm tenor.', 'voice_id': 'eli-voice'},
+    {'id': 'ava', 'name': 'Ava', 'description': 'A red-haired traveler.', 'voice_description': 'Clear alto.', 'voice_id': 'ava-voice'},
+]
+video.characters.resolve_characters = lambda *args, **kwargs: expected_profiles
+def create(request, profiles, run_dir, **options):
+    assert request == expected_request
+    assert profiles == expected_profiles
+    pathlib.Path(run_dir, 'shooting-script.json').write_text('{}')
+    return {'version': 1, 'source_sha256': 'test', 'seconds': 8, 'fade_out': True, 'shots': [
+        {'seconds': 8, 'beat_ids': [1], 'prompt_template': 'A traveler turns toward the road.',
+         'prompt': 'Eli as JOE turns toward the road.', 'start_state': 'Beside the car.',
+         'end_state': 'Facing the road.', 'continue_previous': False}
+    ]}
+video.create_shooting_script = create
+def render(plan, seed, output, **options):
+    assert plan['shots'][0]['prompt'] == 'Eli as JOE turns toward the road.'
     output.write_bytes(b'test video')
-    return {'output_frames': frames}
-video.render = render
+    return {'output_frames': plan['seconds'] * 24}
+video.render_shooting_script = render
 sys.argv = sys.argv[2:]
 raise SystemExit(video.main())
 "#,
@@ -267,21 +284,19 @@ raise SystemExit(video.main())
             name: "Eli".into(),
         },
     );
-    let prompt = screenplay.render_prompt().unwrap();
-    worker.render(&prompt).unwrap();
+    let request = screenplay.render_request().unwrap();
+    let request_value: serde_json::Value = serde_json::from_str(&request).unwrap();
+    std::fs::write(
+        root.path().join("expected-request.json"),
+        serde_json::to_vec(&request_value).unwrap(),
+    )
+    .unwrap();
+    worker.render(&request).unwrap();
     let args: Vec<String> =
         serde_json::from_slice(&std::fs::read(root.path().join("args.json")).unwrap()).unwrap();
     assert_eq!(
         args,
-        [
-            "-u",
-            SCRIPT,
-            "render",
-            "--prompt",
-            &prompt,
-            "--character-text-only",
-            "--character-references-only"
-        ]
+        ["-u", SCRIPT, "render", "--screenplay-json", &request]
     );
     let path = events
         .try_iter()
@@ -293,72 +308,17 @@ raise SystemExit(video.main())
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path.parent().unwrap().join("render.json")).unwrap())
             .unwrap();
-    assert_eq!(report["original_prompt"], prompt);
-    assert_eq!(report["character_text_only"], true);
-    assert_eq!(report["character_references_only"], true);
-    assert!(report.get("image_source").is_none());
-    let profiles = report["characters"].as_array().unwrap();
+    assert_eq!(report["original_script"], request_value["script"]);
+    assert_eq!(report["cast"], request_value["cast"]);
+    assert_eq!(report["characters"][0]["id"], "eli");
+    assert_eq!(report["characters"][1]["id"], "ava");
+    assert_eq!(report["shooting_script"], "shooting-script.json");
+    assert_eq!(report["seconds"], 8);
     assert_eq!(
-        profiles
-            .iter()
-            .map(|p| p["id"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["eli", "ava"]
+        report["shots"][0]["prompt"],
+        "Eli as JOE turns toward the road."
     );
-    let expanded = report["prompt"].as_str().unwrap();
-    assert!(expanded.contains("Eli plays JOE; Ava plays SUE"));
-    for profile in profiles {
-        assert!(expanded.contains(profile["description"].as_str().unwrap()));
-        assert!(expanded.contains(profile["voice_description"].as_str().unwrap()));
-    }
-    for direction in [
-        "locked-off wide shot",
-        "entire station wagon",
-        "both actors from head to feet",
-        "ground visible below their shoes",
-        "actors move freely through the scene",
-        "several visible steps before fading out",
-        "No zoom",
-    ] {
-        assert!(expanded.contains(direction));
-    }
-    assert_eq!(report["dialogue_timing"]["turn_count"], 5);
-    assert_eq!(report["dialogue_timing"]["word_count"], 31);
-    assert_eq!(report["dialogue_timing"]["action_count"], 6);
-    assert_eq!(report["dialogue_timing"]["action_seconds"], 18.0);
-    assert_eq!(report["seconds"], 32);
-    assert_eq!(report["runtime"]["output_frames"], 768);
-    for stationary_direction in [
-        "down to the waist",
-        "camera-to-subject distance",
-        "stays at the same distance",
-        "only natural head and body motion",
-    ] {
-        assert!(!expanded.contains(stationary_direction));
-    }
-    assert_eq!(
-        report["dialogue_timing"]["dialogue"],
-        serde_json::json!([
-            "Good news. It's definitely the car.",
-            "My dad said you could see the ocean from here.",
-            "He was an optimistic man.",
-            "He made it sound closer.",
-            "We've still got some light."
-        ])
-    );
-    for turn in [
-        "JOE: \"Good news. It's definitely the car.\"",
-        "SUE: \"My dad said you could see the ocean from here.\"",
-        "JOE (looking around): \"He was an optimistic man.\"",
-        "SUE: \"He made it sound closer.\"",
-        "JOE: \"We've still got some light.\"",
-    ] {
-        assert!(expanded.contains(turn));
-    }
-    assert_eq!(
-        report["runtime"]["output_frames"].as_u64().unwrap(),
-        report["seconds"].as_u64().unwrap() * 24
-    );
+    assert_eq!(report["runtime"]["output_frames"].as_u64().unwrap(), 8 * 24);
 }
 
 #[cfg(unix)]

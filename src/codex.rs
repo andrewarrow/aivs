@@ -600,7 +600,7 @@ fn find_codex_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-fn codex_executable() -> PathBuf {
+pub(crate) fn codex_executable() -> PathBuf {
     if let Some(path) = env::var_os(CODEX_PATH_ENV).filter(|value| !value.is_empty()) {
         return PathBuf::from(path);
     }

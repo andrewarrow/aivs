@@ -78,7 +78,7 @@ impl Screenplay {
         }
     }
 
-    pub fn render_prompt(&self) -> Result<String, String> {
+    pub fn render_request(&self) -> Result<String, String> {
         let roles = roles();
         let missing = roles
             .iter()
@@ -91,31 +91,7 @@ impl Screenplay {
                 missing.join(" and ")
             ));
         }
-        let references = roles
-            .iter()
-            .map(|role| format!("@{} plays {role}", self.cast[role].id))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let mut prompt = format!(
-            "A single continuous cinematic wide shot featuring {} roles. Cast: {references}. \
-         Each role uses its assigned performer's saved appearance and voice. \
-         Script names identify roles throughout the action and dialogue. \
-         Frame this as a locked-off wide shot from across the road, showing the entire station wagon \
-         and both actors from head to feet, with ground visible below their shoes. \
-         Full-length figures occupy no more than half the frame height, with open road around them \
-         and enough room for their final walk to remain in shot. The fixed tripod camera holds this \
-         wide composition while the actors move freely through the scene and interact with each \
-         other, the car, and the postcard. They look at each other and the objects they handle. \
-         No zoom, push-in, close-up, reframing, or cuts. \
-         Perform every scripted physical action in order, allowing silent action beats between \
-         spoken lines at a natural conversational pace. Complete the final walking action with \
-         several visible steps before fading out. \
-         Only the person delivering a line speaks and moves their mouth; everyone else listens \
-         with natural reactions. Each character's mouth follows their own voice. \
-         Scene headings, action, character names, and parentheticals are directions, not spoken words. \
-         No narration, subtitles, captions, or text overlays.\n\n",
-            roles.len()
-        );
+        let mut script = String::new();
         let mut speaker = "";
         let mut cue = "";
         for &(element, text) in SCENE {
@@ -126,23 +102,32 @@ impl Screenplay {
                 }
                 Element::Parenthetical => cue = text,
                 Element::Dialogue => {
-                    prompt.push_str(speaker);
+                    script.push_str(speaker);
                     if !cue.is_empty() {
-                        prompt.push(' ');
-                        prompt.push_str(cue);
+                        script.push(' ');
+                        script.push_str(cue);
                     }
-                    prompt.push_str(": \"");
-                    prompt.push_str(text);
-                    prompt.push_str("\"\n\n");
+                    script.push_str(": \"");
+                    script.push_str(text);
+                    script.push_str("\"\n\n");
                     cue = "";
                 }
                 _ => {
-                    prompt.push_str(text);
-                    prompt.push_str("\n\n");
+                    script.push_str(text);
+                    script.push_str("\n\n");
                 }
             }
         }
-        Ok(prompt)
+        let cast = roles
+            .iter()
+            .map(|role| serde_json::json!({"role": role, "character": self.cast[role].id}))
+            .collect::<Vec<_>>();
+        serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "script": script.trim_end(),
+            "cast": cast,
+        }))
+        .map_err(|error| format!("Could not serialize screenplay request: {error}"))
     }
 
     fn role_ui(
