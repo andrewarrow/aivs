@@ -159,7 +159,6 @@ impl Worker {
             ("uv", "uv"),
             ("ffmpeg", "ffmpeg"),
             ("ffprobe", "ffmpeg"),
-            ("whisper-cli", "whisper-cpp"),
         ] {
             if !available(program) {
                 if !available("brew") {

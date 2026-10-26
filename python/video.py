@@ -18,7 +18,6 @@ import time
 from quality_backend import ROOT, CACHE, FPS, WIDTH, HEIGHT, doctor, model_path, render
 from dialogue_helpers import duration_estimate
 import characters
-import speech_validation
 from shooting_script import create_shooting_script, load_shooting_script, parse_request, save_shooting_script
 from shot_renderer import render_shooting_script
 from render_formats import resolve_format
@@ -61,8 +60,6 @@ def check():
     doctor()
     emit("progress", label="Checking cached model, text encoder, and audio weights")
     model_path()
-    emit("progress", label="Checking local speech verification")
-    speech_validation.check_available(ROOT)
     emit("ready")
 
 
@@ -92,7 +89,6 @@ def download():
     with project_lock(".setup.lock"):
         emit("progress", label="Downloading LTX-2.5 with audio (about 43 GB; cached files are reused)")
         model_path(download=True, progress_class=DownloadProgress)
-        speech_validation.setup(ROOT, on_progress=lambda **data: emit("progress", **data))
     check()
 
 
@@ -232,6 +228,9 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
             report["runtime"] = render_shooting_script(
                 plan, seed, output, on_progress=lambda **data: emit("render_progress", **data),
                 on_shot=shot_update,
+                token_counter=count_tokens,
+                on_activity=lambda message: emit("activity", message=message),
+                on_activity_delta=lambda stream_id, delta: emit("activity_delta", id=stream_id, delta=delta),
             )
             report.update(status="complete", sha256=hashlib.sha256(output.read_bytes()).hexdigest())
             save()
@@ -324,6 +323,9 @@ def resume_screenplay(directory):
                 plan, seed, output, resume=True,
                 on_progress=lambda **data: emit("render_progress", **data),
                 on_shot=shot_update,
+                token_counter=count_tokens,
+                on_activity=lambda message: emit("activity", message=message),
+                on_activity_delta=lambda stream_id, delta: emit("activity_delta", id=stream_id, delta=delta),
             )
             report.update(status="complete", sha256=hashlib.sha256(output.read_bytes()).hexdigest())
             save()

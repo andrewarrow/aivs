@@ -80,24 +80,24 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn("hf_secret", out.getvalue())
             self.assertIn("[redacted]", out.getvalue())
 
-    def test_readiness_requires_speech_verification_assets(self):
-        with patch.object(video, "check_environment"), patch.object(video, "doctor"), \
-                patch.object(video, "model_path"), \
-                patch.object(video.speech_validation, "check_available", side_effect=RuntimeError("Missing speech model")), \
+    def test_readiness_requires_video_assets_without_speech_verification(self):
+        with patch.object(video, "check_environment"), patch.object(video, "doctor") as doctor, \
+                patch.object(video, "model_path") as model_path, \
+                patch.dict("sys.modules", {"speech_validation": None}), \
                 patch("sys.stdout", new_callable=io.StringIO) as out:
-            with self.assertRaisesRegex(RuntimeError, "Missing speech model"):
-                video.check()
-            self.assertNotIn('"event": "ready"', out.getvalue())
+            video.check()
+            doctor.assert_called_once()
+            model_path.assert_called_once()
+            self.assertIn('"event": "ready"', out.getvalue())
 
-    def test_download_prepares_speech_checks_before_final_readiness(self):
+    def test_download_prepares_video_models_before_final_readiness(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), \
                 patch.object(video, "check_environment"), patch.object(video, "model_path") as download_model, \
-                patch.object(video.speech_validation, "setup") as setup_speech, patch.object(video, "check") as check, \
+                patch.dict("sys.modules", {"speech_validation": None}), patch.object(video, "check") as check, \
                 patch("sys.stdout", new_callable=io.StringIO):
             video.download()
             download_model.assert_called_once()
-            setup_speech.assert_called_once()
-            self.assertEqual(setup_speech.call_args.args, (Path(directory),))
+            self.assertTrue(download_model.call_args.kwargs["download"])
             check.assert_called_once()
 
     def test_setup_repairs_a_damaged_blob_instead_of_trusting_its_cache_entry(self):
@@ -193,10 +193,14 @@ class RenderTests(unittest.TestCase):
             )
             return captured["plan"]
 
-        def render_plan(plan, seed, output, *, on_progress, on_shot):
+        def render_plan(plan, seed, output, *, on_progress, on_shot, token_counter,
+                        on_activity, on_activity_delta):
             self.assertEqual(plan, captured["plan"])
             self.assertEqual(seed, 27)
+            self.assertEqual(token_counter("Mara turns the dial"), 4)
             on_progress(label="Shot 1/1: Rendering", fraction=0.6, remaining_seconds=2)
+            on_activity("Assessing rendered action.")
+            on_activity_delta("visual-1", "Inspecting observed continuity.")
             on_shot(0, {"status": "complete", "runtime": {"output_frames": 96}})
             output.write_bytes(b"assembled and validated video")
             return {"pipeline": "directed-shots", "output_frames": 96, "video": {"test": True}}
@@ -242,6 +246,8 @@ class RenderTests(unittest.TestCase):
             self.assertIn("render_progress", [event["event"] for event in events])
             self.assertIn({"event": "activity", "message": "Mapping dialogue to shots."}, events)
             self.assertIn({"event": "activity_delta", "id": "stream-1", "delta": "Drafting the next shot."}, events)
+            self.assertIn({"event": "activity", "message": "Assessing rendered action."}, events)
+            self.assertIn({"event": "activity_delta", "id": "visual-1", "delta": "Inspecting observed continuity."}, events)
             self.assertEqual(events[-1]["event"], "complete")
 
     def test_plan_only_saves_readable_artifacts_without_environment_check_or_renderer(self):

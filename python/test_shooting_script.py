@@ -42,6 +42,7 @@ FADE OUT.
 
 
 def candidate():
+    """Legacy fixture: old saved plans must remain loadable without new fields."""
     return {"shots": [
         {"seconds": 6, "beat_ids": [1, 2],
          "prompt_template": "In the glasshouse Mara lifts a cracked lantern and crosses the damp floor. {{line_2}}",
@@ -59,6 +60,54 @@ def candidate():
          "end_state": "Both reach the garden gate; Tomas still holds the lantern.",
          "continue_previous": False},
     ]}
+
+
+def planning_candidate():
+    plan = candidate()
+    plan.update(
+        planning_policy="single-render-v1",
+        cast_identity=[
+            {"role": "MARA", "description": "A woman with copper hair", "voice_description": "A low voice"},
+            {"role": "TOMAS", "description": "A man with dark curls", "voice_description": "A warm voice"},
+        ],
+        revision_notes=["Keep source action, dialogue, and stable handoffs in focused coverage."],
+    )
+    source = parse_request(REQUEST, PROFILES)
+    by_id = {beat["id"]: beat for beat in source["beats"]}
+    for shot in plan["shots"]:
+        shot.update(
+            visible_roles=["MARA", "TOMAS"], coverage="continuous",
+            dramatic_purpose="Establish the source action and the partner's response.",
+            visual_contract=[shot["end_state"]],
+            action_coverage=[{"beat_id": beat_id, "part": 1, "parts": 1,
+                              "action": by_id[beat_id]["text"]}
+                             for beat_id in shot["beat_ids"] if by_id[beat_id]["kind"] == "action"],
+        )
+    return plan
+
+
+def codex_response():
+    plan = planning_candidate()
+    source = parse_request(REQUEST, PROFILES)
+    review = {
+        "approved": True, "summary": "Source-faithful, focused coverage fits each segment.", "issues": [],
+        "beat_reviews": [{
+            "beat_id": beat["id"],
+            "shot_numbers": [number for number, shot in enumerate(plan["shots"], 1)
+                             if beat["id"] in shot["beat_ids"]],
+            "intent": beat["text"], "evidence": "The assigned prompt preserves this source action or line.",
+        } for beat in source["beats"]],
+        "shot_reviews": [{
+            "shot_number": number, "staging": shot["start_state"] + " " + shot["end_state"],
+            "identity_and_state": "The actors and lantern ownership remain consistent.",
+            "render_risk": "low", "risk_factors": [],
+            "risk_mitigation": "Stable composition and a short, focused action sequence.",
+            "contract_evidence": [shot["prompt_template"] for _ in shot["visual_contract"]],
+            "timeline": [{"start_seconds": 0, "end_seconds": shot["seconds"],
+                          "action": "The assigned source action and dialogue reach the stable ending."}],
+        } for number, shot in enumerate(plan["shots"], 1)],
+    }
+    return {"plan": plan, "review": review}
 
 
 class ParseTests(unittest.TestCase):
@@ -231,7 +280,7 @@ class ValidationTests(unittest.TestCase):
         for ids in ([2], [1, 3], [1, 1]):
             bad = candidate()
             bad["shots"][0]["beat_ids"] = ids
-            with self.subTest(ids=ids), self.assertRaisesRegex(ValueError, "skips|duplicates|reorders"):
+            with self.subTest(ids=ids), self.assertRaisesRegex(ValueError, "unique|skips|duplicates|reorders"):
                 validate_shooting_script(bad, REQUEST, PROFILES)
 
     def test_dialogue_placeholder_integrity(self):
@@ -298,9 +347,10 @@ for raw in sys.stdin:
     elif method == 'turn/start':
         assert request['params']['sandboxPolicy'] == {'type': 'readOnly'}
         assert request['params']['outputSchema']['type'] == 'object'
+        is_review = 'approved' in request['params']['outputSchema']['properties']
         prompt = request['params']['input'][0]['text']
         break
-assert 'Create a shooting plan' in prompt
+assert 'SOURCE DATA' in prompt or 'SOURCE AND PLAN' in prompt
 if os.environ.get('FAKE_CODEX_PID'):
     pathlib.Path(os.environ['FAKE_CODEX_PID']).write_text(str(os.getpid()))
 print(json.dumps({'method': 'item/reasoning/summaryTextDelta', 'params': {
@@ -317,8 +367,10 @@ time.sleep(float(os.environ.get('FAKE_CODEX_PAUSE', '0')))
 if os.environ.get('FAKE_CODEX_FAIL') == '1':
     print('login required', file=sys.stderr)
     sys.exit(7)
-response = json.loads(pathlib.Path(os.environ['FAKE_CODEX_RESPONSE']).read_text())
-if os.environ.get('FAKE_CODEX_BAD_FIRST') == '1' and 'Correct this validation error:' not in prompt:
+payload = json.loads(pathlib.Path(os.environ['FAKE_CODEX_RESPONSE']).read_text())
+response = payload['review' if is_review else 'plan']
+if (os.environ.get('FAKE_CODEX_BAD_FIRST') == '1' and 'CURRENT PASS 1/' in prompt
+        and 'Correct this validation error' not in prompt):
     response['shots'][0]['beat_ids'] = [2]
 text = json.dumps(response)
 print(json.dumps({'method': 'item/started', 'params': {'item': {
@@ -337,7 +389,7 @@ print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'status': 'com
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             response = base / "response.json"
-            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            response.write_text(json.dumps(codex_response()), encoding="utf-8")
             fake = self._fake(base)
             run = base / "run"
             with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response)}):
@@ -347,14 +399,18 @@ print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'status': 'com
             self.assertTrue((run / "shooting-script.json").is_file())
             self.assertTrue((run / "shooting-script.txt").is_file())
             self.assertTrue((run / "shooting-script-schema.json").is_file())
-            self.assertTrue((run / "shooting-script-request-1.txt").is_file())
-            self.assertTrue((run / "shooting-script-response-1.json").is_file())
+            self.assertTrue((run / "shooting-script-request-draft-1.txt").is_file())
+            self.assertTrue((run / "shooting-script-response-draft-1.json").is_file())
+            self.assertEqual(result["planning_policy"], "single-render-v1")
+            for stage in ("draft", "intent", "rehearsal", "feasibility", "approval"):
+                self.assertTrue((run / f"shooting-script-response-{stage}-1.json").is_file())
+            self.assertTrue(result["preproduction_review"]["report"]["approved"])
 
     def test_activity_and_both_logs_arrive_before_codex_exits(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             response = base / "response.json"
-            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            response.write_text(json.dumps(codex_response()), encoding="utf-8")
             fake = self._fake(base)
             run = base / "run"
             gate = base / "continue"
@@ -362,38 +418,40 @@ print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'status': 'com
 
             def activity(message):
                 messages.append(message)
-                if "Mapping dialogue" in message:
-                    self.assertIn("Mapping dialogue", (run / "shooting-script-events-1.jsonl").read_text())
-                if "Checking shot continuity" in message:
-                    self.assertIn("Checking shot continuity", (run / "shooting-script-errors-1.txt").read_text())
+                if not gate.exists() and "Mapping dialogue" in message:
+                    self.assertIn("Mapping dialogue", (run / "shooting-script-events-draft-1.jsonl").read_text())
+                if not gate.exists() and "Checking shot continuity" in message:
+                    self.assertIn("Checking shot continuity", (run / "shooting-script-errors-draft-1.txt").read_text())
                 if not gate.exists() and any("Mapping dialogue" in line for line in messages) \
                         and any("Checking shot continuity" in line for line in messages):
-                    self.assertFalse((run / "shooting-script-response-1.json").exists())
+                    self.assertFalse((run / "shooting-script-response-draft-1.json").exists())
                     gate.touch()
 
             with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_GATE": str(gate)}):
                 plan = create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity=activity)
             self.assertEqual(plan["seconds"], 18)
             self.assertTrue(any('"prompt_template"' in message for message in messages))
-            self.assertIn("Shooting script ready: 3 shots, 18 seconds.", messages)
-            self.assertEqual((run / "shooting-script-errors-1.txt").read_text().count("diagnostic "), 10000)
+            self.assertTrue(any(message.startswith("Shooting script approved: 3 shots, 18 seconds;")
+                                for message in messages))
+            self.assertEqual((run / "shooting-script-errors-draft-1.txt").read_text().count("diagnostic "), 10000)
 
     def test_codex_streams_reasoning_and_answer_deltas_before_completion(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             response = base / "response.json"
-            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            response.write_text(json.dumps(codex_response()), encoding="utf-8")
             fake = self._fake(base)
             deltas = []
             run = base / "run"
             def delta(stream_id, text):
-                self.assertFalse((run / "shooting-script-response-1.json").exists())
+                suffix = stream_id.split(":", 1)[0]
+                self.assertFalse((run / f"shooting-script-response-{suffix}.json").exists())
                 deltas.append((stream_id, text))
             with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_PAUSE": "0.1"}):
                 create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity_delta=delta)
-            self.assertIn(("reasoning-1:summary:0", "Mapping dialogue to shots."), deltas)
-            self.assertEqual("".join(text for stream_id, text in deltas if stream_id == "answer-1"),
-                             json.dumps(candidate()))
+            self.assertIn(("draft-1:reasoning-1:summary:0", "Mapping dialogue to shots."), deltas)
+            self.assertEqual("".join(text for stream_id, text in deltas if stream_id == "draft-1:answer-1"),
+                             json.dumps(planning_candidate()))
 
     def test_timeout_and_interruption_reap_codex_and_keep_partial_logs(self):
         for interrupt in (False, True):
@@ -415,7 +473,7 @@ print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'status': 'com
                     else:
                         with self.assertRaisesRegex(RuntimeError, "timed out"):
                             create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity=activity)
-                self.assertIn("Mapping dialogue", (run / "shooting-script-events-1.jsonl").read_text())
+                self.assertIn("Mapping dialogue", (run / "shooting-script-events-draft-1.jsonl").read_text())
                 with self.assertRaises(ProcessLookupError):
                     os.kill(int(pid.read_text()), 0)
 
@@ -423,7 +481,7 @@ print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'status': 'com
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             response = base / "response.json"
-            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            response.write_text(json.dumps(codex_response()), encoding="utf-8")
             fake = self._fake(base)
             with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_FAIL": "1"}):
                 with self.assertRaisesRegex(RuntimeError, "login required"):
@@ -435,17 +493,18 @@ print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'status': 'com
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             response = base / "response.json"
-            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            response.write_text(json.dumps(codex_response()), encoding="utf-8")
             fake = self._fake(base)
             run = base / "run"
             messages = []
             with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_BAD_FIRST": "1"}):
                 plan = create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity=messages.append)
             self.assertEqual(plan["seconds"], 18)
-            self.assertTrue((run / "shooting-script-request-2.txt").is_file())
-            self.assertIn("Correct this validation error:", (run / "shooting-script-request-2.txt").read_text())
-            self.assertTrue(any("needs a correction" in message for message in messages))
-            self.assertIn("Retrying shooting script with Codex (attempt 2/2).", messages)
+            self.assertTrue((run / "shooting-script-request-draft-2.txt").is_file())
+            self.assertIn("Correct this validation error without changing this pass's task:",
+                          (run / "shooting-script-request-draft-2.txt").read_text())
+            self.assertTrue(any("Correcting draft response:" in message for message in messages))
+            self.assertFalse((run / "shooting-script-request-intent-2.txt").exists())
 
 
 if __name__ == "__main__":

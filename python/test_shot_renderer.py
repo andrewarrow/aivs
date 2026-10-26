@@ -71,21 +71,6 @@ class ContinuityPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scene_id"):
             shot_renderer._validate_plan(plan)
 
-    def test_laughter_intervals_come_from_source_actions_and_track_assembly_offsets(self):
-        plan = plan_for(continuations=(False, True, False))
-        plan["shots"][0]["prompt"] += " Laughter in the hall."
-        plan["source"]["beats"][1]["text"] = "LAUGHTER in the hallway."
-        shots, _, _ = shot_renderer._validate_plan(plan)
-        shot_intervals, assembly_intervals = shot_renderer._scripted_laughter_intervals(plan, shots)
-        self.assertEqual(shot_intervals, ((), ((0.0, 4.0),), ()))
-        self.assertEqual(assembly_intervals, ((4.0, 8.0),))
-
-    def test_generated_prompt_cannot_authorize_laughter_filtering(self):
-        plan = plan_for(continuations=(False,))
-        plan["shots"][0]["prompt"] += " Everyone laughs."
-        shots, _, _ = shot_renderer._validate_plan(plan)
-        self.assertEqual(shot_renderer._scripted_laughter_intervals(plan, shots), (((),), ()))
-
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
 class ShotRendererTests(unittest.TestCase):
@@ -93,10 +78,6 @@ class ShotRendererTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        for name, value in (("check_available", {}), ("validate_shot_audio", {"status": "passed"})):
-            mock = patch.object(shot_renderer.speech_validation, name, return_value=value)
-            mock.start()
-            self.addCleanup(mock.stop)
 
     def render_small_clip(self, prompt, seed, frames, output, *, on_progress,
                           image_file, hold_image_framing, width=None, height=None):
@@ -209,7 +190,8 @@ class ShotRendererTests(unittest.TestCase):
             output.write_bytes(b"unusable completed clip")
             return {"output_frames": frames}
 
-        with patch.object(shot_renderer, "_extract_last_frame", side_effect=RuntimeError("No final frame")):
+        with patch.object(shot_renderer, "validate_video", return_value={}), \
+                patch.object(shot_renderer, "_extract_last_frame", side_effect=RuntimeError("No final frame")):
             with self.assertRaisesRegex(RuntimeError, "No final frame"):
                 shot_renderer.render_shooting_script(
                     plan_for(continuations=(False, False), scene_ids=(1, 1)),
@@ -233,7 +215,8 @@ class ShotRendererTests(unittest.TestCase):
                     output.write_bytes(b"first completed clip")
                     return {"output_frames": frames}
 
-                with self.assertRaises(type(exception)):
+                with patch.object(shot_renderer, "validate_video", return_value={}), \
+                        self.assertRaises(type(exception)):
                     shot_renderer.render_shooting_script(
                         plan_for(continuations=(False, False)), 41, root / "video.mp4",
                         render_fn=fake_renderer,
@@ -256,70 +239,58 @@ class ShotRendererTests(unittest.TestCase):
             shot_renderer.render_shooting_script(plan, 1, output, render_fn=self.render_small_clip)
         self.assertFalse((self.root / "shots").exists())
 
-    def test_source_dialogue_is_checked_before_handoff_and_after_assembly(self):
+    def test_generated_audio_is_trusted_without_transcription(self):
         plan = plan_for(continuations=(False, True), scene_ids=(1, 1))
         plan["source"]["beats"] = [
             {"id": 1, "kind": "dialogue", "text": "Good news. It's definitely the car."},
             {"id": 2, "kind": "dialogue", "text": "He was an optimistic man."},
         ]
         self.calls = []
-        checks = []
-
-        def verify(clip, expected, report_dir, **kwargs):
-            self.assertTrue(clip.is_file())
-            self.assertFalse((self.root / "video.mp4").exists())
-            checks.append((expected, len(self.calls)))
-            return {"status": "passed", "transcript": expected}
-
-        with patch.object(shot_renderer, "WIDTH", 128), patch.object(shot_renderer, "HEIGHT", 64), \
-                patch.object(shot_renderer.speech_validation, "validate_shot_audio", side_effect=verify):
+        # The fixture contains a tone, not the screenplay words. Only playable
+        # media and timing matter to the production audio path.
+        with patch.object(shot_renderer, "WIDTH", 128), patch.object(shot_renderer, "HEIGHT", 64):
             result = shot_renderer.render_shooting_script(
                 plan, 1, self.root / "video.mp4", render_fn=self.render_small_clip,
             )
-        self.assertEqual(checks, [
-            ("Good news. It's definitely the car.", 1),
-            ("He was an optimistic man.", 2),
-            ("Good news. It's definitely the car. He was an optimistic man.", 2),
-        ])
-        self.assertEqual(result["video"]["speech_validation"]["status"], "passed")
+        self.assertEqual(len(self.calls), 2)
+        self.assertTrue((self.root / "video.mp4").is_file())
+        self.assertNotIn("speech_validation", result["video"])
+        self.assertTrue(all(shot["status"] == "complete" for shot in result["shots"]))
+        self.assertEqual(list(self.root.rglob("speech-*")), [])
 
-    def test_missing_speech_tools_or_source_fails_before_render(self):
-        plan = plan_for(continuations=(False,))
-        with patch.object(shot_renderer.speech_validation, "check_available", side_effect=RuntimeError("missing ASR")), \
-                patch.object(shot_renderer.quality_backend, "render") as renderer:
-            with self.assertRaisesRegex(RuntimeError, "missing ASR"):
-                shot_renderer.render_shooting_script(plan, 1, self.root / "video.mp4")
-            renderer.assert_not_called()
-        del plan["source"]
-        with self.assertRaisesRegex(ValueError, "source beats"):
-            shot_renderer.render_shooting_script(plan, 1, self.root / "video.mp4")
-        self.assertFalse((self.root / "shots").exists())
-
-    def test_extra_speech_stops_next_shot_and_retains_rejected_take(self):
+    def test_resume_reuses_take_previously_failed_only_for_speech(self):
         plan = plan_for(continuations=(False, True), scene_ids=(1, 1))
         self.calls = []
-        mismatch = {"status": "failed", "transcript": "unwanted words"}
-        failure = shot_renderer.speech_validation.SpeechValidationError("Speech differs from script", mismatch)
-        with patch.object(shot_renderer, "WIDTH", 128), patch.object(shot_renderer, "HEIGHT", 64), \
-                patch.object(shot_renderer.speech_validation, "validate_shot_audio", side_effect=failure):
-            with self.assertRaisesRegex(RuntimeError, "differs from script"):
-                shot_renderer.render_shooting_script(plan, 1, self.root / "video.mp4", render_fn=self.render_small_clip)
-        self.assertEqual(len(self.calls), 1)
-        self.assertFalse((self.root / "video.mp4").exists())
-        self.assertTrue((self.root / "shots/001/video.mp4").exists())
-        self.assertFalse((self.root / "shots/002").exists())
-        report = json.loads((self.root / "shots/001/render.json").read_text())
-        self.assertEqual(report["status"], "failed")
-        self.assertEqual(report["speech_validation"], mismatch)
-        self.assertIsNotNone(report["runtime"])
+        output = self.root / "video.mp4"
+        with patch.object(shot_renderer, "WIDTH", 128), patch.object(shot_renderer, "HEIGHT", 64):
+            shot_renderer.render_shooting_script(plan, 1, output, render_fn=self.render_small_clip)
+            report_file = self.root / "shots/001/render.json"
+            report = json.loads(report_file.read_text())
+            mismatch = {"status": "mismatch", "transcript": "chimo", "expected_text": "chemo"}
+            report.update(status="failed", error="Generated speech needs review", speech_validation=mismatch)
+            report_file.write_text(json.dumps(report))
+            historical = report_file.with_name("speech-validation.json")
+            historical.write_text(json.dumps(mismatch))
+            original_video = report_file.with_name("video.mp4").read_bytes()
+            output.unlink()
+            with patch.object(shot_renderer.quality_backend, "render") as renderer:
+                result = shot_renderer.render_shooting_script(plan, 1, output, resume=True)
+                renderer.assert_not_called()
+        self.assertTrue(output.is_file())
+        self.assertTrue(all(shot["reused"] for shot in result["shots"]))
+        self.assertEqual(report_file.with_name("video.mp4").read_bytes(), original_video)
+        restored = json.loads(report_file.read_text())
+        self.assertEqual(restored["status"], "complete")
+        self.assertNotIn("error", restored)
+        self.assertNotIn("speech_validation", restored)
+        self.assertEqual(json.loads(historical.read_text()), mismatch)
 
-    def test_failed_assembled_speech_check_keeps_final_video_unpublished(self):
+    def test_failed_assembled_media_check_keeps_final_video_unpublished(self):
         plan = plan_for(continuations=(False,), fade_out=True)
         self.calls = []
-        failure = shot_renderer.speech_validation.SpeechValidationError("Final word missing", {"status": "failed"})
         with patch.object(shot_renderer, "WIDTH", 128), patch.object(shot_renderer, "HEIGHT", 64), \
-                patch.object(shot_renderer.speech_validation, "validate_shot_audio", side_effect=[{"status": "passed"}, failure]):
-            with self.assertRaisesRegex(RuntimeError, "Final word missing"):
+                patch.object(shot_renderer, "validate_video", side_effect=[{}, RuntimeError("Invalid assembled video")]):
+            with self.assertRaisesRegex(RuntimeError, "Invalid assembled video"):
                 shot_renderer.render_shooting_script(plan, 1, self.root / "video.mp4", render_fn=self.render_small_clip)
         self.assertFalse((self.root / "video.mp4").exists())
         self.assertTrue((self.root / "video.partial.mp4").exists())

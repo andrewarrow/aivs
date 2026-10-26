@@ -15,14 +15,15 @@ Screenplay + cast
        ↓
 Codex app-server → shooting script (timing, staging, dialogue, camera, sound)
        ↓
-Python validates the plan → LTX-2.5 renders connected shots
+Python validates the plan → LTX-2.5 renders each missing shot once
        ↓
-Speech and video checks → FFmpeg assembly → video.mp4
+Automatic visual review + media checks → FFmpeg assembly → video.mp4
 ```
 
 The desktop app is Rust; the video pipeline is Python using MLX on Apple's GPU.
-Codex planning uses your configured Codex service and login. Video inference and
-speech verification run locally.
+Codex planning and automatic visual review use your configured Codex service and
+login. Visual review sends sampled rendered frames to Codex. Video inference and
+media checks run locally; generated dialogue is trusted without transcription.
 
 ## The core workflow, with a real example
 
@@ -58,9 +59,11 @@ FADE OUT.
 
 The app sends the screenplay, cast descriptions, ordered story beats, and
 [director instructions](python/shooting-script-instructions.txt) to Codex.
-A **beat** is one source action or dialogue line. Codex divides those beats into
-timed shots and specifies where people stand, what they do, how the camera sees
-them, and what should be heard.
+A **beat** is one source action or dialogue line. Codex maps those beats to timed
+generation segments and specifies where people stand, what they do, how the
+camera sees them, and what should be heard. A segment can contain an explicit
+cut while its audio continues. A long action beat can span consecutive segments;
+each source dialogue line still appears exactly once in the plan.
 
 In this example, it produces **two shots totaling 21 seconds**:
 
@@ -83,27 +86,27 @@ for each shot. This translation is the core of AIVS: turning a short human scene
 into explicit, timed instructions for a video model.
 
 This saved example is a historical planning artifact, not a guarantee of visual
-quality or a template for every current rule. For example, its second shot calls
-for a tighter framing; the current renderer carries forward the previous frame,
-and current director instructions require reframing to develop through camera
-movement within a scene.
+quality or a template for every current rule. Current plans preserve the inherited
+opening image and can explicitly cut to a new view within the generation.
 
 ### 3. Validate, render, and assemble
 
-Before rendering, Codex completes four separate preproduction turns:
+Before rendering, Codex completes five separate preproduction turns:
 
 1. Draft coverage from the screenplay's actions, motivations, reveals, and dialogue recipients.
 2. Compare the assembled prompts against the screenplay and revise lost or conflicting intent.
 3. Rehearse the physical action and timing; revise overloaded takes, prop handling, and continuity.
-4. Independently approve or reject the exact final prompts, with evidence for every beat and a timed rehearsal of every shot.
+4. Assess model feasibility: simplify risky state changes, use motivated coverage, and preserve the scene's meaning without depending on difficult continuous mechanics.
+5. Independently approve or reject the exact final prompts, with evidence for every beat and a timed rehearsal of every shot.
 
 Each turn starts a fresh read-only thread. Revisions receive the original source
 and previous compiled plan; final approval cannot silently rewrite the plan it
 reviews. Python checks ordered beat coverage, exact dialogue, duration and token
 limits after each draft. Each malformed response gets one correction attempt.
 A completed rejection sends the draft and findings back to Codex for repair,
-then an independent reviewer checks the rebuilt prompts. The renderer starts
-automatically once the revised plan is approved. Unchanged repairs are rejected.
+then an independent reviewer checks the rebuilt prompts. These are automatic
+model reviews; no human approves individual shots. The renderer starts once the
+revised plan is approved. Unchanged repairs are rejected.
 Each planning invocation permits up to three repair/review rounds; unresolved
 findings then stop video inference with progress saved. Resume continues from
 that latest draft and review, with another repair allowance. Each Codex pass has
@@ -119,8 +122,9 @@ reports remain available separately. Review establishes script readiness, not a
 guarantee that the video model will execute every instruction.
 
 The director guidance follows the official
-[LTX-2.5 prompt guide](https://ltx.io/blog/ltx-2-5-prompt-guide): focused,
-chronological action, visible emotional cues, and explicit sound. The
+[LTX-2.5 prompt guide](https://docs.ltx.io/open-source-model/usage-guides/prompting-guide):
+focused, chronological action, visible emotional cues, explicit sound, and named
+cuts when coverage makes an action more reliable. The
 [image-to-video guide](https://docs.ltx.io/open-source-model/usage-guides/image-to-video)
 explains why continued shots must work from their actual inherited image.
 
@@ -132,45 +136,38 @@ or 4 pixels from each side; it does not stretch the picture. Within a scene,
 each shot after the first starts from the previous
 shot's final decoded frame to carry forward faces, clothing, positions, and props.
 A handoff uses the full model frame, before the delivery crop. Portrait planning
-uses the narrow frame from the outset: people staged in depth, visible speaker
-faces and handoffs, and continuous reframing rather than instant reverse angles.
+uses the narrow frame from the outset: people staged in depth, readable faces,
+and enough room for essential actions. A planned cut happens after the inherited
+opening; it does not silently replace the model's reference image. Within a
+generation, dialogue and ambience can continue across that cut.
 A new scene resets that frame reference. The model receives each shot's complete
 prompt; the separate start/end notes support continuity review.
 
-Whisper transcribes each take locally and the app compares the recognized words
-with the source dialogue. FFmpeg assembles the shots and applies the final fade
-when requested. The assembled result must pass speech, decoded-frame, and
-audio/video timing checks before it is published as `video.mp4`. Assembly uses
-the same speech policy for each shot, including its accepted variations.
+New plans use the `single-render-v1` policy to spend planning effort before expensive
+video inference. Each missing shot receives one generation, with no automatic rerender
+loop. Codex reviews sampled frames for causal continuity, completed actions,
+reveals, and tone, recording observed state separately from the intended state.
+It can adapt upcoming directions to the footage already produced. Review findings
+or an unavailable visual reviewer do not block assembly or trigger another render;
+quality findings remain separate from technical success.
 
-Speech mismatches never trigger automatic retakes. Each shot may retain one
-brief added interjection (`oh`, `um`, `uh`, or `hmm`) or one adjacent repeated
-greeting (`hi`, `hello`, or `hey`) when all scripted words remain intact and in
-order. The report records this as an accepted variation, preserving the actual
-transcript and differences. Missing or substituted words, invented sentences,
-and other additions stop for review; they do not spend another render. Recognizer
-or file errors also stop the run. Existing takes and their transcripts remain
-available, including archived replacements in `takes/<shot>/<take>/`.
-
-Speech matching ignores case and punctuation and folds Latin diacritics (so
-“Allô” and “Allo” compare equally). There is no percentage-match allowance for
-changed dialogue, and shots without dialogue do not allow added words.
-Standalone repeated “ha” syllables are ignored only when an
-action beat in the source explicitly calls for laughter and the segment falls
-inside that shot's time range. Raw Whisper segments remain in the report. This
-small rule does not classify mixed dialogue or other forms of vocalization.
+FFmpeg assembles the shots and applies the final fade when requested. The result
+must pass decoded-frame and audio/video timing checks before publication as
+`video.mp4`. There is no production Whisper dependency, transcription, dialogue
+comparison, or pronunciation gate. A mispronounced word cannot stop the scene.
+The planner still preserves source dialogue in its prompts.
 
 ## Run your first scene
 
 ### Prerequisites
 
 - An **Apple Silicon Mac with Metal support** and **Rust 1.92+**.
-- **Homebrew**, so setup can install `uv`, FFmpeg, and `whisper-cpp` if missing.
+- **Homebrew**, so setup can install `uv` and FFmpeg if missing.
 - A **Hugging Face access token** for downloading models.
 - The **Codex CLI**, signed in and available on `PATH` (or set `AIVS_CODEX_PATH`).
-  Codex is required for screenplay planning; the chat panel is optional.
+  Codex provides screenplay planning and automatic visual review; the chat panel is optional.
 - **50 GiB of free disk space** for first setup. Video model downloads are about
-  **43 GB**; speech verification also caches a roughly **488 MB** Whisper model.
+  **43 GB**.
 
 From this checkout:
 
@@ -211,20 +208,24 @@ not appear. Focus settings and system sound volume still apply.
 
 Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
 directory to continue that run in place. Resume uses its saved screenplay, cast,
-seed, render format, and shooting script; Codex runs only if planning never finished.
+seed, render format, and shooting script. Codex resumes unfinished planning and,
+for `single-render-v1` plans, can supply missing visual reviews or adapt upcoming
+directions.
 Unfinished planning resumes after its last completed stage, repair, or review.
 A rejected review resumes with its repair; an already repaired draft resumes at
 review; a saved approval can publish the plan without another Codex call.
-Older four-stage runs are recovered from their saved drafts and matching final
-review request/response, so a rejection does not discard the completed planning.
+Saved legacy runs retain their footage and planning artifacts; they do not acquire
+new visual-review requirements on Resume.
 Checkpoints are saved atomically and existing Codex logs are preserved. An
 interrupted, incomplete Codex turn is restarted, while completed stages are reused.
 Current settings do not change a resumed run, including older 1280×704 runs. Existing
-shots and compatible archived takes are checked under the current speech policy;
-acceptable takes are reused without video inference. Resume does not grant a new
-video-retake budget: an unresolved speech mismatch stops for review with the saved footage
-intact. Missing shots are rendered only after checking saved candidates. Invalid
-saved footage stops for review when no usable saved alternative is available.
+shots and compatible archived takes are checked for playable media and matching
+provenance, then reused without video inference. Cached visual reviews are reused
+when they match the take. A saved take previously rejected only for speech
+(such as “chemo” transcribed as “chimo”) is reusable; its historical transcript
+does not affect acceptance. Missing shots are rendered only after checking saved
+candidates. Invalid saved footage remains an error when no usable saved
+alternative is available; Resume does not silently spend a rerender.
 Continuation shots are reused only when their
 recorded input matches the preceding take, including across interruptions.
 
@@ -288,9 +289,9 @@ Follow the main path: **UI → Python entry point → Codex planner → shot ren
 | [python/video.py](python/video.py) | Pipeline entry point; `generate_screenplay()` coordinates planning and rendering. |
 | [python/shooting_script.py](python/shooting_script.py) | Parses story beats, calls Codex, validates the plan, and saves shooting scripts. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
-| [python/shot_renderer.py](python/shot_renderer.py) | Renders sequential shots, carries frames forward, checks speech, and assembles the result. |
+| [python/shot_renderer.py](python/shot_renderer.py) | Reuses saved takes, renders missing shots, carries frames forward, and assembles the result. |
 | [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
-| [python/speech_validation.py](python/speech_validation.py), [python/validation.py](python/validation.py) | Speech matching and media checks. |
+| [python/validation.py](python/validation.py) | Decoded-frame, stream, and audio/video timing checks. |
 | [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration. |
 | [src/main.rs](src/main.rs), [src/playback.rs](src/playback.rs) | Native egui/winit/wgpu window and macOS AVKit playback. |
 
@@ -323,15 +324,18 @@ Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
 | --- | --- |
 | `screenplay.txt`, `screenplay-request.json` | Original script and cast bindings. |
 | `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |
-| `shooting-script-draft-*` | Compiled draft, intent revision, and physical rehearsal revision; these are not approved render inputs. |
+| `shooting-script-draft-*` | Draft, intent, physical rehearsal, and model-feasibility revisions; these are not approved render inputs. |
 | `shooting-script-progress.json` | Atomic checkpoint of completed stages, latest compiled draft, repair count, and matching review. |
 | `shooting-script-draft-repair-*`, `shooting-script-review-*.json` | Repair drafts and review history, preserved across Resume. |
 | `shooting-script-review.json` | Latest approval or rejection, source-beat evidence, shot timelines, and unresolved issues. |
 | `shooting-script-request-*`, `shooting-script-response-*` | What the planner sent to Codex and received back. |
 | `shooting-script-events-*.jsonl`, `shooting-script-errors-*.txt` | Live protocol events and diagnostics, including failed or stopped planning. |
-| `shots/001/`, `shots/002/`, … | Individual takes and their reports. |
+| `shots/001/`, `shots/002/`, … | Individual takes and their reports, including automatic `visual_review` findings for new plans. |
+| `shots/<shot>/visual-review/review.json` | Timestamped visual evidence, observed state, and quality findings. |
+| `shots/<shot>/adaptation/` | Automatic revisions of upcoming directions based on rendered state. |
+| `scene-review/review.json` | Synthesis of sampled shot observations against the source's continuity, story, and tone; not full-speed playback. |
 | `takes/<shot>/<take>/` | Archived takes, seeds, and diagnostics from replacements. |
-| `speech-recognition.json`, `speech-transcript.txt`, `speech-validation.json` | Speech evidence for individual shots and the final assembly. |
+| Historical `speech-*` files | Retained from older runs; production rendering and Resume do not use them. |
 | `render.json` | Seed, status, prompts, timing, runtime details, and errors. |
 | `video.mp4` | Final validated assembly, present after a successful render. |
 
@@ -345,7 +349,7 @@ checkout using its default workspace:
   --plan-only
 ```
 
-This runs the four initial Codex passes, any required repair/review rounds, and
+This runs the five initial Codex passes, any required repair/review rounds, and
 uses the cached tokenizer. It generates a new plan,
 which may differ from the saved example. Remove `--plan-only` to render as well.
 Add `--render-format portrait` for 1080×1920; `--script-file` defaults to landscape.
@@ -384,13 +388,13 @@ cargo test live_app_server_streams_a_complete_reply -- --ignored
 
 ## Current limits
 
-Timing is estimated, and generated actions, faces, voices, and lip sync still
-need human review. Frame continuity helps within a scene but does not lock
-identity across new locations. Whisper can mishear dialogue; a matching transcript
-does not prove the correct speaker or a convincing performance. Speech differences
-outside the narrow natural-delivery allowance stop for review and leave the take
-available. Neither a shot mismatch nor an assembled-video mismatch automatically
-regenerates footage.
+Timing is estimated, and generated actions, faces, voices, and lip sync can still
+fail. Automatic visual review samples frames rather than observing every instant;
+it can miss defects or misjudge a performance. Its report describes quality, not a
+guarantee. Frame continuity helps within a scene but does not lock identity across
+new locations. The pipeline completes without per-shot human approval and avoids
+automatic rerenders; a technically complete scene can contain reported visual
+issues. Generated dialogue is not independently checked.
 
 The editor has no print pagination or Final Draft import/export. Other renderers
 and separate speech synthesis are outside the main workflow. An opt-in

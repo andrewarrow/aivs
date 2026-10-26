@@ -32,6 +32,7 @@ _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
                    "image", "scene_image", "voice_sample")
 _CODEX_TIMEOUT_SECONDS = 36000
 _MAX_REPAIRS_PER_RUN = 3
+_PLANNING_POLICY = "single-render-v1"
 
 
 def _json(value: object) -> str:
@@ -261,7 +262,12 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
     if candidate.get("render_format") != request.get("render_format") and "source_sha256" in candidate:
         raise ValueError("Saved shooting script has a different render format; generate a new plan.")
     proposed = candidate["shots"]
+    planning_policy = candidate.get("planning_policy")
+    if planning_policy is not None and planning_policy != _PLANNING_POLICY:
+        raise ValueError("Unrecognized shooting-script planning policy.")
     cast_identity = candidate.get("cast_identity")
+    if planning_policy == _PLANNING_POLICY and not isinstance(cast_identity, list):
+        raise ValueError("First-render planning requires stable cast_identity.")
     if cast_identity is not None:
         if not isinstance(cast_identity, list) or len(cast_identity) != len(source["cast"]):
             raise ValueError("Cast identity must describe every bound role exactly once.")
@@ -279,6 +285,7 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
     by_id = {beat["id"]: beat for beat in source_beats}
     expected = 1
     shots = []
+    action_parts = {}
     for index, item in enumerate(proposed, 1):
         if not isinstance(item, dict):
             raise ValueError(f"Shot {index} must be an object.")
@@ -288,9 +295,14 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
         ids = item.get("beat_ids")
         if not isinstance(ids, list) or not ids or any(type(n) is not int for n in ids):
             raise ValueError(f"Shot {index} needs beat_ids.")
-        if ids != list(range(expected, expected + len(ids))) or ids[-1] > len(source_beats):
-            raise ValueError(f"Shot {index} skips, duplicates, or reorders source beats.")
-        expected = ids[-1] + 1
+        if ids != sorted(set(ids)) or any(n not in by_id for n in ids):
+            raise ValueError(f"Shot {index} needs unique source beat IDs in order.")
+        for beat_id in ids:
+            if beat_id == expected:
+                expected += 1
+            elif not (planning_policy == _PLANNING_POLICY and beat_id == expected - 1
+                      and by_id[beat_id]["kind"] == "action"):
+                raise ValueError(f"Shot {index} skips, duplicates, or reorders source beats.")
         scene_markers = [by_id[n]["scene"] for n in ids]
         scene_ids = [by_id[n]["scene_id"] for n in ids]
         if len(set(scene_ids)) > 1:
@@ -317,6 +329,31 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
         template = _bounded(item.get("prompt_template"), f"Shot {index} prompt template")
         start = _bounded(item.get("start_state"), f"Shot {index} start state", 1200)
         end = _bounded(item.get("end_state"), f"Shot {index} end state", 1200)
+        production = {}
+        if planning_policy == _PLANNING_POLICY:
+            coverage = item.get("coverage")
+            if coverage not in ("continuous", "edited"):
+                raise ValueError(f"Shot {index} coverage must be continuous or edited.")
+            purpose = _bounded(item.get("dramatic_purpose"), f"Shot {index} dramatic purpose", 800)
+            contract = item.get("visual_contract")
+            if not isinstance(contract, list) or not 1 <= len(contract) <= 8:
+                raise ValueError(f"Shot {index} needs 1-8 observable visual contract requirements.")
+            contract = [_bounded(value, f"Shot {index} visual requirement", 800) for value in contract]
+            parts = item.get("action_coverage")
+            action_ids = [n for n in ids if by_id[n]["kind"] == "action"]
+            if (not isinstance(parts, list) or len(parts) != len(action_ids)
+                    or any(not isinstance(part, dict) for part in parts)):
+                raise ValueError(f"Shot {index} must describe its part of every assigned action beat.")
+            for beat_id, part in zip(action_ids, parts):
+                if (set(part) != {"beat_id", "part", "parts", "action"}
+                        or type(part.get("beat_id")) is not int or part["beat_id"] != beat_id
+                        or type(part.get("part")) is not int or type(part.get("parts")) is not int
+                        or not 1 <= part["part"] <= part["parts"] <= 64):
+                    raise ValueError(f"Shot {index} has invalid or reordered action coverage.")
+                _bounded(part.get("action"), f"Shot {index} action coverage", 1200)
+                action_parts.setdefault(beat_id, []).append(part)
+            production = {"coverage": coverage, "dramatic_purpose": purpose,
+                          "visual_contract": contract, "action_coverage": parts}
         if any(mark in template for mark in ('"', '“', '”')):
             raise ValueError(f"Shot {index} template contains quoted text outside source dialogue placeholders.")
         if re.search(r"\b(?:fade\s+(?:in|out)|subtitles?|captions?|title\s+card)\b", template, re.I):
@@ -358,21 +395,35 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
                   + "No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
-        minimum = _timing_estimate([by_id[n] for n in ids])["minimum_seconds"]
+        timing = _timing_estimate([by_id[n] for n in ids])
+        if planning_policy == _PLANNING_POLICY:
+            # A source paragraph can span segments. Charge only this segment's
+            # share of the structural floor; the independent rehearsal budgets
+            # the actual sub-actions and must still reject rushed staging.
+            action_weight = sum(1 / part["parts"] for part in production["action_coverage"])
+            minimum = max(4, math.ceil(timing["speech_seconds_at_160_wpm"] + action_weight + 0.5))
+        else:
+            minimum = timing["minimum_seconds"]
         if seconds < minimum:
             raise ValueError(f"Shot {index} needs at least {minimum} seconds for its dialogue and action.")
         shots.append({"seconds": seconds, "beat_ids": ids, "prompt_template": template,
                       "prompt": prompt, "start_state": start, "end_state": end,
                       **({"visible_roles": visible_roles} if cast_identity is not None else {}),
+                      **production,
                       "continue_previous": continue_previous, "scene": scene_markers[0],
                       "scene_id": scene_ids[0]})
     if expected != len(source_beats) + 1:
         raise ValueError("Shooting script omits source beats.")
+    for beat_id, parts in action_parts.items():
+        if any(part["part"] != index or part["parts"] != len(parts)
+               for index, part in enumerate(parts, 1)):
+            raise ValueError(f"Action beat {beat_id} must cover consecutive parts 1 through its actual part count.")
     if isinstance(candidate.get("shots"), list):
         for proposed_shot, filled in zip(candidate["shots"], shots):
             if "prompt" in proposed_shot and proposed_shot["prompt"] != filled["prompt"]:
                 raise ValueError("Saved shot prompt does not match the source dialogue.")
     return {"version": 1, "source_sha256": source["source_sha256"],
+            **({"planning_policy": planning_policy} if planning_policy is not None else {}),
             **({"cast_identity": cast_identity} if cast_identity is not None else {}),
             **({"render_format": request["render_format"]} if "render_format" in request else {}),
             "seconds": sum(shot["seconds"] for shot in shots), "fade_out": source["fade_out"],
@@ -419,34 +470,24 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
     temporary.replace(plan_path)
     display = []
     if "preproduction_review" in plan:
-        display.extend(("Preproduction: draft, intent revision, physical rehearsal, final approval completed.", ""))
+        stages = ("draft, intent revision, physical rehearsal, render feasibility, final approval"
+                  if plan.get("planning_policy") == _PLANNING_POLICY
+                  else "draft, intent revision, physical rehearsal, final approval")
+        display.extend((f"Preproduction: {stages} completed.", ""))
     if "render_format" in plan:
         spec = resolve_format(plan["render_format"])
         display.extend((f"Render: {spec['width']} × {spec['height']} | {spec['aspect_ratio']} | {spec['name']}", ""))
     for index, shot in enumerate(plan["shots"], 1):
         display.append(f"SHOT {index} | {shot['seconds']}s | beats {', '.join(map(str, shot['beat_ids']))}")
+        if "dramatic_purpose" in shot:
+            display.extend((f"Purpose: {shot['dramatic_purpose']}", f"Coverage: {shot['coverage']}"))
+            display.extend(f"Must show: {requirement}" for requirement in shot["visual_contract"])
+            display.extend(f"Action beat {part['beat_id']}, part {part['part']}/{part['parts']}: {part['action']}"
+                           for part in shot["action_coverage"])
         display.extend((f"Start: {shot['start_state']}", shot["prompt"], f"End: {shot['end_state']}", ""))
     if plan.get("fade_out"):
         display.append("Fade out at the end of the final shot.")
     (run_dir / "shooting-script.txt").write_text("\n".join(display).rstrip() + "\n", encoding="utf-8")
-
-
-_SCHEMA = {"type": "object", "additionalProperties": False,
-           "required": ["cast_identity", "shots", "revision_notes"],
-           "properties": {
-             "cast_identity": {"type": "array", "items": {
-               "type": "object", "additionalProperties": False, "required": ["role", "description", "voice_description"],
-               "properties": {"role": {"type": "string"}, "description": {"type": "string"},
-                              "voice_description": {"type": "string"}}}},
-             "revision_notes": {"type": "array", "items": {"type": "string"}},
-             "shots": {"type": "array",
-             "items": {"type": "object", "additionalProperties": False,
-               "required": ["seconds", "beat_ids", "visible_roles", "prompt_template", "start_state", "end_state", "continue_previous"],
-               "properties": {"seconds": {"type": "integer"},
-                 "beat_ids": {"type": "array", "items": {"type": "integer"}},
-                 "visible_roles": {"type": "array", "items": {"type": "string"}},
-                 "prompt_template": {"type": "string"}, "start_state": {"type": "string"},
-                 "end_state": {"type": "string"}, "continue_previous": {"type": "boolean"}}}}}}
 
 
 def _object_schema(properties: dict) -> dict:
@@ -454,16 +495,44 @@ def _object_schema(properties: dict) -> dict:
             "required": list(properties), "properties": properties}
 
 
+_SCHEMA = _object_schema({
+    "planning_policy": {"type": "string", "enum": [_PLANNING_POLICY]},
+    "cast_identity": {"type": "array", "items": _object_schema({
+        "role": {"type": "string"}, "description": {"type": "string"},
+        "voice_description": {"type": "string"},
+    })},
+    "revision_notes": {"type": "array", "items": {"type": "string"}},
+    "shots": {"type": "array", "items": _object_schema({
+        "seconds": {"type": "integer"},
+        "beat_ids": {"type": "array", "items": {"type": "integer"}},
+        "visible_roles": {"type": "array", "items": {"type": "string"}},
+        "prompt_template": {"type": "string"}, "start_state": {"type": "string"},
+        "end_state": {"type": "string"}, "continue_previous": {"type": "boolean"},
+        "coverage": {"type": "string", "enum": ["continuous", "edited"]},
+        "dramatic_purpose": {"type": "string"},
+        "visual_contract": {"type": "array", "items": {"type": "string"}},
+        "action_coverage": {"type": "array", "items": _object_schema({
+            "beat_id": {"type": "integer"}, "part": {"type": "integer"},
+            "parts": {"type": "integer"}, "action": {"type": "string"},
+        })},
+    })},
+})
+
+
 _REVIEW_SCHEMA = _object_schema({
     "approved": {"type": "boolean"},
     "summary": {"type": "string"},
     "beat_reviews": {"type": "array", "items": _object_schema({
-        "beat_id": {"type": "integer"}, "shot_number": {"type": "integer"},
+        "beat_id": {"type": "integer"}, "shot_numbers": {"type": "array", "items": {"type": "integer"}},
         "intent": {"type": "string"}, "evidence": {"type": "string"},
     })},
     "shot_reviews": {"type": "array", "items": _object_schema({
         "shot_number": {"type": "integer"}, "staging": {"type": "string"},
         "identity_and_state": {"type": "string"},
+        "render_risk": {"type": "string", "enum": ["low", "medium", "high"]},
+        "risk_factors": {"type": "array", "items": {"type": "string"}},
+        "risk_mitigation": {"type": "string"},
+        "contract_evidence": {"type": "array", "items": {"type": "string"}},
         "timeline": {"type": "array", "items": _object_schema({
             "start_seconds": {"type": "number"}, "end_seconds": {"type": "number"},
             "action": {"type": "string"},
@@ -492,11 +561,28 @@ _PLANNING_PASSES = (
      "prop contact, garment mechanics, wetness, body reveals, dialogue recipients, and "
      "listening intervals. Budget individual serial movements, not one second per source "
      "paragraph. A dialogue line's speech estimate is not its listening/pause allowance. "
-     "Split overloaded takes at source beat boundaries, keeping source order and inherited "
-     "composition. Read the FULLY ASSEMBLED prompts for contradictions, including identity "
+     "Simplify overloaded takes with motivated internal cuts or consecutive action parts, "
+     "keeping source order and the inherited opening. Read the FULLY ASSEMBLED prompts "
+     "for contradictions, including identity "
      "and voice defaults. Use concise chronological positive descriptions of filmable "
      "action. Return the entire repaired plan and specific revision_notes. Leave no "
      "known defect for the final approval reviewer to fix."),
+    ("feasibility", "Revise for a usable first render",
+     "Act as an independent LTX production engineer. Rendering is expensive and the "
+     "default is one generation per segment, without human shot approval. A physically "
+     "possible performance is not sufficient. Audit the complete previous plan for "
+     "object persistence, garment topology, contact/release, entrances, body reveals, "
+     "multiple simultaneous actions, and fragile hand/prop details. Redesign difficult "
+     "blocking before rendering. Use focused action, established stable states, and "
+     "explicit cuts to cause, reaction, and result inside a generation when they improve "
+     "reliability. Preserve the inherited opening frame and continuous dialogue audio "
+     "across such cuts. Do not hide a source-essential reveal or delete meaning. Split "
+     "an action beat into consecutive source-linked parts only when needed; avoid "
+     "inflating shot count or runtime to escape thoughtful staging. Keep generation "
+     "prompts concise. Return the complete improved plan, observable visual_contract "
+     "requirements and concrete revision_notes explaining each risk removed. Never "
+     "plan on repeated expensive retakes, post-hoc human approval, or an unspecified "
+     "future correction to make a shot usable."),
 )
 
 
@@ -504,6 +590,8 @@ def _plan_fingerprint(plan: dict) -> str:
     # Approval belongs to these exact compiled prompts, durations and continuity
     # states, not merely to the unchanged screenplay.
     content = {key: plan.get(key) for key in ("source_sha256", "cast_identity", "shots", "fade_out")}
+    if "planning_policy" in plan:
+        content["planning_policy"] = plan["planning_policy"]
     return hashlib.sha256(_json(content).encode("utf-8")).hexdigest()
 
 
@@ -515,13 +603,20 @@ def _validate_review(report: dict, plan: dict, *, require_approval: bool = True)
     beats = plan["source"]["beats"]
     if not isinstance(beat_reviews, list) or len(beat_reviews) != len(beats):
         raise ValueError("Preproduction review must account for every source beat.")
-    shot_for_beat = {beat: number for number, shot in enumerate(plan["shots"], 1)
-                     for beat in shot["beat_ids"]}
+    modern = plan.get("planning_policy") == _PLANNING_POLICY
+    shots_for_beat = {beat["id"]: [number for number, shot in enumerate(plan["shots"], 1)
+                                  if beat["id"] in shot["beat_ids"]] for beat in beats}
     for beat, review in zip(beats, beat_reviews):
         if (not isinstance(review, dict) or type(review.get("beat_id")) is not int
-                or review["beat_id"] != beat["id"]
-                or type(review.get("shot_number")) is not int
-                or review["shot_number"] != shot_for_beat[beat["id"]]):
+                or review["beat_id"] != beat["id"]):
+            raise ValueError("Beat reviews must map every source beat in order.")
+        if modern:
+            numbers = review.get("shot_numbers")
+            if (not isinstance(numbers, list) or any(type(n) is not int for n in numbers)
+                    or numbers != shots_for_beat[beat["id"]]):
+                raise ValueError("Beat reviews must identify every segment covering the source beat.")
+        elif (type(review.get("shot_number")) is not int
+              or review["shot_number"] != shots_for_beat[beat["id"]][0]):
             raise ValueError("Beat reviews must map every source beat to its actual shot, in order.")
         _bounded(review.get("intent"), f"Intent of beat {beat['id']}")
         _bounded(review.get("evidence"), f"Prompt evidence for beat {beat['id']}")
@@ -534,6 +629,22 @@ def _validate_review(report: dict, plan: dict, *, require_approval: bool = True)
             raise ValueError("Shot reviews must be in shot order.")
         _bounded(review.get("staging"), f"Shot {number} staging review")
         _bounded(review.get("identity_and_state"), f"Shot {number} identity/state review")
+        if modern:
+            if review.get("render_risk") not in ("low", "medium", "high"):
+                raise ValueError(f"Shot {number} needs an explicit residual render-risk decision.")
+            factors = review.get("risk_factors")
+            if not isinstance(factors, list):
+                raise ValueError(f"Shot {number} needs a render-risk factor list.")
+            for factor in factors:
+                _bounded(factor, f"Shot {number} render-risk factor", 1200)
+            _bounded(review.get("risk_mitigation"), f"Shot {number} concrete risk mitigation")
+            evidence = review.get("contract_evidence")
+            if not isinstance(evidence, list) or len(evidence) != len(shot["visual_contract"]):
+                raise ValueError(f"Shot {number} review must cite prompt evidence for every visual requirement.")
+            for item in evidence:
+                _bounded(item, f"Shot {number} visual contract evidence")
+            if require_approval and report["approved"] and review["render_risk"] == "high":
+                raise ValueError(f"Shot {number} still has high render risk; reject it for automatic planning repair.")
         timeline = review.get("timeline")
         if not isinstance(timeline, list) or not timeline:
             raise ValueError(f"Shot {number} needs a timed physical rehearsal.")
@@ -573,6 +684,14 @@ def _instruction(source: dict, correction: str | None) -> str:
         "script": source["script"], "cast": source["cast"], "characters": source["characters"],
         **({"render_format": source["render_format"]} if "render_format" in source else {}),
         "beats": source["beats"], "fade_out_at_end": source["fade_out"],
+        "generation_capabilities": {
+            "planning_policy": _PLANNING_POLICY, "default_video_attempts_per_segment": 1,
+            "joint_picture_and_audio": True, "explicit_cuts_inside_generation": True,
+            "audio_continues_across_internal_cuts": True,
+            "audio_moves_between_generations": False,
+            "same_scene_opening": "Actual previous final frame; an explicit cut may follow it.",
+            "human_shot_approval": False,
+        },
         "timing_guidance": {
             "words_per_minute": 160, "settling_seconds": 0.5,
             "speech_estimates": speech_estimates,
@@ -594,8 +713,9 @@ def _executable(executable) -> str:
 
 
 def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, response_path,
-                  on_activity, on_activity_delta, output_schema=None):
+                  on_activity, on_activity_delta, output_schema=None, image_paths=()):
     """Use app-server notifications; exec --json only exposes completed text items."""
+    timeout_seconds = max(0.0, deadline - time.monotonic())
     with events_path.open("wb") as events, \
             errors_path.open("wb") as errors, selectors.DefaultSelector() as selector:
         process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -641,7 +761,7 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
                 stream(item_id, item.get("aggregatedOutput") or "")
 
         def fail(detail):
-            raise RuntimeError(f"Codex shooting-script translation failed: {detail}")
+            raise RuntimeError(f"Codex request failed: {detail}")
 
         def handle(event):
             nonlocal finished
@@ -667,8 +787,11 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
                     if not thread_id:
                         fail("Codex did not return a thread ID.")
                     on_activity("Codex connected.")
+                    inputs = [{"type": "text", "text": instruction}]
+                    inputs.extend({"type": "localImage", "path": str(Path(path).resolve())}
+                                  for path in image_paths)
                     send({"id": 3, "method": "turn/start", "params": {
-                        "threadId": thread_id, "input": [{"type": "text", "text": instruction}],
+                        "threadId": thread_id, "input": inputs,
                         "cwd": str(cwd), "approvalPolicy": "never",
                         "sandboxPolicy": {"type": "readOnly"},
                         "summary": "detailed", "outputSchema": output_schema or _SCHEMA}})
@@ -730,7 +853,7 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
             while not finished and (selector.get_map() or process.poll() is None):
                 now = time.monotonic()
                 if now >= deadline:
-                    raise subprocess.TimeoutExpired(cmd, _CODEX_TIMEOUT_SECONDS)
+                    raise subprocess.TimeoutExpired(cmd, timeout_seconds)
                 for key, _ in selector.select(min(0.25, deadline - now)):
                     if key.fileobj is process.stdin:
                         try:
@@ -803,27 +926,42 @@ def _load_planning_progress(run_dir, source, request, profiles, token_counter, a
     path = run_dir / "shooting-script-progress.json"
     if path.is_file():
         progress = read_json(path)
+        previous_policy = progress.get("planning_policy") if isinstance(progress, dict) else None
+        stage_count = 3 if previous_policy is None else len(_PLANNING_PASSES)
         if (not isinstance(progress, dict) or progress.get("version") != 1
+                or previous_policy not in (None, _PLANNING_POLICY)
                 or progress.get("source_sha256") != source["source_sha256"]
                 or type(progress.get("completed_passes")) is not int
-                or not 1 <= progress["completed_passes"] <= len(_PLANNING_PASSES)
+                or not 1 <= progress["completed_passes"] <= stage_count
                 or type(progress.get("repair_round")) is not int or progress["repair_round"] < 0
-                or (progress["repair_round"] and progress["completed_passes"] != len(_PLANNING_PASSES))):
+                or (progress["repair_round"] and progress["completed_passes"] != stage_count)):
             raise ValueError("Saved planning checkpoint does not match this run or has invalid progress.")
         plan = validated_plan(progress.get("plan"))
+        if (previous_policy == _PLANNING_POLICY
+                and progress["completed_passes"] == len(_PLANNING_PASSES)
+                and plan.get("planning_policy") != _PLANNING_POLICY):
+            raise ValueError("Saved render-feasibility checkpoint still contains a legacy plan.")
         if progress.get("plan_sha256") != _plan_fingerprint(plan):
             raise ValueError("Saved planning checkpoint does not match its compiled draft.")
         review = progress.get("review")
         if review is not None:
-            if progress["completed_passes"] != len(_PLANNING_PASSES):
+            if progress["completed_passes"] != stage_count:
                 raise ValueError("Saved planning checkpoint reviews an unfinished draft.")
             _validate_review(review, plan, require_approval=False)
         progress.update(plan=plan, review=review)
+        if previous_policy is None:
+            # Preserve expensive completed writing, but never let an old three-
+            # stage approval skip the new render-feasibility pass and reviewer.
+            progress.update(planning_policy=_PLANNING_POLICY, review=None)
+            if review is not None:
+                progress["repair_findings"] = review
+            activity("Resuming the saved draft with render-feasibility planning and a fresh automatic review.")
         activity(f"Resuming saved preproduction: {progress['completed_passes']} drafting stages complete, "
                  f"{progress['repair_round']} repair revisions complete.")
         return progress
 
-    progress = {"version": 1, "source_sha256": source["source_sha256"],
+    progress = {"version": 1, "planning_policy": _PLANNING_POLICY,
+                "source_sha256": source["source_sha256"],
                 "completed_passes": 0, "repair_round": 0, "plan": None,
                 "plan_sha256": None, "review": None}
     # Import checkpoints from the original four-pass implementation. Its final
@@ -836,12 +974,14 @@ def _load_planning_progress(run_dir, source, request, profiles, token_counter, a
             continue
         try:
             plan = validated_plan(read_json(draft_path))
+            if number == len(_PLANNING_PASSES) and plan.get("planning_policy") != _PLANNING_POLICY:
+                raise ValueError("Saved render-feasibility draft still contains a legacy plan.")
         except ValueError as exc:
             draft_errors.append(f"{draft_path.name}: {exc}")
             activity(f"Cannot reuse {draft_path.name}; checking the preceding completed stage.")
             continue
         progress.update(completed_passes=number, plan=plan, plan_sha256=_plan_fingerprint(plan))
-        activity(f"Resuming saved preproduction draft after stage {number}/3; completed stages will be reused.")
+        activity(f"Resuming saved preproduction draft after stage {number}/{len(_PLANNING_PASSES)}; completed stages will be reused.")
         break
     if progress["plan"] is None and draft_errors:
         raise ValueError("No valid saved planning draft could be recovered: " + "; ".join(draft_errors))
@@ -865,7 +1005,7 @@ def _load_planning_progress(run_dir, source, request, profiles, token_counter, a
             except (OSError, ValueError, IndexError, AttributeError, TypeError):
                 continue
             progress["review"] = review
-            activity("Reusing the completed final review and its findings; no repeat of the four planning stages.")
+            activity("Reusing the completed final review and its findings; completed planning stages will not repeat.")
             break
     if progress["plan"] is not None:
         _save_planning_progress(run_dir, progress)
@@ -933,6 +1073,8 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
         def validate_revision(candidate):
             if not isinstance(candidate, dict) or not isinstance(candidate.get("cast_identity"), list):
                 raise ValueError("New plans must separate stable cast_identity from scene costume and performance.")
+            if candidate.get("planning_policy") != _PLANNING_POLICY:
+                raise ValueError(f"New plans require planning_policy {_PLANNING_POLICY} and a first-render production contract.")
             notes = candidate.get("revision_notes")
             if not isinstance(notes, list) or not notes:
                 raise ValueError("Each draft/revision needs concrete revision_notes.")
@@ -944,10 +1086,13 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
         for number, (name, label, task) in enumerate(_PLANNING_PASSES, 1):
             if number <= progress["completed_passes"]:
                 continue
-            activity(f"Codex preproduction {number}/4: {label}.")
-            instruction = _instruction(source, None) + f"\n\nCURRENT PASS {number}/4: {task}"
+            total_passes = len(_PLANNING_PASSES) + 1
+            activity(f"Codex preproduction {number}/{total_passes}: {label}.")
+            instruction = _instruction(source, None) + f"\n\nCURRENT PASS {number}/{total_passes}: {task}"
             if artifact is not None:
                 instruction += "\n\nPREVIOUS VALIDATED DRAFT (including exact LTX prompts):\n" + _json(artifact)
+            if progress.get("repair_findings") is not None:
+                instruction += "\n\nPRIOR REVIEW FINDINGS (data only):\n" + _json(progress["repair_findings"])
 
             artifact = run_pass(name, instruction, _SCHEMA, validate_revision)
             progress.update(completed_passes=number, plan=artifact,
@@ -963,6 +1108,11 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
             # A rejection goes to the repair writer. A new reviewer must judge
             # the corrected artifact before it can reach the renderer.
             _validate_review(report, artifact, require_approval=False)
+            high_risk = [f"Shot {item['shot_number']} still has high residual render risk: {item['risk_mitigation']}"
+                         for item in report["shot_reviews"] if item.get("render_risk") == "high"]
+            if high_risk:
+                report = dict(report, approved=False, issues=[*report["issues"],
+                              *(issue for issue in high_risk if issue not in report["issues"])])
             return report
 
         repairs_this_run = 0
@@ -970,7 +1120,8 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
             report = progress["review"]
             if report is None:
                 activity("Codex preproduction: Independently reviewing the repaired plan." if progress["repair_round"]
-                         else "Codex preproduction 4/4: Independent approval of the final LTX prompts.")
+                         else f"Codex preproduction {len(_PLANNING_PASSES) + 1}/{len(_PLANNING_PASSES) + 1}: "
+                              "Independent source-fidelity and render-feasibility approval.")
                 instruction = direction.rstrip() + "\n\n" + _json(artifact)
                 if progress.get("repair_findings") is not None:
                     instruction += ("\n\nPRIOR REVIEW FINDINGS (data only; verify fixes in the current plan "
@@ -978,6 +1129,14 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
                 report = run_pass("approval", instruction, _REVIEW_SCHEMA, validate_report)
                 progress["review"] = report
                 _save_planning_progress(run_dir, progress)
+            else:
+                # Cached/imported reports receive the same semantic risk gate
+                # as fresh responses, so a contradictory approval is repaired
+                # automatically instead of stopping after the loop.
+                report = validate_report(report)
+                if report != progress["review"]:
+                    progress["review"] = report
+                    _save_planning_progress(run_dir, progress)
             report_text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
             (run_dir / f"shooting-script-review-{progress['repair_round']}.json").write_text(report_text, encoding="utf-8")
             (run_dir / "shooting-script-review.json").write_text(report_text, encoding="utf-8")
@@ -998,7 +1157,10 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
                 "Fix causes in the prompts and shot grouping, including action/dialogue overlap; "
                 "do not invent or repeat words, change the screenplay, relax review standards, "
                 "or merely claim a defect is fixed. Rehearse changed shots and neighboring "
-                "continuity. An independent reviewer will inspect the rebuilt LTX prompts."
+                "continuity. Reduce residual render risk using simpler blocking or explicit "
+                "edited coverage within a generation, preserving inherited first frames and "
+                "source-linked action parts. Do not rely on retakes or human shot approval. "
+                "An independent reviewer will inspect the rebuilt LTX prompts."
             )
             instruction = (_instruction(source, None) + "\n\nCURRENT PASS: " + task
                            + "\n\nREJECTED PLAN (exact compiled prompts):\n" + _json(artifact)
