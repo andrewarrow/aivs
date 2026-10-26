@@ -107,6 +107,13 @@ with the source dialogue. FFmpeg assembles the shots and applies the final fade
 when requested. The assembled result must pass speech, decoded-frame, and
 audio/video timing checks before it is published as `video.mp4`.
 
+Speech matching ignores case and punctuation and folds Latin diacritics (so
+“Allô” and “Allo” compare equally); it still checks word order, repetition, and
+lexical changes. Standalone repeated “ha” syllables are ignored only when an
+action beat in the source explicitly calls for laughter and the segment falls
+inside that shot's time range. Raw Whisper segments remain in the report. This
+small rule does not classify mixed dialogue or other forms of vocalization.
+
 ## Run your first scene
 
 ### Prerequisites
@@ -144,6 +151,13 @@ From this checkout:
 
 **Stop** interrupts the render and its child processes; closing AIVS also stops
 active work. Partial outputs remain available for inspection.
+
+Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
+directory to continue that run in place. Resume uses its saved screenplay, cast,
+seed, and shooting script; Codex runs only if planning never finished. Existing
+shots are checked and reused without video inference, including takes that were
+saved before speech verification failed. Missing or invalid shots are rendered,
+then the result is assembled. A speech mismatch still stops the run for review.
 
 By default, the current directory is the workspace. To keep scripts, caches,
 and outputs elsewhere, pass an existing directory:
@@ -258,6 +272,12 @@ This still calls Codex and uses the cached tokenizer. It generates a new plan,
 which may differ from the saved example. Remove `--plan-only` to render as well.
 `--shooting-script /path/to/shooting-script.json` reuses a plan after revalidating
 it against the current script and cast.
+
+To resume an existing run from the command line:
+
+```sh
+.venv/bin/python python/video.py resume --output-dir /path/to/output-directory
+```
 
 ## Verify changes
 

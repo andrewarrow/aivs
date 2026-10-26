@@ -103,6 +103,33 @@ def _expected_dialogue(plan: dict, shots: list[dict]) -> list[str]:
                      if by_id[beat_id]["kind"] == "dialogue") for shot in shots]
 
 
+def _scripted_laughter_intervals(
+    plan: dict, shots: list[dict],
+) -> tuple[
+    tuple[tuple[tuple[float, float], ...], ...],
+    tuple[tuple[float, float], ...],
+]:
+    """Map explicit source action laughter cues to shot-local and assembly time."""
+    by_id = {beat["id"]: beat for beat in plan["source"]["beats"]}
+    shot_intervals = []
+    assembly_intervals = []
+    offset = 0.0
+    for shot in shots:
+        end = offset + shot["seconds"]
+        permitted = any(
+            by_id[beat_id]["kind"] == "action"
+            and speech_validation.action_calls_for_laughter(by_id[beat_id]["text"])
+            for beat_id in shot["beat_ids"]
+        )
+        if permitted:
+            shot_intervals.append(((0.0, float(shot["seconds"])),))
+            assembly_intervals.append((offset, end))
+        else:
+            shot_intervals.append(())
+        offset = end
+    return tuple(shot_intervals), tuple(assembly_intervals)
+
+
 def _extract_last_frame(clip: Path, frame_index: int, image: Path) -> None:
     image.parent.mkdir(parents=True, exist_ok=True)
     image.unlink(missing_ok=True)
@@ -164,14 +191,18 @@ def render_shooting_script(
     on_progress=None,
     on_shot=None,
     render_fn=None,
+    resume=False,
 ) -> dict:
     """Render plan shots in order and publish only a validated assembled video.
 
     ``render_fn`` follows ``quality_backend.render``. Completed shot files and
     their atomic reports remain available if a later shot or assembly fails.
+    With ``resume``, matching saved takes are checked and reused before any new
+    video inference; a failed speech check keeps the take available for review.
     """
     shots, seconds, fade_out = _validate_plan(plan)
     dialogue = _expected_dialogue(plan, shots)
+    shot_laughter_intervals, assembly_laughter_intervals = _scripted_laughter_intervals(plan, shots)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("seed must be an integer.")
     # Fail before GPU inference if verification cannot run. Missing ASR is not
@@ -189,6 +220,7 @@ def render_shooting_script(
     completed_seconds = 0
     summaries = []
     clips = []
+    previous_shot_reused = False
 
     def emit_progress(fraction, label, remaining_seconds=None):
         nonlocal last_fraction
@@ -232,6 +264,31 @@ def render_shooting_script(
                 "scene_id": shot.get("scene_id"),
                 "continuity": continuity,
             }
+
+            reused = False
+            if resume and clip.is_file() and (not use_previous_frame or previous_shot_reused):
+                saved_report_path = shot_dir / "render.json"
+                try:
+                    saved_report = json.loads(saved_report_path.read_text(encoding="utf-8"))
+                    saved_continuity = saved_report.get("continuity")
+                    matches = (
+                        saved_report.get("prompt") == shot["prompt"]
+                        and saved_report.get("seed") == shot_seed
+                        and saved_report.get("seconds") == shot["seconds"]
+                        and saved_report.get("beat_ids") == shot["beat_ids"]
+                        and isinstance(saved_continuity, dict)
+                        and all(saved_continuity.get(key) == continuity[key]
+                                for key in ("conditioning", "source_shot", "source_frame"))
+                        and ("scene_id" not in shot or saved_report.get("scene_id") == shot["scene_id"])
+                    )
+                    if matches:
+                        validate_video(clip, frames, WIDTH, HEIGHT, expect_audio=True)
+                        report["runtime"] = saved_report.get("runtime")
+                        report["reused"] = True
+                        reused = True
+                except Exception:
+                    # A stale, malformed, or invalid saved take follows the normal render path.
+                    reused = False
             save_shot(index, report)
 
             shot_started = time.monotonic()
@@ -255,18 +312,23 @@ def render_shooting_script(
                 )
 
             try:
-                if use_previous_frame:
-                    _extract_last_frame(clips[-1], source_frame, image_file)
-                runtime = renderer(
-                    shot["prompt"], shot_seed, frames, clip,
-                    on_progress=shot_progress,
-                    image_file=image_file,
-                    hold_image_framing=False,
-                )
-                report["runtime"] = runtime
-                emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
+                if reused:
+                    runtime = report["runtime"]
+                    emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved shot")
+                else:
+                    if use_previous_frame:
+                        _extract_last_frame(clips[-1], source_frame, image_file)
+                    runtime = renderer(
+                        shot["prompt"], shot_seed, frames, clip,
+                        on_progress=shot_progress,
+                        image_file=image_file,
+                        hold_image_framing=False,
+                    )
+                    report["runtime"] = runtime
+                    emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
                 speech = speech_validation.validate_shot_audio(
                     clip, dialogue[index], shot_dir, root=quality_backend.ROOT,
+                    scripted_laughter_intervals=shot_laughter_intervals[index],
                 )
                 report.update(status="complete", speech_validation=speech)
                 clips.append(clip)
@@ -279,12 +341,14 @@ def render_shooting_script(
                     "runtime": runtime,
                     "continuity": continuity,
                     "speech_validation": speech,
+                    **({"reused": True} if reused else {}),
                 })
                 completed_seconds += shot["seconds"]
                 save_shot(index, report)
+                previous_shot_reused = reused
                 emit_progress(
                     min(0.97, 0.97 * completed_seconds / seconds),
-                    f"Shot {index + 1}/{total_shots} complete",
+                    f"Shot {index + 1}/{total_shots} {'reused' if reused else 'complete'}",
                 )
             except KeyboardInterrupt:
                 report["status"] = "interrupted"
@@ -303,6 +367,7 @@ def render_shooting_script(
             return speech_validation.validate_shot_audio(
                 clip, " ".join(text for text in dialogue if text), output.parent,
                 root=quality_backend.ROOT,
+                scripted_laughter_intervals=assembly_laughter_intervals,
             )
 
         video_info = _assemble(clips, output, seconds, fade_out, verify_audio=verify_assembly)

@@ -47,6 +47,7 @@ enum Event {
 enum Task {
     Setup,
     Render(String),
+    Resume(PathBuf),
 }
 
 struct Job {
@@ -69,6 +70,7 @@ impl Job {
             let result = match task {
                 Task::Setup => worker.setup(),
                 Task::Render(request) => worker.render(&request),
+                Task::Resume(directory) => worker.resume(&directory),
             };
             if let Err(error) = result {
                 worker.send(if worker.cancel.load(Ordering::Relaxed) {
@@ -195,6 +197,19 @@ impl Worker {
         self.progress("Preparing shooting script…");
         let mut command = self.python("render");
         command.arg("--screenplay-json").arg(request);
+        let output = self.run(command)?;
+        if let Some(path) = output.output.filter(|path| path.is_file()) {
+            self.send(Event::Complete(path));
+            Ok(())
+        } else {
+            Err("The renderer stopped without a validated video. See activity for details.".into())
+        }
+    }
+
+    fn resume(&self, directory: &Path) -> Result<(), String> {
+        self.progress("Resuming video…");
+        let mut command = self.python("resume");
+        command.arg("--output-dir").arg(directory);
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
@@ -451,7 +466,7 @@ impl VideoWorkspace {
         self.remaining_seconds = None;
         self.started_at = Instant::now();
         self.stopping = false;
-        self.rendering = matches!(task, Task::Render(_));
+        self.rendering = matches!(task, Task::Render(_) | Task::Resume(_));
         if !self.rendering {
             self.setup = Setup::Checking;
         }
@@ -552,6 +567,16 @@ impl VideoWorkspace {
 
     pub fn is_ready(&self) -> bool {
         self.setup == Setup::Ready
+    }
+
+    pub fn can_resume(&self) -> bool {
+        self.is_ready() && self.job.is_none()
+    }
+
+    pub fn resume(&mut self, directory: PathBuf) {
+        if self.can_resume() {
+            self.start(Task::Resume(directory));
+        }
     }
 
     pub fn setup_ui(&mut self, ui: &mut egui::Ui) {

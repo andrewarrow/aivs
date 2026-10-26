@@ -70,6 +70,21 @@ class ContinuityPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scene_id"):
             shot_renderer._validate_plan(plan)
 
+    def test_laughter_intervals_come_from_source_actions_and_track_assembly_offsets(self):
+        plan = plan_for(continuations=(False, True, False))
+        plan["shots"][0]["prompt"] += " Laughter in the hall."
+        plan["source"]["beats"][1]["text"] = "LAUGHTER in the hallway."
+        shots, _, _ = shot_renderer._validate_plan(plan)
+        shot_intervals, assembly_intervals = shot_renderer._scripted_laughter_intervals(plan, shots)
+        self.assertEqual(shot_intervals, ((), ((0.0, 4.0),), ()))
+        self.assertEqual(assembly_intervals, ((4.0, 8.0),))
+
+    def test_generated_prompt_cannot_authorize_laughter_filtering(self):
+        plan = plan_for(continuations=(False,))
+        plan["shots"][0]["prompt"] += " Everyone laughs."
+        shots, _, _ = shot_renderer._validate_plan(plan)
+        self.assertEqual(shot_renderer._scripted_laughter_intervals(plan, shots), (((),), ()))
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
 class ShotRendererTests(unittest.TestCase):

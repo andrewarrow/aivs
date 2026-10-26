@@ -237,9 +237,99 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
         emit("complete", output=str(output))
 
 
+def resume_screenplay(directory):
+    """Continue a saved run in place using its original source, cast, and seed."""
+    run_dir = Path(directory).expanduser().resolve()
+    if not run_dir.is_dir():
+        raise ValueError("Select an existing AIVS output directory to resume.")
+
+    def read_object(filename):
+        try:
+            value = json.loads((run_dir / filename).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Cannot resume this directory: {filename} is missing or unreadable.") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"Cannot resume this directory: {filename} must contain an object.")
+        return value
+
+    with project_lock(".render.lock"):
+        report = read_object("render.json")
+        request = read_object("screenplay-request.json")
+        profiles = report.get("characters")
+        seed = report.get("seed")
+        if not isinstance(profiles, list) or type(seed) is not int:
+            raise ValueError("Cannot resume this directory: the saved cast or seed is missing.")
+        if (report.get("fps"), report.get("width"), report.get("height")) != (FPS, WIDTH, HEIGHT):
+            raise ValueError("Cannot resume a run with different video dimensions or frame rate.")
+        # Use the cast snapshot, independent of edits to the current screenplay
+        # or gallery. Revalidating a saved plan never calls the Codex planner.
+        parse_request(request, profiles)
+        output = run_dir / "video.mp4"
+        if (report.get("status") == "complete" and output.is_file()
+                and report.get("sha256") == hashlib.sha256(output.read_bytes()).hexdigest()):
+            emit("complete", output=str(output))
+            return
+
+        check_environment()
+        os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", TQDM_DISABLE="1")
+        plan_file = run_dir / "shooting-script.json"
+        count_tokens = prompt_token_counter()
+        if plan_file.is_file():
+            emit("progress", label="Loading saved shooting script; planning is already complete")
+            plan = load_shooting_script(plan_file, request, profiles, token_counter=count_tokens)
+        else:
+            plan = None
+
+        def save():
+            temp = run_dir / "render.json.tmp"
+            temp.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            temp.replace(run_dir / "render.json")
+
+        report.pop("error", None)
+        report.pop("sha256", None)
+        report.pop("runtime", None)
+        report["status"] = "planning" if plan is None else "rendering"
+        save()
+        try:
+            if plan is None:
+                emit("progress", label="Resuming unfinished shooting script with Codex")
+                started = time.monotonic()
+                plan = create_shooting_script(
+                    request, profiles, run_dir, token_counter=count_tokens,
+                    on_activity=lambda message: emit("activity", message=message),
+                    on_activity_delta=lambda stream_id, delta: emit(
+                        "activity_delta", id=stream_id, delta=delta),
+                )
+                save_shooting_script(plan, run_dir)
+                report["planning_seconds"] = round(time.monotonic() - started, 3)
+            report.update(status="rendering", seconds=plan["seconds"],
+                          shots=[dict(shot, status="pending") for shot in plan["shots"]])
+            save()
+            emit("progress", label=f"Resuming {len(plan['shots'])} shots; reusing saved takes")
+
+            def shot_update(index, shot):
+                report["shots"][index].update(shot)
+                save()
+
+            report["runtime"] = render_shooting_script(
+                plan, seed, output, resume=True,
+                on_progress=lambda **data: emit("render_progress", **data),
+                on_shot=shot_update,
+            )
+            report.update(status="complete", sha256=hashlib.sha256(output.read_bytes()).hexdigest())
+            save()
+        except BaseException as exc:
+            report.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
+                          error=str(exc) or type(exc).__name__)
+            save()
+            raise
+        emit("complete", output=str(output))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "download", "render"))
+    parser.add_argument("command", choices=("check", "download", "render", "resume"))
+    parser.add_argument("--output-dir", type=Path, help="Existing screenplay output directory to resume in place")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--character", action="append", default=[], metavar="NAME")
@@ -256,7 +346,13 @@ def main():
     parser.add_argument("--shooting-script", type=Path, help="Reuse a shooting script matching this source and cast")
     args = parser.parse_args()
     try:
-        if args.command == "check":
+        if args.command == "resume":
+            if args.output_dir is None:
+                raise ValueError("Resume requires --output-dir pointing to an existing AIVS output directory.")
+            resume_screenplay(args.output_dir)
+        elif args.output_dir is not None:
+            raise ValueError("--output-dir is only used with resume.")
+        elif args.command == "check":
             check()
         elif args.command == "download":
             download()

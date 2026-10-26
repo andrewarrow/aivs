@@ -257,6 +257,22 @@ impl App {
                             Err(error) => Some(error),
                         };
                     }
+                    if ui
+                        .add_enabled(self.video.can_resume(), egui::Button::new("Resume…"))
+                        .on_hover_text("Continue an output directory using its saved shooting script and shots.")
+                        .on_disabled_hover_text("Finish setup and wait for the current video job to stop.")
+                        .clicked()
+                    {
+                        ui.close();
+                        self.import_error = match select_resume(&self.root.join("outputs")) {
+                            Ok(Some(directory)) => {
+                                self.video.resume(directory);
+                                None
+                            }
+                            Ok(None) => None,
+                            Err(error) => Some(error),
+                        };
+                    }
                 });
                 ui.menu_button("Codex", |ui| {
                     self.connection_ui(ui);
@@ -582,6 +598,41 @@ fn select_fountain(root: &std::path::Path) -> Result<Option<PathBuf>, String> {
     } else {
         Err("Could not open the file chooser. Please try again.".into())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn select_resume(outputs: &std::path::Path) -> Result<Option<PathBuf>, String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{NSString, NSURL};
+
+    let mtm = MainThreadMarker::new().ok_or("Resume requires the main thread.")?;
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setTitle(Some(&NSString::from_str("Resume video")));
+    panel.setPrompt(Some(&NSString::from_str("Resume")));
+    panel.setCanChooseFiles(false);
+    panel.setCanChooseDirectories(true);
+    panel.setAllowsMultipleSelection(false);
+    if let Some(directory) = NSURL::from_file_path(outputs) {
+        panel.setDirectoryURL(Some(&directory));
+    }
+    let response = panel.runModal();
+    if response == NSModalResponseOK {
+        panel
+            .URL()
+            .and_then(|url| url.to_file_path())
+            .map(Some)
+            .ok_or_else(|| "Could not open the selected output directory.".into())
+    } else if response == NSModalResponseCancel {
+        Ok(None)
+    } else {
+        Err("Could not open the directory chooser. Please try again.".into())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn select_resume(_outputs: &std::path::Path) -> Result<Option<PathBuf>, String> {
+    Err("The output directory chooser requires macOS.".into())
 }
 
 #[cfg(not(target_os = "macos"))]

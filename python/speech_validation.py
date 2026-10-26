@@ -28,7 +28,23 @@ MODEL_FILENAME = "ggml-small.bin"
 MODEL_SHA256 = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
 MODEL_BYTES = 487601967
 _TIMEOUT_SECONDS = 180
-_WORDS = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+_LAUGHTER_SYLLABLES = re.compile(r"(?:ha){2,}", re.IGNORECASE)
+_HA_SYLLABLE = re.compile(r"(?:ha+)+", re.IGNORECASE)
+_LAUGHTER_CUE = re.compile(
+    r"\b(?:laughter|laugh(?:s|ed|ing)?|chuckl(?:e|es|ed|ing)|giggl(?:e|es|ed|ing))\b",
+    re.IGNORECASE,
+)
+_NEGATED_LAUGHTER = re.compile(
+    r"\b(?:no|without|never|not|doesn't|does not|didn't|did not|isn't|is not|"
+    r"wasn't|was not|won't|will not)\b(?:\W+\w+){0,2}\W+"
+    r"(?:laughter|laugh\w*|chuckl\w*|giggl\w*)\b", re.IGNORECASE,
+)
+_SILENT_LAUGHTER = re.compile(
+    r"\b(?:silent(?:ly)?|without sound)\b.{0,24}\b(?:laughter|laugh(?:s|ed|ing)?|"
+    r"chuckl(?:e|es|ed|ing)|giggl(?:e|es|ed|ing))\b|"
+    r"\b(?:laughter|laugh(?:s|ed|ing)?|chuckl(?:e|es|ed|ing)|giggl(?:e|es|ed|ing))"
+    r"\b.{0,24}\b(?:silently|without sound)\b", re.IGNORECASE,
+)
 _CLI_OPTIONS = ("--model", "--file", "--language", "--no-gpu", "--threads",
                 "--output-json-full", "--output-file", "--no-prints",
                 "--suppress-nst", "--temperature", "--no-fallback")
@@ -126,9 +142,73 @@ def setup(root: Path | None = None, *, on_progress=None) -> dict:
 
 
 def normalize_words(text: str) -> list[str]:
-    """Ignore written case/punctuation, preserving lexical order and repetition."""
-    text = unicodedata.normalize("NFKC", text).casefold().replace("’", "'")
-    return [word.replace("'", "") for word in _WORDS.findall(text)]
+    """Ignore case, punctuation, and Latin diacritics while preserving word order.
+
+    Combining marks are removed only after Latin letters. Marks from other
+    scripts remain attached to their word, and apostrophe contractions and
+    digits retain their existing lexical behavior.
+    """
+    text = unicodedata.normalize("NFD", unicodedata.normalize("NFKC", text).casefold())
+    normalized = []
+    previous_is_latin = False
+    for character in text:
+        category = unicodedata.category(character)
+        if category.startswith("M"):
+            if not previous_is_latin:
+                normalized.append(character)
+            continue
+        normalized.append(character)
+        previous_is_latin = category.startswith("L") and "LATIN" in unicodedata.name(character, "")
+    text = "".join(normalized).replace("’", "'")
+
+    words, current = [], []
+    for index, character in enumerate(text):
+        category = unicodedata.category(character)
+        is_word = category[0] in ("L", "N") and character != "_"
+        if is_word or (category.startswith("M") and current):
+            current.append(character)
+        elif character in "'" and current and index + 1 < len(text):
+            next_category = unicodedata.category(text[index + 1])
+            if next_category[0] in ("L", "N") and text[index + 1] != "_":
+                current.append(character)
+            else:
+                words.append("".join(current).replace("'", ""))
+                current = []
+        else:
+            if current:
+                words.append("".join(current).replace("'", ""))
+                current = []
+    if current:
+        words.append("".join(current).replace("'", ""))
+    return words
+
+
+def action_calls_for_laughter(text: str) -> bool:
+    """Return whether an action beat clearly directs audible laughter."""
+    if _SILENT_LAUGHTER.search(text):
+        return False
+    for cue in _LAUGHTER_CUE.finditer(text):
+        prefix = text[max(0, cue.start() - 48):cue.end()]
+        suffix = text[cue.end():]
+        if _NEGATED_LAUGHTER.search(prefix):
+            continue
+        if re.match(r"\s+(?:stock|matter|track)\b", suffix, re.IGNORECASE):
+            continue
+        return True
+    return False
+
+
+def _standalone_laughter(text: str) -> bool:
+    """Recognize only segments made entirely of at least two ``ha`` syllables."""
+    words = normalize_words(text)
+    return (len(words) >= 1
+            and all(_HA_SYLLABLE.fullmatch(word) for word in words)
+            and sum(len(re.findall("h", word)) for word in words) >= 2)
+
+
+def _is_expected_laughter(text: str) -> bool:
+    return any(word == "ha" or _LAUGHTER_SYLLABLES.fullmatch(word)
+               for word in normalize_words(text))
 
 
 def compare_transcript(expected_text: str, transcript: str) -> dict:
@@ -167,7 +247,8 @@ def _read_transcript(raw: dict, duration: float) -> tuple[str, list[dict]]:
 
 
 def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None = None,
-                        *, root: Path | None = None) -> dict:
+                        *, root: Path | None = None,
+                        scripted_laughter_intervals: tuple[tuple[float, float], ...] = ()) -> dict:
     """Reject missing, repeated, substituted, or extra recognized words.
 
     All failures save a report and raise ``SpeechValidationError``. An exact
@@ -187,7 +268,10 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
               "clip": str(clip), "recognition_file": raw_file.name,
               "transcript_file": transcript_file.name,
               "method": "independent-transcript-word-comparison",
-              "limitations": "Recognition can miss unintelligible sounds or mishear valid words; speaker identity and lip sync are not checked."}
+              "limitations": "Recognition can miss unintelligible sounds or mishear valid words; speaker identity and lip sync are not checked.",
+              "normalization_policy": "Case and punctuation are ignored; Latin combining diacritics are folded, while other scripts, word order, repetitions, contractions, and digits remain distinct.",
+              "scripted_laughter_intervals": [list(interval) for interval in scripted_laughter_intervals],
+              "ignored_segments": []}
     raw_file.unlink(missing_ok=True)
     transcript_file.unlink(missing_ok=True)
     try:
@@ -216,7 +300,23 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
         raw = json.loads(raw_file.read_text(encoding="utf-8"))
         transcript, segments = _read_transcript(raw, duration)
         transcript_file.write_text(transcript + "\n", encoding="utf-8")
-        report.update(compare_transcript(expected_text, transcript))
+        ignored_segments = []
+        comparison_segments = []
+        expected_has_laughter = _is_expected_laughter(expected_text)
+        for segment in segments:
+            contained = any(start <= segment["start_seconds"]
+                            and segment["end_seconds"] <= end
+                            for start, end in scripted_laughter_intervals)
+            if (_standalone_laughter(segment["text"]) and contained
+                    and not expected_has_laughter):
+                ignored_segments.append({**segment, "reason": "standalone repeated laughter syllables in a source-authorized interval"})
+            else:
+                comparison_segments.append(segment)
+        comparison_transcript = " ".join(segment["text"].strip() for segment in comparison_segments).strip()
+        report.update(compare_transcript(expected_text, comparison_transcript))
+        report["transcript"] = transcript
+        report["comparison_transcript"] = comparison_transcript
+        report["ignored_segments"] = ignored_segments
         report.update(duration_seconds=duration, segments=segments)
         if isinstance(raw.get("result"), dict):
             report["detected_language"] = raw["result"].get("language")

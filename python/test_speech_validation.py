@@ -39,6 +39,30 @@ class TranscriptComparisonTests(unittest.TestCase):
         self.assertEqual(speech.compare_transcript("We cannot wait.", "We can't wait.")["status"], "mismatch")
         self.assertEqual(speech.compare_transcript("Twenty one.", "21.")["status"], "mismatch")
 
+    def test_latin_accents_fold_in_composed_and_decomposed_forms(self):
+        self.assertEqual(speech.compare_transcript("Allô oui?", "Allo oui ?")["status"], "passed")
+        self.assertEqual(speech.compare_transcript("Allo oui?", "Allo\u0302 oui ?")["status"], "passed")
+
+    def test_combining_marks_in_other_scripts_are_preserved(self):
+        self.assertEqual(speech.normalize_words("कि"), ["कि"])
+        self.assertEqual(speech.compare_transcript("कि", "क")["status"], "mismatch")
+
+    def test_source_laughter_cues_skip_clear_negations_and_figurative_phrases(self):
+        for text in ("No laughter.", "She does not laugh.", "Without laughing, she leaves.",
+                     "He is the laughing stock.", "This is a laughing matter.",
+                     "Silent laughter.", "He laughs silently.", "laughable", "laughingstock"):
+            with self.subTest(text=text):
+                self.assertFalse(speech.action_calls_for_laughter(text))
+        self.assertTrue(speech.action_calls_for_laughter("Laughter in the hallway."))
+        self.assertTrue(speech.action_calls_for_laughter("He chuckles."))
+
+    def test_laughter_segment_detector_rejects_digits_and_mixed_words(self):
+        self.assertTrue(speech._standalone_laughter("Ha ! Ha ! Ha !"))
+        self.assertTrue(speech._standalone_laughter("hahaha"))
+        for text in ("ha 123 ha", "ha yeah", "ha1ha", "ha"):
+            with self.subTest(text=text):
+                self.assertFalse(speech._standalone_laughter(text))
+
 
 class ShotAudioValidationTests(unittest.TestCase):
     def setUp(self):
@@ -167,6 +191,62 @@ class ShotAudioValidationTests(unittest.TestCase):
                         self.assertRaises(speech.SpeechValidationError) as raised:
                     speech.validate_shot_audio(self.clip, "Hello.")
                 self.assertEqual(raised.exception.report["status"], "failed")
+
+    def test_source_authorized_standalone_laughter_is_ignored_only_in_report_comparison(self):
+        segments = [
+            {"text": "Ha ! Ha ! Ha !", "offsets": {"from": 200, "to": 900}},
+            {"text": "Allô oui ?", "offsets": {"from": 1100, "to": 2400}},
+        ]
+        _, run = self.fake_commands(segments)
+        with patch.object(speech, "check_available", return_value=self.identity), \
+                patch.object(speech.subprocess, "run", side_effect=run):
+            report = speech.validate_shot_audio(
+                self.clip, "Allo oui?", scripted_laughter_intervals=((0.0, 4.0),),
+            )
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["transcript"], "Ha ! Ha ! Ha ! Allô oui ?")
+        self.assertEqual(report["comparison_transcript"], "Allô oui ?")
+        self.assertEqual(report["ignored_segments"], [{
+            "text": "Ha ! Ha ! Ha !", "start_seconds": 0.2, "end_seconds": 0.9,
+            "reason": "standalone repeated laughter syllables in a source-authorized interval",
+        }])
+        raw = json.loads((self.root / "speech-recognition.json").read_text())
+        self.assertEqual(raw["transcription"], segments)
+
+    def test_unscripted_or_out_of_interval_laughter_remains_a_mismatch(self):
+        segments = [{"text": "Ha! Ha!", "offsets": {"from": 200, "to": 900}}]
+        for intervals in ((), ((0.5, 4.0),)):
+            with self.subTest(intervals=intervals):
+                _, run = self.fake_commands(segments)
+                with patch.object(speech, "check_available", return_value=self.identity), \
+                        patch.object(speech.subprocess, "run", side_effect=run), \
+                        self.assertRaises(speech.SpeechValidationError):
+                    speech.validate_shot_audio(
+                        self.clip, "Allo oui?", scripted_laughter_intervals=intervals,
+                    )
+
+    def test_mixed_words_missing_dialogue_and_expected_laughter_are_never_discarded(self):
+        cases = (
+            ([{"text": "Ha ha oui", "offsets": {"from": 200, "to": 900}}], "oui"),
+            ([{"text": "Ha ha", "offsets": {"from": 200, "to": 900}}], "Allo oui?"),
+            ([{"text": "Ha ha", "offsets": {"from": 200, "to": 900}}], "Ha ha"),
+        )
+        for segments, expected in cases:
+            with self.subTest(expected=expected, segments=segments):
+                _, run = self.fake_commands(segments)
+                with patch.object(speech, "check_available", return_value=self.identity), \
+                        patch.object(speech.subprocess, "run", side_effect=run):
+                    try:
+                        report = speech.validate_shot_audio(
+                            self.clip, expected, scripted_laughter_intervals=((0.0, 4.0),),
+                        )
+                    except speech.SpeechValidationError as exc:
+                        report = exc.report
+                if expected == "Ha ha":
+                    self.assertEqual(report["status"], "passed")
+                    self.assertEqual(report["ignored_segments"], [])
+                else:
+                    self.assertEqual(report["status"], "mismatch")
 
 
 class SpeechSetupTests(unittest.TestCase):
