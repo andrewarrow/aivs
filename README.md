@@ -173,6 +173,15 @@ The original Fountain file is preserved, and the imported screenplay autosaves t
 `screenplay.json`. Full-length scripts can be imported; video generation uses
 one selected scene at a time, within a 100,000-character limit per scene.
 
+Fountain is a plain-text screenplay format; [nyousefi/Fountain](https://github.com/nyousefi/Fountain)
+provides a reference implementation and sample scripts. Try the [Big Fish
+sample](https://github.com/nyousefi/Fountain/blob/master/FountainTests/Big%20Fish.fountain):
+[download the raw `.fountain` file](https://raw.githubusercontent.com/nyousefi/Fountain/master/FountainTests/Big%20Fish.fountain),
+then choose **File → Import…** in AIVS. Select a scene heading from the **Scene**
+menu, cast its characters, then choose **Generate video**. AIVS plans and renders
+only that scene; the rest of the imported screenplay remains available to edit
+and render scene by scene.
+
 - **Enter** creates the next screenplay element; **Shift+Enter** inserts a line break.
 - **Tab** in dialogue adds a parenthetical instruction. On an empty action, it
   changes the element to a character cue; **Shift+Tab** selects the previous type.
