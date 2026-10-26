@@ -210,6 +210,16 @@ fn clicking_character_names_and_portraits_replaces_the_displayed_prompt() {
             })
             .expect("prompt must be visible");
         assert!(prompt.starts_with(&format!("A single continuous cinematic shot of {name}.")));
+        assert!(prompt.contains(&format!(
+            "locked-off medium shot with {name}'s entire head and torso visible down to the waist"
+        )));
+        assert!(prompt.contains("leaving landscape around them throughout"));
+        assert!(prompt.contains(
+            "fixed tripod camera at eye level holds a constant focal length and camera-to-subject distance for the entire shot"
+        ));
+        assert!(prompt.contains(&format!(
+            "{name} stays at the same distance while speaking, with only natural head and body motion"
+        )));
         assert!(prompt.contains(&format!("my name is {name}")));
         assert!(!prompt.contains("nancy"));
         assert!(prompt.contains("dramatic rock formations"));

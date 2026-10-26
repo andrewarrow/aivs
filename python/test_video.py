@@ -1,3 +1,4 @@
+import hashlib
 import io
 import importlib.util
 import json
@@ -94,12 +95,13 @@ class RenderTests(unittest.TestCase):
         profile = video.characters.load_character("eli", root=library)
         expanded = video.characters.expand_prompt(prompt, [profile], image_conditioned=True)
 
-        def render(actual_prompt, seed, frames, output, *, on_progress, image_file):
+        def render(actual_prompt, seed, frames, output, *, on_progress, image_file, hold_image_framing):
             self.assertEqual(actual_prompt, expanded)
             self.assertEqual(seed, 42)
             self.assertEqual(frames, duration_estimate(prompt)["seconds"] * backend.FPS)
-            self.assertEqual(image_file, output.parent / "characters/eli/reference.png")
-            self.assertEqual(image_file.read_bytes(), (library / "characters/eli/reference.png").read_bytes())
+            self.assertEqual(image_file, output.parent / "characters/eli/scene-reference.png")
+            self.assertEqual(image_file.read_bytes(), (library / "characters/eli/scene-reference.png").read_bytes())
+            self.assertTrue(hold_image_framing)
             output.write_bytes(b"validated video")
             return {}
 
@@ -111,7 +113,12 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(report["prompt"], expanded)
             self.assertEqual(report["characters"], [profile])
             self.assertEqual(report["dialogue_timing"], duration_estimate(prompt))
-            self.assertEqual(report["image_source"]["file"], "characters/eli/reference.png")
+            self.assertEqual(report["image_source"]["file"], "characters/eli/scene-reference.png")
+            self.assertEqual(report["image_source"]["conditioning"], "whole-first-and-last-frame")
+            self.assertEqual(
+                report["image_source"]["anchor_frames"],
+                [0, duration_estimate(prompt)["seconds"] * backend.FPS - 1],
+            )
             video.characters.verify_snapshots([profile], next(Path(directory).glob("outputs/*")))
 
     def test_workspace_character_library_overrides_checkout_and_explicit_selector_works(self):
@@ -143,6 +150,28 @@ class RenderTests(unittest.TestCase):
             self.assertTrue(report["character_text_only"])
             self.assertEqual([profile["id"] for profile in report["characters"]], ["eli", "ava"])
 
+    def test_scene_only_and_portrait_characters_are_both_counted_as_image_references(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(video, "ROOT", Path(directory)), patch.object(video, "check_environment"), patch.object(video, "render", side_effect=RuntimeError("captured")) as renderer, patch("sys.stdout", new_callable=io.StringIO):
+            folder = Path(directory) / "characters/eli"
+            folder.mkdir(parents=True)
+            scene = b"scene image"
+            (folder / "scene-reference.png").write_bytes(scene)
+            (folder / "character.json").write_text(json.dumps({
+                "schema_version": 1, "id": "eli", "name": "Eli", "description": "An adult",
+                "voice_description": "", "scene_image": {"file": "scene-reference.png", "sha256": hashlib.sha256(scene).hexdigest()},
+            }))
+            ava_folder = Path(directory) / "characters/ava"
+            ava_folder.mkdir(parents=True)
+            portrait = b"portrait image"
+            (ava_folder / "reference.png").write_bytes(portrait)
+            (ava_folder / "character.json").write_text(json.dumps({
+                "schema_version": 1, "id": "ava", "name": "Ava", "description": "An adult",
+                "voice_description": "", "image": {"file": "reference.png", "sha256": hashlib.sha256(portrait).hexdigest()},
+            }))
+            with self.assertRaisesRegex(ValueError, "Multiple saved characters"):
+                video.generate(42, "Eli and Ava wave.")
+            renderer.assert_not_called()
+
     @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is installed in the renderer's .venv")
     def test_reference_image_is_checked_before_loading_the_pipeline(self):
         source = Path(video.__file__).resolve().parents[1] / "characters/eli/reference.png"
@@ -157,8 +186,22 @@ class RenderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Cannot decode reference image"):
                 backend.render("A scene", 42, 24, Path(directory) / "video.mp4", image_file=broken)
 
+    @unittest.skipUnless(importlib.util.find_spec("ltx_pipelines_mlx"), "LTX MLX runtime is installed in the renderer's .venv")
+    def test_scene_reference_uses_first_and_last_pipeline_guides_while_portrait_mode_stays_legacy(self):
+        source = "/workspace/scene-reference.png"
+        self.assertEqual(backend._image_generation_options(source, 192, False), {"image": source})
+        held = backend._image_generation_options(source, 192, True)["images"]
+        self.assertEqual([image.frame_idx for image in held], [0, 191])
+        self.assertEqual([image.path for image in held], [source, source])
+        self.assertTrue(held[0].replaces)
+        self.assertFalse(held[1].replaces)
+        self.assertEqual([image.strength for image in held], [1.0, 1.0])
+        single = backend._image_generation_options(source, 1, True)["images"]
+        self.assertEqual([image.frame_idx for image in single], [0])
+
     def test_success_forwards_render_estimates_and_saves_phase_timings(self):
         def render(prompt, seed, frames, output, *, on_progress):
+            self.assertEqual(prompt, video.DEFAULT_PROMPT)
             on_progress(label="Stage 2/2 denoising", fraction=0.7, remaining_seconds=120)
             output.write_bytes(b"validated video")
             return {"elapsed_seconds": 400, "phase_seconds": {"stage1": 100, "stage2": 200}}
@@ -168,6 +211,9 @@ class RenderTests(unittest.TestCase):
             report = json.loads(next(Path(directory).glob("outputs/*/render.json")).read_text())
             events = [json.loads(line.removeprefix("AIVS_EVENT ")) for line in out.getvalue().splitlines()]
             self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["prompt"], video.DEFAULT_PROMPT)
+            self.assertEqual(report["characters"], [])
+            self.assertNotIn("image_source", report)
             self.assertEqual(report["runtime"]["phase_seconds"], {"stage1": 100, "stage2": 200})
             self.assertEqual(events[-2]["event"], "render_progress")
             self.assertEqual(events[-2]["remaining_seconds"], 120)

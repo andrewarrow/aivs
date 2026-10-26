@@ -516,12 +516,14 @@ impl VideoWorkspace {
         let name = &character.name;
         self.prompt = format!(
             "A single continuous cinematic shot of {name}. \
+             Frame this as a locked-off medium shot with {name}'s entire head and torso visible down to the waist, \
+             leaving landscape around them throughout. \
              {name} makes eye contact with the camera, and speaks a short line directly to the viewer \
              \"hello everyone my name is {name} and I am so excited to be here talking with you\", \
              with clear natural mouth movement synced to their words. Their facial features remain \
-             consistent, and their expression is calm and believable. The camera glides smoothly \
-             alongside them at a slight distance, then adjusts to capture their turn toward the lens \
-             while maintaining a cinematic eye-level perspective. The scene is filled with cool \
+             consistent, and their expression is calm and believable. A fixed tripod camera at eye level \
+             holds a constant focal length and camera-to-subject distance for the entire shot. {name} \
+             stays at the same distance while speaking, with only natural head and body motion. The scene is filled with cool \
              early-morning light, open space, drifting sand, and dramatic rock formations in the background."
         );
     }

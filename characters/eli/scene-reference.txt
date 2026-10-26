@@ -1,0 +1,9 @@
+Generated with the built-in imagegen tool using reference.png as the identity reference.
+Used as the complete opening frame for Eli's default desert scene; the gallery keeps reference.png.
+
+Use case: identity-preserve
+Asset type: a cinematic first frame for image-to-video animation, landscape 1280x704 (aspect ratio20:11).
+Input image: Eli's original reference portrait; use it to preserve exactly the same adult man's recognizable facial identity, fair skin, blue-gray eyes, narrow oval face, thick dark eyebrows, short curly dark brown hair, and clean-shaven jaw. Preserve the charcoal cotton T-shirt and curious relaxed expression.
+Primary request: Reframe Eli as a natural live-action medium shot showing his entire head, shoulders, arms, and torso down to his waist with generous visible landscape on both sides. Camera at eye level several feet away, normal cinematic lens. His head should occupy about one third of the image height; include breathing room above his hair. He looks toward the camera, mouth relaxed and closed, ready to introduce himself.
+Scene/backdrop: cool early-morning light in an open sandy desert with dramatic rock formations in the background and subtly drifting sand, matching the app's default talking-video scene. Realistic lighting, skin texture, fabric, and lifelike proportions.
+Constraints: single person, same Eli as portrait, natural believable anatomy, no face close-up, no cropped hair or chin, no studio gray backdrop, no borders, no black bars, no text or watermarks. Compose the complete landscape scene directly; do not stretch or crop the portrait.

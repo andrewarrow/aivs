@@ -56,9 +56,16 @@ hidden, and previous results remain playable while another render runs.
 Character reference images appear in a scrollable gallery beside the workspace.
 Click a character's name or portrait to select them and update the prompt and
 spoken introduction. Like Hunter, Python resolves saved names and `@name` references
-outside quoted dialogue, adds appearance and voice descriptions, and uses the
-character's portrait as a starting image. Each render saves copies of its character
-profiles and reference assets beside the original and expanded prompts. Native
+outside quoted dialogue and adds appearance and voice descriptions. A character
+may include an optional `scene_image` record pointing to `scene-reference.png`;
+it supplies the whole first video frame and is anchored again at the end to hold
+the composition. The `image` (`reference.png`) remains the gallery portrait and
+is the first-frame fallback when there is no scene image. Square portraits may
+be cropped or frame the character too closely for landscape video.
+Eli includes a wide reference for the default desert scene while keeping the
+original portrait in the gallery. For a different setting, provide a matching
+scene reference or use `--character-text-only`. Each render saves copies of its
+character profiles and reference assets beside the original and expanded prompts. Native
 speech follows the voice description; voice samples do not lock voice identity.
 The gallery and renderer use the workspace's `characters/` directory, falling back
 to this checkout's imported library. CLI renders also accept `--character NAME`

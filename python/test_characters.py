@@ -15,7 +15,7 @@ class CharacterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def profile(self, name, *, image=False):
+    def profile(self, name, *, image=False, scene_image=False):
         folder = self.root / "characters" / name.lower()
         folder.mkdir(parents=True)
         profile = {
@@ -26,6 +26,10 @@ class CharacterTests(unittest.TestCase):
             data = b"reference asset"
             (folder / "reference.png").write_bytes(data)
             profile["image"] = {"file": "reference.png", "sha256": hashlib.sha256(data).hexdigest()}
+        if scene_image:
+            data = b"wide scene asset"
+            (folder / "scene-reference.png").write_bytes(data)
+            profile["scene_image"] = {"file": "scene-reference.png", "sha256": hashlib.sha256(data).hexdigest()}
         (folder / "character.json").write_text(json.dumps(profile))
         return profile
 
@@ -104,6 +108,26 @@ class CharacterTests(unittest.TestCase):
         image.write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "asset is missing or has changed"):
             characters.reference_image([eli], run)
+
+    def test_scene_image_takes_precedence_and_is_snapshotted_and_hash_checked(self):
+        eli = self.profile("Eli", image=True, scene_image=True)
+        run = self.root / "run"
+        characters.snapshot_characters([eli], run, self.root)
+        self.assertEqual(characters.reference_image([eli], run), run / "characters/eli/scene-reference.png")
+        self.assertEqual((run / "characters/eli/scene-reference.png").read_bytes(), b"wide scene asset")
+        (run / "characters/eli/scene-reference.png").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "asset is missing or has changed"):
+            characters.reference_image([eli], run)
+
+    def test_scene_only_profile_uses_scene_image_and_counts_as_a_reference(self):
+        eli = self.profile("Eli", scene_image=True)
+        run = self.root / "run"
+        characters.snapshot_characters([eli], run, self.root)
+        self.assertEqual(characters.reference_image([eli], run), run / "characters/eli/scene-reference.png")
+        ava = self.profile("Ava", image=True)
+        characters.snapshot_characters([ava], run, self.root)
+        with self.assertRaisesRegex(ValueError, "Multiple character reference images"):
+            characters.reference_image([eli, ava], run)
 
     def test_live_assets_and_profile_changes_are_rejected_before_snapshot(self):
         eli = self.profile("Eli", image=True)

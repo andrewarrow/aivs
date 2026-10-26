@@ -126,7 +126,7 @@ def doctor():
         raise RuntimeError("The MLX Apple GPU calculation failed.")
 
 
-def render(prompt, seed, frames, output, *, on_progress=None, image_file=None):
+def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False):
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
     from render_estimate import RenderEstimate
@@ -134,6 +134,9 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None):
 
     output = Path(output)
     image = prepare_source_image(image_file) if image_file is not None else None
+    if image is not None and hold_image_framing:
+        image["conditioning"] = "whole-first-and-last-frame"
+        image["anchor_frames"] = [0] if frames <= 1 else [0, frames - 1]
     native = output.with_name("video.native.mp4")
     partial = output.with_name("video.partial.mp4")
     inference_frames = math.ceil((frames - 1) / 8) * 8 + 1
@@ -150,7 +153,11 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None):
         with progress.phase("Preparing disk-streamed pipeline", "pipeline"):
             pipeline = DistilledPipeline(model_dir=str(snapshot), low_memory=True, low_ram_streaming=True)
         pipeline.generate_audio = True
-        generation_options = {"image": image["source_file"]} if image is not None else {}
+        generation_options = _image_generation_options(
+            image["source_file"] if image is not None else None,
+            frames,
+            hold_image_framing,
+        )
         with pipeline_activity(pipeline, progress):
             pipeline.generate_and_save(
                 prompt=prompt, output_path=str(native), width=WIDTH, height=HEIGHT,
@@ -210,3 +217,18 @@ def prepare_source_image(source):
         "width": width, "height": height,
         "conditioning": "whole-first-frame", "strength": 1.0,
     }
+
+
+def _image_generation_options(source_file, frames, hold_image_framing):
+    """Build the pipeline's image conditioning arguments for this render."""
+    if source_file is None:
+        return {}
+    if not hold_image_framing:
+        return {"image": source_file}
+
+    from ltx_pipelines_mlx.utils.args import ImageConditioningInput
+
+    images = [ImageConditioningInput.at(source_file, 0, 1.0)]
+    if frames > 1:
+        images.append(ImageConditioningInput.guide(source_file, frames - 1, 1.0))
+    return {"images": images}

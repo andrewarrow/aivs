@@ -93,7 +93,7 @@ def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_o
     os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", TQDM_DISABLE="1")
     character_root = ROOT if (ROOT / "characters").is_dir() else Path(__file__).resolve().parents[1]
     profiles = characters.resolve_characters(prompt, explicit=character, root=character_root)
-    if not character_text_only and sum(bool(profile.get("image")) for profile in profiles) > 1:
+    if not character_text_only and sum(bool(profile.get("scene_image") or profile.get("image")) for profile in profiles) > 1:
         raise ValueError("Multiple saved characters have reference images. Use --character-text-only to use descriptions without image guidance.")
     timing = duration_estimate(prompt)
     seed = secrets.randbelow(2**31) if seed is None else seed
@@ -104,6 +104,7 @@ def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_o
         if profiles:
             profiles = characters.snapshot_characters(profiles, run_dir, root=character_root)
         image = None if character_text_only or not profiles else characters.reference_image(profiles, run_dir)
+        hold_image_framing = image is not None and any(profile.get("scene_image") for profile in profiles)
         expanded_prompt = characters.expand_prompt(prompt, profiles, image_conditioned=image is not None)
         report = {
             "status": "rendering", "original_prompt": prompt, "prompt": expanded_prompt, "seed": seed,
@@ -112,7 +113,14 @@ def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_o
             "characters": profiles, "character_text_only": character_text_only,
         }
         if image is not None:
-            report["image_source"] = {"file": str(image.relative_to(run_dir)), "conditioning": "whole-first-frame"}
+            image_source = {
+                "file": str(image.relative_to(run_dir)),
+                "conditioning": "whole-first-and-last-frame" if hold_image_framing else "whole-first-frame",
+            }
+            if hold_image_framing:
+                frames = timing["seconds"] * FPS
+                image_source["anchor_frames"] = [0] if frames <= 1 else [0, frames - 1]
+            report["image_source"] = image_source
         def save():
             temp = run_dir / "render.json.tmp"
             temp.write_text(json.dumps(report, indent=2) + "\n")
@@ -120,7 +128,7 @@ def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_o
         save()
         emit("progress", label=f"Generating {timing['seconds']} seconds of talking video")
         try:
-            options = {"image_file": image} if image is not None else {}
+            options = {"image_file": image, "hold_image_framing": hold_image_framing} if image is not None else {}
             report["runtime"] = render(expanded_prompt, seed, timing["seconds"] * FPS, output,
                                        on_progress=lambda **data: emit("render_progress", **data), **options)
             report.update(status="complete", sha256=hashlib.sha256(output.read_bytes()).hexdigest())

@@ -21,7 +21,11 @@ SCHEMA_VERSION = 1
 _ID_RE = re.compile(r"[a-z][a-z0-9_-]*\Z")
 _NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
 _VOICE_ID_RE = re.compile(r"[a-z]{2}_[a-z0-9_]+\Z")
-_ASSET_NAMES = {"image": "reference.png", "voice_sample": "voice.wav"}
+_ASSET_NAMES = {
+    "image": "reference.png",
+    "scene_image": "scene-reference.png",
+    "voice_sample": "voice.wav",
+}
 _DOUBLE_QUOTE_CHARS = frozenset('"“”')
 _SINGLE_QUOTE_CHARS = frozenset("'‘’")
 _AT_NAME_RE = re.compile(r"@([A-Za-z][A-Za-z0-9_-]*)")
@@ -329,13 +333,14 @@ def verify_snapshots(profiles, run_dir: str | os.PathLike[str]) -> None:
 
 
 def reference_image(profiles, run_dir: str | os.PathLike[str]) -> Path | None:
-    """Return the sole saved reference image, if exactly one character has one."""
-    with_images = [profile for profile in profiles if profile.get("image")]
+    """Return the sole character image, preferring a scene reference over a portrait."""
+    with_images = [profile for profile in profiles if profile.get("scene_image") or profile.get("image")]
     if len(with_images) > 1:
         raise ValueError("Multiple character reference images are available; provide a joint scene reference image.")
     if not with_images:
         return None
     verify_snapshots(with_images, run_dir)
     profile = with_images[0]
-    return Path(run_dir) / "characters" / profile["id"] / profile["image"]["file"]
+    image = profile.get("scene_image") or profile.get("image")
+    return Path(run_dir) / "characters" / profile["id"] / image["file"]
 
