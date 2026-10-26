@@ -85,9 +85,9 @@ impl CharacterGallery {
                 }
                 if let Some(texture) = &character.texture {
                     let size = texture.size_vec2();
-                    let width =
-                        (ui.available_width() - 2.0 * ui.spacing().button_padding.x).max(1.0);
-                    let scale = (width / size.x).min(260.0 / size.y).min(1.0);
+                    let width = (ui.available_width() - 2.0 * ui.spacing().button_padding.x)
+                        .clamp(1.0, 136.0);
+                    let scale = (width / size.x).min(136.0 / size.y).min(1.0);
                     if ui
                         .add(
                             egui::Button::new(

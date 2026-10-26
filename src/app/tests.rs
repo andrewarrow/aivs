@@ -102,6 +102,7 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
         (768.0, 1024.0),
         (1280.0, 800.0),
         (1440.0, 900.0),
+        (2560.0, 1440.0),
     ] {
         for chat_open in [false, true] {
             let (mut app, _commands) = app();
@@ -134,14 +135,15 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
             let gallery =
                 egui::containers::panel::PanelState::load(&ctx, egui::Id::new("characters"))
                     .expect("characters panel should be present after setup");
+            let expected_gallery_width = (width * 0.30).min(160.0);
             assert!(
-                (gallery.size().x - width * 0.30).abs() <= 1.0,
-                "gallery width at {width}x{height} should be 30%, got {}",
+                (gallery.size().x - expected_gallery_width).abs() <= 1.0,
+                "gallery width at {width}x{height} should be {expected_gallery_width}, got {}",
                 gallery.size().x
             );
             assert_eq!(
                 app.playback_target().is_some(),
-                !chat_open || width * 0.70 >= 680.0
+                !chat_open || width - expected_gallery_width >= 680.0
             );
         }
     }

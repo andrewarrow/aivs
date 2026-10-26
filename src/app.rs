@@ -242,7 +242,7 @@ impl App {
                 });
             });
         });
-        let gallery_width = ui.available_width() * 0.30;
+        let gallery_width = (ui.available_width() * 0.30).min(160.0);
         egui::Panel::right("characters")
             .exact_size(gallery_width)
             .resizable(false)
