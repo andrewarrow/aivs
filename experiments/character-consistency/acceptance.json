@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "status": "needs-human-lip-sync-review",
+  "milestone_passed": false,
+  "run": "outputs/2026-10-26_02-38-01-820168_clean-prompt",
+  "source_sha256": "a9d322792461b731f2ef42d3b98325acda289ee2fc40d89748e05fb4e1c7c5bb",
+  "baseline_run": "outputs/2026-10-26_02-15-11-855410_character-milestone",
+  "baseline_source_sha256": "f9bb357d6394d9e807efc4944726dfcd25d9cc3c6746e8ca7dbdfd35283ff80f",
+  "change": "Visual prompts omit quoted dialogue and overlay prohibitions. Supplied audio and exact text manifest are preserved.",
+  "ocr_total_frames": 384,
+  "ocr_total_text_frames": 0,
+  "baseline_total_text_frames": 159,
+  "report": "outputs/2026-10-26_02-38-01-820168_clean-prompt/review.json",
+  "shots": [
+    {
+      "index": 1,
+      "character": "lena",
+      "scene": "Desert road at dusk",
+      "seed": 83,
+      "ocr_text_frames": 0,
+      "baseline_ocr_text_frames": 37,
+      "audio_preservation": {
+        "waveform_correlation": 0.9999570177813338,
+        "gain": 0.7064009493282271,
+        "samples": 96000
+      },
+      "lip_sync_status": "needs-human-review",
+      "assistant_visual_observations": [
+        "Black bob, face outline, eyebrows, and nose remain visually consistent with the portrait throughout the shot.",
+        "Mouth rounding appears around frame 5 (0.208s), during the 0.350s opening silence; the mouth remains slightly parted after the line. Check audible phonemes before accepting."
+      ]
+    },
+    {
+      "index": 2,
+      "character": "owen",
+      "scene": "Desert road at dusk",
+      "seed": 84,
+      "ocr_text_frames": 0,
+      "baseline_ocr_text_frames": 43,
+      "audio_preservation": {
+        "waveform_correlation": 0.9999495127825127,
+        "gain": 0.7064076262587359,
+        "samples": 96000
+      },
+      "lip_sync_status": "needs-human-review",
+      "assistant_visual_observations": [
+        "Salt-and-pepper hair/beard, forehead, nose, and eye spacing remain visually consistent with the portrait throughout the shot.",
+        "Mouth opening appears around frame 4 (0.167s), during the opening silence. Lips return to rest after speech. Check anticipatory movement against actual phonemes."
+      ]
+    },
+    {
+      "index": 3,
+      "character": "lena",
+      "scene": "Cafe in daylight",
+      "seed": 85,
+      "ocr_text_frames": 0,
+      "baseline_ocr_text_frames": 37,
+      "audio_preservation": {
+        "waveform_correlation": 0.9999570177813338,
+        "gain": 0.7064009493282271,
+        "samples": 96000
+      },
+      "lip_sync_status": "needs-human-review",
+      "assistant_visual_observations": [
+        "Face shape, eyebrows, nose, and bob remain visually consistent in the cafe angle and through speaking frames.",
+        "Mouth rounding appears around frame 3 (0.125s), before the opening silence ends; the mouth returns to rest near 1.4s while source energy continues to about 1.6s. Needs audiovisual review."
+      ]
+    },
+    {
+      "index": 4,
+      "character": "owen",
+      "scene": "Cafe in daylight",
+      "seed": 86,
+      "ocr_text_frames": 0,
+      "baseline_ocr_text_frames": 42,
+      "audio_preservation": {
+        "waveform_correlation": 0.9999495127825127,
+        "gain": 0.7064076262587359,
+        "samples": 96000
+      },
+      "lip_sync_status": "needs-human-review",
+      "assistant_visual_observations": [
+        "Hair, beard, face outline, and eye/nose geometry remain visually consistent in the cafe angle and through the ending.",
+        "Mouth remains at rest through the opening pause; speech-like movement begins near 0.42s and settles near 1.8s. These frames do not establish individual phoneme alignment."
+      ]
+    }
+  ],
+  "assembled_audio_preservation": {
+    "waveform_correlation": 0.9999496014969467,
+    "gain": 0.706206626026936,
+    "samples": 384000
+  },
+  "transcript": {
+    "model_sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+    "normalized_word_error_rate": 0.0,
+    "observed": [
+      "We still have some time.",
+      "Then let's keep going.",
+      "We still have some time.",
+      "Then let's keep going."
+    ]
+  },
+  "review_method": {
+    "ocr": "Apple Vision VNRecognizeTextRequest accurate en-US, language correction off, every decoded frame",
+    "visual": "Assistant inspected all-frame face sheets beside canonical portraits, and 6fps whole-frame contact sheets.",
+    "identity_limit": "Visual resemblance only; no calibrated face recognition or independent speaker similarity score.",
+    "lip_sync_limit": "Frame-based inspection can flag timing concerns but cannot accept phoneme-level audiovisual synchronization. No human acceptance recorded."
+  },
+  "remaining_checks": [
+    "Human audiovisual lip-sync acceptance, especially shots 1-3.",
+    "Calibrated identity and independent speaker checks; new text, more views and multi-person speaker binding remain later tests."
+  ]
+}
