@@ -117,6 +117,12 @@ speech follows the voice description; voice samples do not lock voice identity.
 The gallery and renderer use the workspace's `characters/` directory, falling back
 to this checkout's imported library. CLI renders also accept `--character NAME`
 (repeatable) and `--character-text-only` for scenes with multiple character images.
+
+An opt-in [character consistency prototype](experiments/character-consistency/README.md)
+uses saved portraits for shot starting images and fixed Kokoro dialogue to drive
+video. It compares Lena and Owen in two locations and keeps takes pending identity
+review. Setup, commands, and known limitations are documented there; the broader
+implementation plan is in [PLAN.md](PLAN.md).
 Alternate renderers, speech synthesis, and the remaining
 Hunter menu options have not been migrated. Generation uses local cached models;
 file checks do not establish speech accuracy or lip synchronization.

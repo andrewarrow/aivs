@@ -132,7 +132,7 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
     from render_estimate import RenderEstimate
-    from validation import validate_video
+    from validation import validate_video, validate_supplied_audio
 
     output = Path(output)
     if (type(frames) is not int or frames < 1
@@ -199,6 +199,8 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
                 pass
         with progress.phase("Validating decoded frames and audio/video timing", "validate"):
             info = validate_video(partial, frames, width, height, expect_audio=True)
+            if audio is not None:
+                info["supplied_audio"] = validate_supplied_audio(partial, Path(audio["source_file"]), duration)
         partial.replace(output)
         native.unlink()
     return {

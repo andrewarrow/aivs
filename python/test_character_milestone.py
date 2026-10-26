@@ -20,6 +20,7 @@ import characters
 import quality_backend as backend
 import quality_progress
 import video
+from validation import validate_supplied_audio
 
 
 def write_audio(path, seconds=1, frequency=440, rate=24000):
@@ -229,6 +230,11 @@ class FixedAudioBackendTests(unittest.TestCase):
                     self.assertEqual(calls[-1][1], not supplied)
                     self.assertEqual(result["video"]["nb_read_frames"], "96")
                     if supplied:
+                        self.assertGreater(result["video"]["supplied_audio"]["waveform_correlation"], 0.995)
+                        wrong_voice = root / "wrong.wav"
+                        write_audio(wrong_voice, seconds=4, frequency=660)
+                        with self.assertRaisesRegex(RuntimeError, "differs from the supplied performance"):
+                            validate_supplied_audio(output, wrong_voice, 4)
                         with wave.open(calls[-1][2]["audio_path"], "rb") as stream:
                             self.assertGreaterEqual(stream.getnframes() / stream.getframerate(), 97 / 24)
                     decoded = subprocess.run([

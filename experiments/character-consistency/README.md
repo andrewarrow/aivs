@@ -57,7 +57,13 @@ silence after dialogue. Speaker intervals are recorded in `manifest.json`.
 
 Automated checks currently cover checksums, role/voice binding during preparation,
 soundtrack duration, exact PCM reuse between scenes, pipeline selection, causal
-padding, final audio selection, decoded video integrity, and timing. Face
+padding, final audio selection, decoded video integrity, timing, and correlation
+of the decoded soundtrack with the supplied PCM performance. Face
 similarity, speaker similarity, transcription, and lip-sync still need review.
 This experiment does not establish multi-person dialogue or arbitrary-angle
 identity preservation. See [PLAN.md](../../PLAN.md) for later milestones.
+
+Initial visual finding: the model sometimes adds subtitles despite the prompt.
+Explicit transcript prompting changed the staging-text subtitle into the actual
+line, but did not remove it. These are comparison takes pending review, not a
+production-quality acceptance result.

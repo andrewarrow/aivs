@@ -106,23 +106,54 @@ portraits and voices available next to results for comparison.
 
 Deliverables and acceptance:
 
-- [ ] Include all reference-asset hashes in shooting-script freshness checks.
-- [ ] Add fixed-audio conditioning to the existing backend without changing native
+- [x] Include all reference-asset hashes in shooting-script freshness checks.
+- [x] Add fixed-audio conditioning to the existing backend without changing native
       audio defaults, progress reporting, validation, or process lifetime.
-- [ ] Prepare real dialogue using Lena's and Owen's saved voice IDs; record model
+- [x] Prepare real dialogue using Lena's and Owen's saved voice IDs; record model
       hashes, measured durations, line hashes, and speaker timestamps.
-- [ ] Create four scene starting images from canonical portraits and save their
+- [x] Create four scene starting images from canonical portraits and save their
       prompts/provenance in the project.
-- [ ] Provide a repeatable preparation/render command with immutable run assets,
+- [x] Provide a repeatable preparation/render command with immutable run assets,
       clear failure states, and no silent fallback to generated voices.
-- [ ] Render and inspect the four shots; compare the original audio and faces.
-- [ ] Record which checks are automatic and which still require human review.
-- [ ] Exercise failure paths with meaningful offline tests and run the relevant
+- [x] Render the four shots and inspect sampled frames against portrait references;
+      compare original and decoded audio.
+- [x] Record which checks are automatic and which still require human review.
+- [x] Exercise failure paths with meaningful offline tests and run the relevant
       existing Python suite.
+- [ ] Resolve generated captions and complete detailed likeness/lip-sync acceptance
+      before declaring the milestone passed.
 
 Do not contend with a GUI render already holding the workspace GPU lock. Asset
 preparation and CPU voice synthesis may proceed; video inference waits for the
 existing operation to finish.
+
+### Implementation progress (2026-10-26)
+
+The opt-in runner is `python/character_milestone.py`; its request, four generated
+starting images, generation prompts, and reproducible commands are under
+`experiments/character-consistency/`. CPU speech uses an isolated `.venv-voice`
+environment and checksum-pinned Kokoro assets. The main MLX environment is intact.
+
+The first real A2V take ran successfully. Inspection found generated subtitles:
+the initial take displayed staging text; including the exact transcript changed
+that to a subtitle of the spoken line but did not eliminate subtitles. This is a
+recorded quality finding, not a passed acceptance check. Preserve the takes for
+comparison and investigate text suppression before enabling this workflow by default.
+
+All four decoded soundtracks and the assembled video correlate above 0.9999 with
+the supplied waveforms. New supplied-audio renders validate waveform correlation before
+publication, allowing AAC and channel-conversion differences. This verifies
+soundtrack preservation, not independent speaker recognition or lip sync.
+
+Validation so far: 74 Python tests passed; Rust tests passed (41 passed, 2 ignored).
+The planner tests had an existing fake `exec --json` transport against production
+`app-server` code; the fixture now exercises the actual protocol and streaming
+deltas. A [16-second comparison video](outputs/2026-10-26_02-15-11-855410_character-milestone/video.mp4)
+now contains all four 768x448 takes at 24 fps. The run contains five sampled
+frames per shot, original line WAVs, input snapshots, and a `review.json` with
+waveform checks and remaining findings. Generated captions persist in both
+locations. Detailed facial likeness, lip-sync acceptance, and multi-person
+speaker binding remain unresolved; this prototype stays opt-in.
 
 ## Later milestones
 
