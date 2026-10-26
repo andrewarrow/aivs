@@ -29,7 +29,6 @@ _MAX_SCRIPT = 100_000
 _MAX_TEXT = 4_000
 _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id")
 _CODEX_TIMEOUT_SECONDS = 360
-_CODEX_ACTIVITY_INTERVAL = 5
 
 
 def _json(value: object) -> str:
@@ -369,64 +368,155 @@ def _executable(executable) -> str:
     return resolved
 
 
-def _codex_activity(line: str) -> str | None:
-    """Turn CLI JSONL into readable activity; keep the raw events on disk."""
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return f"Codex: {line}" if line.strip() else None
-    if not isinstance(event, dict):
-        return None
-    kind = event.get("type")
-    if kind == "thread.started":
-        return "Codex connected."
-    if kind == "turn.started":
-        return "Codex is preparing shot staging and camera direction."
-    if kind == "turn.completed":
-        return "Codex response received."
-    if kind in ("error", "turn.failed"):
-        error = event.get("error")
-        message = error.get("message") if isinstance(error, dict) else error
-        return f"Codex: {event.get('message') or message or 'Request failed.'}"
-    item = event.get("item")
-    if not isinstance(item, dict):
-        return None
-    if kind == "item.completed":
-        text = item.get("text") or item.get("aggregated_output")
-        if isinstance(text, str) and text.strip():
-            return f"Codex: {text}"
-    if kind == "item.started" and item.get("type") == "command_execution":
-        return f"Codex running: {item.get('command', '')}"
-    return None
-
-
-def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, on_activity):
-    """Drain both pipes while Codex runs, including during otherwise quiet turns."""
-    with tempfile.TemporaryFile() as prompt, events_path.open("wb") as events, \
+def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, response_path,
+                  on_activity, on_activity_delta):
+    """Use app-server notifications; exec --json only exposes completed text items."""
+    with events_path.open("wb") as events, \
             errors_path.open("wb") as errors, selectors.DefaultSelector() as selector:
-        # A file avoids blocking on a large screenplay before the output is drained.
-        prompt.write(instruction.encode("utf-8"))
-        prompt.seek(0)
-        process = subprocess.Popen(cmd, stdin=prompt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-        started = last_activity = time.monotonic()
+        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, cwd=cwd)
+        # A large screenplay must not block pipe draining while being sent.
+        os.set_blocking(process.stdin.fileno(), False)
+        outgoing = bytearray()
         pending = {True: b"", False: b""}
+        streamed = set()
+        messages = {}
+        phases = {}
+        finished = False
+
+        def send(message):
+            if not outgoing:
+                selector.register(process.stdin, selectors.EVENT_WRITE)
+            outgoing.extend((json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8"))
+
+        def stream(stream_id, text):
+            if text:
+                streamed.add(stream_id)
+                if on_activity_delta is not None:
+                    on_activity_delta(stream_id, text)
+                else:
+                    on_activity(f"Codex: {text}")
+
+        def complete_item(item):
+            item_id = item.get("id", "")
+            kind = item.get("type")
+            if kind == "agentMessage":
+                text = item.get("text", "")
+                messages[item_id] = text
+                phases[item_id] = item.get("phase")
+                if item_id not in streamed:
+                    stream(item_id, text)
+            elif kind == "reasoning":
+                for field in ("summary", "content"):
+                    for index, text in enumerate(item.get(field, [])):
+                        stream_id = f"{item_id}:{field}:{index}"
+                        if stream_id not in streamed:
+                            stream(stream_id, text)
+            elif kind == "commandExecution" and item_id not in streamed:
+                stream(item_id, item.get("aggregatedOutput") or "")
+
+        def fail(detail):
+            raise RuntimeError(f"Codex shooting-script translation failed: {detail}")
+
+        def handle(event):
+            nonlocal finished
+            if not isinstance(event, dict):
+                return
+            method = event.get("method")
+            if "id" in event:
+                if method:
+                    send({"id": event["id"], "error": {
+                        "code": -32601, "message": "This client does not support this request."}})
+                    return
+                error = event.get("error")
+                if error:
+                    fail(error.get("message", str(error)) if isinstance(error, dict) else error)
+                result = event.get("result", {})
+                if event["id"] == 1:
+                    send({"method": "initialized", "params": {}})
+                    send({"id": 2, "method": "thread/start", "params": {
+                        "cwd": str(cwd), "approvalPolicy": "never", "sandbox": "read-only",
+                        "ephemeral": True, "serviceName": "aivs"}})
+                elif event["id"] == 2:
+                    thread_id = result.get("thread", {}).get("id")
+                    if not thread_id:
+                        fail("Codex did not return a thread ID.")
+                    on_activity("Codex connected.")
+                    send({"id": 3, "method": "turn/start", "params": {
+                        "threadId": thread_id, "input": [{"type": "text", "text": instruction}],
+                        "cwd": str(cwd), "approvalPolicy": "never",
+                        "sandboxPolicy": {"type": "readOnly"},
+                        "summary": "detailed", "outputSchema": _SCHEMA}})
+                return
+            params = event.get("params", {})
+            item_id = params.get("itemId", "")
+            if method == "item/agentMessage/delta":
+                delta = params.get("delta", "")
+                messages[item_id] = messages.get(item_id, "") + delta
+                stream(item_id, delta)
+            elif method in ("item/reasoning/summaryTextDelta", "item/reasoning/textDelta"):
+                summary = method == "item/reasoning/summaryTextDelta"
+                field = "summary" if summary else "content"
+                index = params.get("summaryIndex" if summary else "contentIndex", 0)
+                stream(f"{item_id}:{field}:{index}", params.get("delta", ""))
+            elif method in ("item/plan/delta", "item/commandExecution/outputDelta"):
+                stream(item_id, params.get("delta", ""))
+            elif method == "item/started":
+                item = params.get("item", {})
+                if item.get("type") == "agentMessage":
+                    phases[item.get("id", "")] = item.get("phase")
+                elif item.get("type") == "commandExecution":
+                    on_activity(f"Codex running: {item.get('command', '')}")
+            elif method == "item/completed":
+                complete_item(params.get("item", {}))
+            elif method == "turn/completed":
+                turn = params.get("turn", {})
+                for item in turn.get("items", []):
+                    complete_item(item)
+                if turn.get("status") != "completed":
+                    error = turn.get("error") or {}
+                    fail(error.get("message") or f"Turn {turn.get('status', 'failed')}.")
+                finished = True
+            elif method == "error":
+                error = params.get("error") or {}
+                detail = error.get("message") or "Request failed."
+                if not params.get("willRetry"):
+                    fail(detail)
+                on_activity(f"Codex: {detail}")
 
         def publish(data, protocol):
-            nonlocal last_activity
             line = data.decode("utf-8", errors="replace").rstrip("\r")
-            message = _codex_activity(line) if protocol else (f"Codex: {line}" if line.strip() else None)
-            if message:
-                on_activity(message)
-                last_activity = time.monotonic()
+            if protocol:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    if line.strip():
+                        on_activity(f"Codex: {line}")
+                    return
+                handle(event)
+            elif line.strip():
+                on_activity(f"Codex: {line}")
 
         try:
             selector.register(process.stdout, selectors.EVENT_READ, (events, True))
             selector.register(process.stderr, selectors.EVENT_READ, (errors, False))
-            while selector.get_map() or process.poll() is None:
+            send({"id": 1, "method": "initialize", "params": {
+                "clientInfo": {"name": "aivs", "title": "AIVS", "version": "0.1.0"}}})
+            while not finished and (selector.get_map() or process.poll() is None):
                 now = time.monotonic()
                 if now >= deadline:
                     raise subprocess.TimeoutExpired(cmd, _CODEX_TIMEOUT_SECONDS)
                 for key, _ in selector.select(min(0.25, deadline - now)):
+                    if key.fileobj is process.stdin:
+                        try:
+                            written = os.write(key.fd, outgoing[:65536])
+                        except BrokenPipeError:
+                            outgoing.clear()
+                        else:
+                            del outgoing[:written]
+                        if not outgoing:
+                            selector.unregister(process.stdin)
+                        continue
                     log, protocol = key.data
                     data = os.read(key.fd, 65536)
                     if not data:
@@ -441,21 +531,27 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
                     pending[protocol] = lines.pop()
                     for line in lines:
                         publish(line, protocol)
-                now = time.monotonic()
-                if now - last_activity >= _CODEX_ACTIVITY_INTERVAL and process.poll() is None:
-                    on_activity(f"Codex is still preparing the shooting script ({int(now - started)}s elapsed).")
-                    last_activity = now
-            return process.wait()
+            if not finished:
+                detail = (errors_path.read_text(encoding="utf-8", errors="replace")
+                          or f"App server stopped (exit {process.wait()}).").strip()[-1000:]
+                fail(detail)
+            on_activity("Codex response received.")
         finally:
             if process.poll() is None:
                 process.kill()
             process.wait()
+            process.stdin.close()
             process.stdout.close()
             process.stderr.close()
+            # Keep partial generated output even when the turn times out or stops.
+            raw = next((text for item_id, text in reversed(messages.items())
+                        if phases.get(item_id) != "commentary"), "")
+            response_path.write_text(raw, encoding="utf-8")
+        return raw
 
 
 def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *, executable=None,
-                           token_counter=None, on_activity=None) -> dict:
+                           token_counter=None, on_activity=None, on_activity_delta=None) -> dict:
     """Ask the signed-in local Codex CLI for staging, with one validation retry."""
     source = parse_request(request, profiles)
     codex = _executable(executable)
@@ -465,34 +561,23 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
     activity = on_activity or (lambda message: None)
     correction = None
     with tempfile.TemporaryDirectory(prefix="aivs-shooting-") as temp:
-        temp_path = Path(temp)
-        schema_path = temp_path / "schema.json"
-        schema_path.write_text(json.dumps(_SCHEMA), encoding="utf-8")
         (run_dir / "shooting-script-schema.json").write_text(json.dumps(_SCHEMA, indent=2), encoding="utf-8")
         for attempt in (1, 2):
             instruction = _instruction(source, correction)
             (run_dir / f"shooting-script-request-{attempt}.txt").write_text(instruction, encoding="utf-8")
-            response_path = temp_path / f"response-{attempt}.json"
-            cmd = [codex, "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
-                   "-c", "approval_policy=never", "-C", temp, "--output-schema", str(schema_path),
-                   "--output-last-message", str(response_path), "--json", "-"]
+            response_path = run_dir / f"shooting-script-response-{attempt}.json"
+            cmd = [codex, "app-server"]
             activity("Starting Codex to prepare the shooting script." if attempt == 1
                      else "Retrying shooting script with Codex (attempt 2/2).")
             events_path = run_dir / f"shooting-script-events-{attempt}.jsonl"
             errors_path = run_dir / f"shooting-script-errors-{attempt}.txt"
             try:
-                returncode = _stream_codex(cmd, instruction, cwd=temp, deadline=deadline,
-                                           events_path=events_path, errors_path=errors_path,
-                                           on_activity=activity)
+                raw = _stream_codex(cmd, instruction, cwd=temp, deadline=deadline,
+                                    events_path=events_path, errors_path=errors_path,
+                                    response_path=response_path, on_activity=activity,
+                                    on_activity_delta=on_activity_delta)
             except subprocess.TimeoutExpired as exc:
                 raise RuntimeError(f"Codex shooting-script translation timed out after {_CODEX_TIMEOUT_SECONDS:g} seconds.") from exc
-            raw = response_path.read_text(encoding="utf-8") if response_path.is_file() else ""
-            (run_dir / f"shooting-script-response-{attempt}.json").write_text(raw, encoding="utf-8")
-            if returncode:
-                detail = (errors_path.read_text(encoding="utf-8", errors="replace")
-                          or events_path.read_text(encoding="utf-8", errors="replace")
-                          or "Codex produced no details.").strip()[-1000:]
-                raise RuntimeError(f"Codex shooting-script translation failed (exit {returncode}). Check login and CLI setup. {detail}")
             activity("Validating shooting script.")
             try:
                 candidate = json.loads(raw)

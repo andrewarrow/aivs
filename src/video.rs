@@ -34,6 +34,10 @@ enum Event {
         remaining_seconds: Option<f64>,
     },
     Log(String),
+    LogDelta {
+        id: String,
+        delta: String,
+    },
     Ready,
     Complete(PathBuf),
     Failed(String),
@@ -358,6 +362,16 @@ fn read_output(
                             let _ = sender.send(Event::Log(message.to_owned()));
                         }
                     }
+                    "activity_delta" => {
+                        if let (Some(id), Some(delta)) =
+                            (value["id"].as_str(), value["delta"].as_str())
+                        {
+                            let _ = sender.send(Event::LogDelta {
+                                id: id.to_owned(),
+                                delta: delta.to_owned(),
+                            });
+                        }
+                    }
                     "ready" => output.ready = true,
                     "needs_token" => output.needs_token = true,
                     "complete" => output.output = value["output"].as_str().map(PathBuf::from),
@@ -383,6 +397,7 @@ pub struct VideoWorkspace {
     remaining_seconds: Option<f64>,
     started_at: Instant,
     logs: VecDeque<String>,
+    current_log_stream: Option<String>,
     error: Option<String>,
     output: Option<PathBuf>,
     reveal_output: bool,
@@ -409,6 +424,7 @@ impl VideoWorkspace {
             remaining_seconds: None,
             started_at: Instant::now(),
             logs: VecDeque::new(),
+            current_log_stream: None,
             error: None,
             output: None,
             reveal_output: false,
@@ -423,6 +439,7 @@ impl VideoWorkspace {
         }
         self.error = None;
         self.logs.clear();
+        self.current_log_stream = None;
         self.fraction = None;
         self.remaining_seconds = None;
         self.started_at = Instant::now();
@@ -474,9 +491,23 @@ impl VideoWorkspace {
                 self.remaining_seconds = remaining_seconds;
             }
             Event::Log(line) => {
+                self.current_log_stream = None;
                 self.logs.push_back(line);
                 if self.logs.len() > 250 {
                     self.logs.pop_front();
+                }
+            }
+            Event::LogDelta { id, delta } => {
+                if self.current_log_stream.as_deref() == Some(id.as_str()) {
+                    if let Some(line) = self.logs.back_mut() {
+                        line.push_str(&delta);
+                    }
+                } else {
+                    self.logs.push_back(format!("Codex: {delta}"));
+                    self.current_log_stream = Some(id);
+                    if self.logs.len() > 250 {
+                        self.logs.pop_front();
+                    }
                 }
             }
             Event::Ready => {

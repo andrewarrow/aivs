@@ -108,7 +108,8 @@ AIVS_EVENT {"event":"render_progress","label":"Validating","fraction":1,"remaini
 fn planning_activity_is_visible_without_replacing_the_phase_or_inventing_progress() {
     let (sender, events) = mpsc::channel();
     let stream = br#"AIVS_EVENT {"event":"progress","label":"Preparing shooting script with Codex"}
-AIVS_EVENT {"event":"activity","message":"Codex: Mapping dialogue to shots."}
+AIVS_EVENT {"event":"activity_delta","id":"plan-1","delta":"Mapping dialogue "}
+AIVS_EVENT {"event":"activity_delta","id":"plan-1","delta":"to shots. \ud83e\udded"}
 "#;
     read_output(std::io::Cursor::new(stream.to_vec()), sender, true)
         .join()
@@ -127,7 +128,18 @@ AIVS_EVENT {"event":"activity","message":"Codex: Mapping dialogue to shots."}
             "Preparing shooting script with Codex".into(),
             None,
         ));
-        workspace.handle_event(Event::Log("Codex: Mapping dialogue to shots.".into()));
+        for event in [
+            Event::LogDelta {
+                id: "plan-1".into(),
+                delta: "Mapping dialogue ".into(),
+            },
+            Event::LogDelta {
+                id: "plan-1".into(),
+                delta: "to shots. 🧭".into(),
+            },
+        ] {
+            workspace.handle_event(event);
+        }
         assert_eq!(workspace.status, "Preparing shooting script with Codex");
         assert!(workspace.fraction.is_none());
         let ctx = egui::Context::default();
@@ -149,7 +161,7 @@ AIVS_EVENT {"event":"activity","message":"Codex: Mapping dialogue to shots."}
         let output = output.unwrap();
         for expected in [
             "Preparing shooting script with Codex · 1m 5s elapsed",
-            "Codex: Mapping dialogue to shots.",
+            "Codex: Mapping dialogue to shots. 🧭",
         ] {
             let visible = output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::epaint::Shape::Text(text)
@@ -164,9 +176,38 @@ AIVS_EVENT {"event":"activity","message":"Codex: Mapping dialogue to shots."}
     }
     assert_eq!(
         workspace.logs.back().unwrap(),
-        "Codex: Mapping dialogue to shots."
+        "Codex: Mapping dialogue to shots. 🧭"
     );
     assert_eq!(workspace.status, "Preparing shooting script with Codex");
+}
+
+#[test]
+fn activity_delta_transport_coalesces_only_consecutive_fragments_from_each_stream() {
+    let (sender, events) = mpsc::channel();
+    let stream = br#"AIVS_EVENT {"event":"activity_delta","id":"one","delta":"A "}
+AIVS_EVENT {"event":"activity_delta","id":"one","delta":"caf\u00e9\ncontinues"}
+AIVS_EVENT {"event":"activity","message":"renderer diagnostic"}
+AIVS_EVENT {"event":"activity_delta","id":"one","delta":" after diagnostic"}
+AIVS_EVENT {"event":"activity_delta","id":"two","delta":"Second"}
+AIVS_EVENT {"event":"activity_delta","id":"two","delta":" stream"}
+"#;
+    read_output(std::io::Cursor::new(stream.to_vec()), sender, true)
+        .join()
+        .unwrap();
+
+    let mut workspace = VideoWorkspace::ready_for_test(PathBuf::from("/workspace"));
+    for event in events.try_iter() {
+        workspace.handle_event(event);
+    }
+    assert_eq!(
+        workspace.logs,
+        VecDeque::from([
+            "Codex: A café\ncontinues".into(),
+            "renderer diagnostic".into(),
+            "Codex:  after diagnostic".into(),
+            "Codex: Second stream".into(),
+        ])
+    );
 }
 
 #[test]
@@ -313,6 +354,7 @@ def create(request, profiles, run_dir, **options):
     assert request == expected_request
     assert profiles == expected_profiles
     options['on_activity']('Codex: Mapping dialogue to shots.')
+    options['on_activity_delta']('codex-stream', 'Drafting shot ✨')
     pathlib.Path(run_dir, 'shooting-script.json').write_text('{}')
     return {'version': 1, 'source_sha256': 'test', 'seconds': 8, 'fade_out': True, 'shots': [
         {'seconds': 8, 'beat_ids': [1], 'prompt_template': 'A traveler turns toward the road.',
@@ -370,6 +412,9 @@ raise SystemExit(video.main())
     assert!(events.iter().any(
         |event| matches!(event, Event::Log(line) if line == "Codex: Mapping dialogue to shots.")
     ));
+    assert!(events.iter().any(|event| matches!(event,
+        Event::LogDelta { id, delta } if id == "codex-stream" && delta == "Drafting shot ✨"
+    )));
     let path = events
         .into_iter()
         .find_map(|event| match event {

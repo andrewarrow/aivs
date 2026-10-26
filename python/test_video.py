@@ -126,11 +126,12 @@ class RenderTests(unittest.TestCase):
         request = screenplay_request()
         captured = {}
 
-        def translate(actual_request, profiles, run_dir, *, token_counter, on_activity):
+        def translate(actual_request, profiles, run_dir, *, token_counter, on_activity, on_activity_delta):
             captured.update(request=actual_request, profiles=profiles, run_dir=run_dir)
             self.assertEqual(actual_request, request)
             self.assertEqual(token_counter("Mara turns the dial"), 4)
             on_activity("Mapping dialogue to shots.")
+            on_activity_delta("stream-1", "Drafting the next shot.")
             captured["plan"] = validated_screenplay_plan(
                 actual_request, profiles, token_counter=token_counter
             )
@@ -184,6 +185,7 @@ class RenderTests(unittest.TestCase):
             events = [json.loads(line.removeprefix("AIVS_EVENT ")) for line in out.getvalue().splitlines()]
             self.assertIn("render_progress", [event["event"] for event in events])
             self.assertIn({"event": "activity", "message": "Mapping dialogue to shots."}, events)
+            self.assertIn({"event": "activity_delta", "id": "stream-1", "delta": "Drafting the next shot."}, events)
             self.assertEqual(events[-1]["event"], "complete")
 
     def test_plan_only_saves_readable_artifacts_without_environment_check_or_renderer(self):
@@ -194,7 +196,7 @@ class RenderTests(unittest.TestCase):
                 patch.object(video, "prompt_token_counter", return_value=lambda text: len(text.split())), \
                 patch.object(
                     video, "create_shooting_script",
-                    side_effect=lambda request, profiles, run_dir, *, token_counter, on_activity:
+                    side_effect=lambda request, profiles, run_dir, *, token_counter, on_activity, on_activity_delta:
                     validated_screenplay_plan(request, profiles, token_counter=token_counter),
                 ), \
                 patch.object(video, "render_shooting_script") as renderer, \

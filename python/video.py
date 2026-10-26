@@ -198,7 +198,9 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
                 plan = load_shooting_script(shooting_script, request, profiles, token_counter=count_tokens)
             else:
                 plan = create_shooting_script(request, profiles, run_dir, token_counter=count_tokens,
-                                              on_activity=lambda message: emit("activity", message=message))
+                                              on_activity=lambda message: emit("activity", message=message),
+                                              on_activity_delta=lambda stream_id, delta: emit(
+                                                  "activity_delta", id=stream_id, delta=delta))
             save_shooting_script(plan, run_dir)
             report.update(seconds=plan["seconds"],
                           planning_seconds=round(time.monotonic() - started, 3),
