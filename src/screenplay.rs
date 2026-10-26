@@ -534,6 +534,24 @@ impl Screenplay {
         self.focus = Some((self.active, 0));
     }
 
+    fn backspace_empty(&mut self) {
+        let index = self.active_index();
+        let block = &mut self.document.blocks[index];
+        if block.kind == Element::Parenthetical && block.text == "()" {
+            // Delete the automatic pair first. A subsequent Backspace on the
+            // now-empty element changes its format.
+            block.text.clear();
+        } else if block.text.is_empty() {
+            block.kind = match block.kind {
+                Element::Parenthetical => Element::Dialogue,
+                Element::Dialogue => Element::Character,
+                Element::Character => Element::Action,
+                Element::Action | Element::Transition | Element::Heading => Element::Heading,
+            };
+        }
+        self.focus = Some((self.active, 0));
+    }
+
     fn rename_role(&mut self, old: &str, new: &str) -> Result<(), String> {
         let new = role_name(new);
         if new.is_empty() {
@@ -749,6 +767,8 @@ impl Screenplay {
                 ui.label("Enter after instructions: continue dialogue");
                 ui.label("Tab after a character: add (instructions) before dialogue");
                 ui.label("Shift+Tab: previous element type");
+                ui.label("Backspace on empty: instructions → dialogue → character");
+                ui.label("Keep pressing to reach action, then a scene heading.");
                 ui.label("Up / Down at the start / end: previous / next element");
                 ui.label("⌘/Ctrl+Z: undo · ⌘/Ctrl+Shift+Z: redo");
                 ui.label("Use Edit → Rename character to change every cue.");
@@ -863,7 +883,7 @@ impl Screenplay {
         // through insertions and moves, so cursor state stays attached to the text.
         let mut split = None;
         let mut tab = None;
-        let mut remove = false;
+        let mut backspace_empty = false;
         egui::Frame::new()
             .fill(egui::Color32::from_gray(48))
             .inner_margin(12)
@@ -893,15 +913,19 @@ impl Screenplay {
                                     .unwrap_or_default()
                                     .as_sorted_char_range();
                                 if range.is_empty() {
-                                    if self.document.blocks[index].text.is_empty()
+                                    if (self.document.blocks[index].text.is_empty()
+                                        || (kind == Element::Parenthetical
+                                            && self.document.blocks[index].text == "()"
+                                            && range.start.0 == 1))
                                         && ui.input_mut(|i| {
-                                            i.consume_key(
+                                            consume_exact(
+                                                i,
                                                 egui::Modifiers::NONE,
                                                 egui::Key::Backspace,
                                             )
                                         })
                                     {
-                                        remove = true;
+                                        backspace_empty = true;
                                     }
                                     let previous = range.start.0 == 0
                                         && index > 0
@@ -1112,8 +1136,8 @@ impl Screenplay {
             self.tab(backward, range);
             typed = None;
         }
-        if remove {
-            self.delete();
+        if backspace_empty {
+            self.backspace_empty();
             typed = None;
         }
         self.rename_ui(ui);

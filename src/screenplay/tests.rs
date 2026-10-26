@@ -368,9 +368,14 @@ fn keyboard_writing_creates_elements_changes_format_and_undoes_structure() {
         Element::Character
     );
     editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
-    assert_eq!(screenplay.document.blocks.len(), count + 1);
+    assert_eq!(screenplay.document.blocks.len(), count + 2);
+    assert_eq!(screenplay.document.blocks[index + 2].kind, Element::Action);
     editor.key(&mut screenplay, egui::Key::Z, egui::Modifiers::COMMAND);
     assert_eq!(screenplay.document.blocks.len(), count + 2);
+    assert_eq!(
+        screenplay.document.blocks[index + 2].kind,
+        Element::Character
+    );
 }
 
 #[test]
@@ -687,4 +692,100 @@ fn tab_opens_existing_instructions_and_consecutive_instructions_are_preserved() 
             .unwrap()
             .contains("JOE (smiling, looking around; softly): \"He was an optimistic man.\"")
     );
+}
+
+#[test]
+fn backspace_only_changes_format_after_all_text_is_gone() {
+    for (kind, previous) in [
+        (Element::Parenthetical, Element::Dialogue),
+        (Element::Dialogue, Element::Character),
+        (Element::Character, Element::Action),
+        (Element::Action, Element::Heading),
+        (Element::Transition, Element::Heading),
+        (Element::Heading, Element::Heading),
+    ] {
+        let mut screenplay = Screenplay::default();
+        let mut editor = Editor::new();
+        screenplay.document.blocks[4].kind = kind;
+        screenplay.document.blocks[4].text = "x".into();
+        let original = screenplay.document.clone();
+        editor.focus(&mut screenplay, 4, 0);
+        editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(
+            screenplay.document, original,
+            "text at the start of {kind:?} must be preserved"
+        );
+        editor.focus(&mut screenplay, 4, 1);
+        editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+        assert!(screenplay.document.blocks[4].text.is_empty());
+        assert_eq!(
+            screenplay.document.blocks[4].kind, kind,
+            "deleting the last character must not change format"
+        );
+        editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(screenplay.document.blocks[4].kind, previous);
+        assert_eq!(screenplay.document.blocks.len(), original.blocks.len());
+        assert_eq!(screenplay.document.blocks[4].id, original.blocks[4].id);
+        assert_eq!(screenplay.document.blocks[..4], original.blocks[..4]);
+        assert_eq!(screenplay.document.blocks[5..], original.blocks[5..]);
+    }
+}
+
+#[test]
+fn repeated_empty_backspaces_reach_a_scene_heading_and_support_undo_and_new_scenes() {
+    for heading in ["EXT. BEACH - DAY", "INT. KITCHEN - NIGHT"] {
+        let mut screenplay = Screenplay::default();
+        let mut editor = Editor::new();
+        screenplay.document.blocks[4].kind = Element::Parenthetical;
+        screenplay.document.blocks[4].text.clear();
+        let count = screenplay.document.blocks.len();
+        let id = screenplay.document.blocks[4].id;
+        editor.focus(&mut screenplay, 4, 0);
+        for kind in [
+            Element::Dialogue,
+            Element::Character,
+            Element::Action,
+            Element::Heading,
+            Element::Heading,
+        ] {
+            editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+            assert_eq!(screenplay.document.blocks[4].kind, kind);
+            assert!(screenplay.document.blocks[4].text.is_empty());
+            assert_eq!(screenplay.document.blocks.len(), count);
+            assert_eq!(screenplay.active, id);
+        }
+        editor.key(&mut screenplay, egui::Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(screenplay.document.blocks[4].kind, Element::Action);
+        editor.key(
+            &mut screenplay,
+            egui::Key::Z,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        );
+        assert_eq!(screenplay.document.blocks[4].kind, Element::Heading);
+        editor.type_text(&mut screenplay, heading);
+        assert_eq!(screenplay.document.blocks[4].text, heading);
+        editor.key(&mut screenplay, egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(screenplay.document.blocks[5].kind, Element::Action);
+        editor.type_text(&mut screenplay, "The light changes.");
+        assert_eq!(screenplay.document.blocks[5].text, "The light changes.");
+        assert_eq!(screenplay.document.blocks.len(), count + 1);
+    }
+}
+
+#[test]
+fn empty_parentheses_are_deleted_before_backspace_changes_the_element_type() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    editor.focus(&mut screenplay, 3, 3);
+    editor.key(&mut screenplay, egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks[4].text, "()");
+    editor.type_text(&mut screenplay, "x");
+    editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks[4].text, "()");
+    assert_eq!(screenplay.document.blocks[4].kind, Element::Parenthetical);
+    editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert!(screenplay.document.blocks[4].text.is_empty());
+    assert_eq!(screenplay.document.blocks[4].kind, Element::Parenthetical);
+    editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks[4].kind, Element::Dialogue);
 }

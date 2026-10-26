@@ -91,8 +91,11 @@ Draft file import/export.
   dialogue. Inserting an instruction mid-speech preserves the remaining words.
 - **Tab** on an empty action paragraph changes it to a character cue.
   **Shift+Tab** changes to the previous element type.
-- **Up/Down** at the start/end moves between elements. **Backspace** removes an
-  empty element. **Undo/Redo** and **⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z** cover text,
+- **Up/Down** at the start/end moves between elements. **Backspace** deletes text
+  normally; once the element is empty, each press moves back through instructions
+  → dialogue → character → action → scene heading, ready for `INT.` or `EXT.`.
+  It keeps the paragraph in place. **Edit → Delete element** removes a paragraph.
+  **Undo/Redo** and **⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z** cover text,
   formatting, insertion, deletion, and casting.
 
 Script text and cast assignments autosave to `screenplay.json` in the selected
