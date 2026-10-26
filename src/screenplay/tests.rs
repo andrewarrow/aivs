@@ -118,3 +118,89 @@ fn every_cue_parenthetical_and_dialogue_accepts_a_drop_for_the_whole_role() {
         );
     }
 }
+
+#[test]
+fn keyboard_opens_the_cast_picker_and_choices_can_assign_and_clear_a_role() {
+    let mut screenplay = Screenplay::default();
+    let ctx = egui::Context::default();
+    let mut time = 0.0;
+    let mut frame = |screenplay: &mut Screenplay, events, focus| {
+        time += 0.05;
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(390.0, 844.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                if focus {
+                    ui.memory_mut(|memory| memory.request_focus(ui.id().with(("role", 0_usize))));
+                }
+                screenplay.role_ui(
+                    ui,
+                    "SUE",
+                    "He made it sound closer.",
+                    0,
+                    egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(300.0, 44.0)),
+                    &[character("Ava"), character("Eli")],
+                );
+            },
+        )
+    };
+    for choice in ["Ava", "Uncast"] {
+        frame(&mut screenplay, vec![], true);
+        frame(
+            &mut screenplay,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            false,
+        );
+        let output = frame(
+            &mut screenplay,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            false,
+        );
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == choice => {
+                    Some(shape.pos + egui::vec2(4.0, 4.0))
+                }
+                _ => None,
+            })
+            .expect("keyboard activation should show the cast picker");
+        frame(&mut screenplay, vec![egui::Event::PointerMoved(pos)], false);
+        for pressed in [true, false] {
+            frame(
+                &mut screenplay,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                false,
+            );
+        }
+        assert_eq!(
+            screenplay.cast.get("SUE"),
+            (choice == "Ava").then(|| character("Ava")).as_ref()
+        );
+    }
+}
