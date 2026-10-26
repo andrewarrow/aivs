@@ -1,8 +1,13 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 use crate::characters::CastCharacter;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Element {
     Heading,
     Action,
@@ -10,6 +15,48 @@ enum Element {
     Parenthetical,
     Dialogue,
     Transition,
+}
+
+impl Element {
+    const ALL: [Self; 6] = [
+        Self::Heading,
+        Self::Action,
+        Self::Character,
+        Self::Parenthetical,
+        Self::Dialogue,
+        Self::Transition,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Heading => "Scene heading",
+            Self::Action => "Action",
+            Self::Character => "Character",
+            Self::Parenthetical => "Parenthetical",
+            Self::Dialogue => "Dialogue",
+            Self::Transition => "Transition",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Heading => Self::Action,
+            Self::Character | Self::Parenthetical => Self::Dialogue,
+            Self::Dialogue => Self::Character,
+            Self::Action => Self::Action,
+            Self::Transition => Self::Heading,
+        }
+    }
+
+    fn margins(self) -> (f32, f32) {
+        match self {
+            Self::Character => (252.0, 150.0),
+            Self::Parenthetical => (216.0, 180.0),
+            Self::Dialogue => (180.0, 252.0),
+            Self::Transition => (432.0, 108.0),
+            _ => (108.0, 432.0),
+        }
+    }
 }
 
 // The page and renderer share the same scene, including dialogue attribution.
@@ -56,34 +103,290 @@ const SCENE: &[(Element, &str)] = &[
     (Element::Transition, "FADE OUT."),
 ];
 
-#[derive(Default)]
-pub struct Screenplay {
-    cast: BTreeMap<&'static str, CastCharacter>,
+#[derive(Clone, Debug, PartialEq)]
+struct Block {
+    id: u64,
+    kind: Element,
+    text: String,
 }
 
-fn roles() -> Vec<&'static str> {
-    let mut roles = Vec::new();
-    for &(element, text) in SCENE {
-        if element == Element::Character && !roles.contains(&text) {
-            roles.push(text);
+#[derive(Clone, Debug, PartialEq)]
+struct Document {
+    blocks: Vec<Block>,
+    cast: BTreeMap<String, CastCharacter>,
+}
+
+struct Snapshot {
+    document: Document,
+    active: u64,
+}
+
+pub struct Screenplay {
+    document: Document,
+    active: u64,
+    next_id: u64,
+    focus: Option<(u64, usize)>,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    typing: Option<(u64, Instant)>,
+    path: Option<PathBuf>,
+    pending_save: Option<Instant>,
+    save_error: Option<String>,
+    load_failed: bool,
+    rename: Option<(String, String)>,
+}
+
+impl Default for Screenplay {
+    fn default() -> Self {
+        Self {
+            document: Document {
+                blocks: SCENE
+                    .iter()
+                    .enumerate()
+                    .map(|(id, &(kind, text))| Block {
+                        id: id as u64,
+                        kind,
+                        text: text.into(),
+                    })
+                    .collect(),
+                cast: BTreeMap::new(),
+            },
+            active: 0,
+            next_id: SCENE.len() as u64,
+            focus: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: None,
+            path: None,
+            pending_save: None,
+            save_error: None,
+            load_failed: false,
+            rename: None,
         }
     }
-    roles
+}
+
+fn role_name(text: &str) -> String {
+    text.trim().to_uppercase()
+}
+
+// egui's consume_key intentionally ignores extra Shift/Alt modifiers. Paragraph
+// commands require an exact match to preserve line breaks and text selection.
+fn consume_exact(input: &mut egui::InputState, modifiers: egui::Modifiers, key: egui::Key) -> bool {
+    let mut consumed = false;
+    input.events.retain(|event| {
+        let matches = matches!(event, egui::Event::Key { key: pressed_key, pressed: true, modifiers: pressed_modifiers, .. }
+            if *pressed_key == key && pressed_modifiers.matches_exact(modifiers));
+        consumed |= matches;
+        !matches
+    });
+    consumed
 }
 
 impl Screenplay {
+    pub fn load(root: &Path) -> Self {
+        let path = root.join("screenplay.json");
+        let mut screenplay = Self::default();
+        screenplay.path = Some(path.clone());
+        match fs::read(&path) {
+            Ok(bytes) => match Self::decode(&bytes) {
+                Ok(document) => {
+                    screenplay.next_id = document.blocks.len() as u64;
+                    screenplay.document = document;
+                }
+                Err(error) => {
+                    screenplay.save_error = Some(format!(
+                        "Could not load screenplay.json: {error}. Original file preserved."
+                    ));
+                    screenplay.load_failed = true;
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                screenplay.pending_save = Some(Instant::now());
+            }
+            Err(error) => {
+                screenplay.save_error = Some(format!("Could not read screenplay.json: {error}"));
+                screenplay.load_failed = true;
+            }
+        }
+        screenplay
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Document, String> {
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let invalid = || "unsupported or invalid screenplay document".to_owned();
+        if value["version"] != 1 {
+            return Err(invalid());
+        }
+        let blocks = value["blocks"]
+            .as_array()
+            .ok_or_else(invalid)?
+            .iter()
+            .enumerate()
+            .map(|(id, item)| {
+                Ok(Block {
+                    id: id as u64,
+                    kind: Element::ALL
+                        .into_iter()
+                        .find(|kind| item["type"] == kind.label())
+                        .ok_or_else(invalid)?,
+                    text: item["text"].as_str().ok_or_else(invalid)?.to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if blocks.is_empty() {
+            return Err(invalid());
+        }
+        let mut cast = BTreeMap::new();
+        for item in value["cast"].as_array().ok_or_else(invalid)? {
+            cast.insert(
+                role_name(item["role"].as_str().ok_or_else(invalid)?),
+                CastCharacter {
+                    id: item["id"].as_str().ok_or_else(invalid)?.into(),
+                    name: item["name"].as_str().ok_or_else(invalid)?.into(),
+                },
+            );
+        }
+        Ok(Document { blocks, cast })
+    }
+
+    fn save(&mut self) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        if self.load_failed {
+            return;
+        }
+        let value = serde_json::json!({
+            "version": 1,
+            "blocks": self.document.blocks.iter().map(|b| serde_json::json!({
+                "type": b.kind.label(), "text": b.text,
+            })).collect::<Vec<_>>(),
+            "cast": self.document.cast.iter().map(|(role, c)| serde_json::json!({
+                "role": role, "id": c.id, "name": c.name,
+            })).collect::<Vec<_>>(),
+        });
+        let result = (|| -> Result<(), String> {
+            let bytes = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
+            let temporary = path.with_file_name(".screenplay.json.tmp");
+            fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
+            fs::rename(temporary, path).map_err(|e| e.to_string())
+        })();
+        self.pending_save = None;
+        self.save_error = result
+            .err()
+            .map(|e| format!("Could not save screenplay: {e}"));
+    }
+
+    fn roles(&self) -> Vec<String> {
+        let mut roles = Vec::new();
+        for block in &self.document.blocks {
+            if block.kind == Element::Character {
+                let role = role_name(&block.text);
+                if !role.is_empty() && !roles.contains(&role) {
+                    roles.push(role);
+                }
+            }
+        }
+        roles
+    }
+
     pub fn assign(&mut self, role: &str, character: CastCharacter) {
-        if let Some(role) = roles().into_iter().find(|name| *name == role) {
-            self.cast.insert(role, character);
+        let role = role_name(role);
+        if self.roles().contains(&role) {
+            self.document.cast.insert(role, character);
         }
     }
 
     pub fn render_request(&self) -> Result<String, String> {
-        let roles = roles();
+        if self.load_failed {
+            return Err("Reload the screenplay before generating.".into());
+        }
+        let mut script = String::new();
+        let mut speaker = String::new();
+        let mut cue = String::new();
+        let mut has_content = false;
+        for (index, block) in self.document.blocks.iter().enumerate() {
+            let text = block.text.trim();
+            match block.kind {
+                Element::Character => {
+                    speaker = role_name(text);
+                    cue.clear();
+                    if !speaker.is_empty()
+                        && (speaker.chars().count() > 128
+                            || !speaker
+                                .chars()
+                                .next()
+                                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                            || !speaker
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || "_ .'-".contains(c)))
+                    {
+                        return Err(format!(
+                            "Use letters, numbers, spaces, periods, apostrophes or hyphens in character name at element {}.",
+                            index + 1
+                        ));
+                    }
+                }
+                Element::Parenthetical => {
+                    cue = text
+                        .trim_matches(['(', ')'])
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if cue.contains(['(', ')']) {
+                        return Err(format!(
+                            "Remove nested parentheses at element {} before generating.",
+                            index + 1
+                        ));
+                    }
+                }
+                Element::Dialogue if !text.is_empty() => {
+                    if speaker.is_empty() {
+                        return Err(format!(
+                            "Add a character before dialogue at element {}.",
+                            index + 1
+                        ));
+                    }
+                    if text.chars().count() > 4000 {
+                        return Err(format!(
+                            "Shorten dialogue at element {} to 4,000 characters before generating.",
+                            index + 1
+                        ));
+                    }
+                    script.push_str(&speaker);
+                    if !cue.is_empty() {
+                        script.push_str(&format!(" ({cue})"));
+                    }
+                    script.push_str(": \"");
+                    script.push_str(&text.split_whitespace().collect::<Vec<_>>().join(" "));
+                    script.push_str("\"\n\n");
+                    cue.clear();
+                    has_content = true;
+                }
+                Element::Dialogue => {}
+                _ => {
+                    speaker.clear();
+                    cue.clear();
+                    if !text.is_empty() {
+                        script.push_str(text);
+                        script.push_str("\n\n");
+                        has_content |= block.kind == Element::Action;
+                    }
+                }
+            }
+        }
+        if !has_content {
+            return Err("Add action or dialogue before generating.".into());
+        }
+        if script.contains('\0') || script.chars().count() > 100_000 {
+            return Err("Screenplay must contain no null characters and fit within 100,000 characters before generating.".into());
+        }
+        let roles = self.roles();
         let missing = roles
             .iter()
-            .filter(|role| !self.cast.contains_key(**role))
-            .copied()
+            .filter(|role| !self.document.cast.contains_key(*role))
+            .cloned()
             .collect::<Vec<_>>();
         if !missing.is_empty() {
             return Err(format!(
@@ -91,49 +394,145 @@ impl Screenplay {
                 missing.join(" and ")
             ));
         }
-        let mut script = String::new();
-        let mut speaker = "";
-        let mut cue = "";
-        for &(element, text) in SCENE {
-            match element {
-                Element::Character => {
-                    speaker = text;
-                    cue = "";
-                }
-                Element::Parenthetical => cue = text,
-                Element::Dialogue => {
-                    script.push_str(speaker);
-                    if !cue.is_empty() {
-                        script.push(' ');
-                        script.push_str(cue);
-                    }
-                    script.push_str(": \"");
-                    script.push_str(text);
-                    script.push_str("\"\n\n");
-                    cue = "";
-                }
-                _ => {
-                    script.push_str(text);
-                    script.push_str("\n\n");
-                }
-            }
-        }
         let cast = roles
             .iter()
-            .map(|role| serde_json::json!({"role": role, "character": self.cast[role].id}))
+            .map(|role| serde_json::json!({"role": role, "character": self.document.cast[role].id}))
             .collect::<Vec<_>>();
-        serde_json::to_string(&serde_json::json!({
-            "version": 1,
-            "script": script.trim_end(),
-            "cast": cast,
-        }))
+        serde_json::to_string(
+            &serde_json::json!({"version": 1, "script": script.trim_end(), "cast": cast}),
+        )
         .map_err(|error| format!("Could not serialize screenplay request: {error}"))
+    }
+
+    fn active_index(&self) -> usize {
+        self.document
+            .blocks
+            .iter()
+            .position(|b| b.id == self.active)
+            .unwrap_or(0)
+    }
+
+    fn insert(&mut self, kind: Element) {
+        let index = self.active_index() + 1;
+        let id = self.next_id;
+        self.next_id += 1;
+        self.document.blocks.insert(
+            index,
+            Block {
+                id,
+                kind,
+                text: String::new(),
+            },
+        );
+        self.active = id;
+        self.focus = Some((id, 0));
+    }
+
+    fn split(&mut self, selection: std::ops::Range<usize>) {
+        let index = self.active_index();
+        let block = &mut self.document.blocks[index];
+        let kind = block.kind.next();
+        let before = block.text.chars().take(selection.start).collect::<String>();
+        let after = block.text.chars().skip(selection.end).collect::<String>();
+        block.text = before;
+        self.insert(kind);
+        let index = self.active_index();
+        self.document.blocks[index].text = after;
+    }
+
+    fn delete(&mut self) {
+        let index = self.active_index();
+        if self.document.blocks.len() == 1 {
+            self.document.blocks[0].text.clear();
+            self.document.blocks[0].kind = Element::Action;
+        } else {
+            self.document.blocks.remove(index);
+            self.active = self.document.blocks[index.min(self.document.blocks.len() - 1)].id;
+        }
+        self.focus = Some((self.active, 0));
+    }
+
+    fn rename_role(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let new = role_name(new);
+        if new.is_empty() {
+            return Err("Enter a character name.".into());
+        }
+        if new != old && self.roles().contains(&new) {
+            return Err("That character already exists.".into());
+        }
+        for block in &mut self.document.blocks {
+            if block.kind == Element::Character && role_name(&block.text) == old {
+                block.text.clone_from(&new);
+            }
+        }
+        if let Some(character) = self.document.cast.remove(old) {
+            self.document.cast.insert(new, character);
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            document: self.document.clone(),
+            active: self.active,
+        }
+    }
+
+    fn record(&mut self, before: Snapshot, typed: Option<u64>) {
+        if before.document == self.document {
+            return;
+        }
+        let coalesce = typed.is_some_and(|id| {
+            self.typing.is_some_and(|(previous, at)| {
+                id == previous && at.elapsed() < Duration::from_secs(1)
+            })
+        });
+        if !coalesce {
+            self.undo.push(before);
+            if self.undo.len() > 100 {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.typing = typed.map(|id| (id, Instant::now()));
+        self.pending_save = Some(Instant::now());
+    }
+
+    fn undo(&mut self) {
+        if let Some(snapshot) = self.undo.pop() {
+            self.redo.push(self.snapshot());
+            self.document = snapshot.document;
+            self.active = snapshot.active;
+            self.restored();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(snapshot) = self.redo.pop() {
+            self.undo.push(self.snapshot());
+            self.document = snapshot.document;
+            self.active = snapshot.active;
+            self.restored();
+        }
+    }
+
+    fn restored(&mut self) {
+        self.active = self.document.blocks[self.active_index()].id;
+        self.focus = Some((
+            self.active,
+            self.document.blocks[self.active_index()]
+                .text
+                .chars()
+                .count(),
+        ));
+        self.typing = None;
+        self.pending_save = Some(Instant::now());
     }
 
     fn role_ui(
         &mut self,
         ui: &mut egui::Ui,
-        role: &'static str,
+        role: &str,
         script_text: &str,
         index: usize,
         target: egui::Rect,
@@ -141,9 +540,10 @@ impl Screenplay {
     ) {
         let response = ui.interact(target, ui.id().with(("role", index)), egui::Sense::click());
         let assignment = self
+            .document
             .cast
             .get(role)
-            .map_or("Uncast", |character| character.name.as_str())
+            .map_or("Uncast", |c| c.name.as_str())
             .to_owned();
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
@@ -152,19 +552,16 @@ impl Screenplay {
                 format!("Cast {role}: {assignment}. {script_text}"),
             )
         });
-        if egui::DragAndDrop::has_payload_of_type::<CastCharacter>(ui.ctx())
+        if response.hovered()
             || response.has_focus()
-            || response.hovered()
+            || response.dnd_hover_payload::<CastCharacter>().is_some()
         {
-            let color = if response.dnd_hover_payload::<CastCharacter>().is_some()
-                || response.has_focus()
-            {
-                egui::Color32::from_rgb(35, 90, 165)
-            } else {
-                egui::Color32::from_gray(150)
-            };
-            ui.painter()
-                .rect_stroke(target, 2.0, (1.0, color), egui::StrokeKind::Inside);
+            ui.painter().rect_stroke(
+                target,
+                2.0,
+                (1.0, egui::Color32::from_rgb(35, 90, 165)),
+                egui::StrokeKind::Inside,
+            );
         }
         if let Some(character) = response.dnd_release_payload::<CastCharacter>() {
             self.assign(role, (*character).clone());
@@ -176,17 +573,22 @@ impl Screenplay {
                 .max_height(280.0)
                 .show(ui, |ui| {
                     for character in characters {
-                        let selected = self.cast.get(role) == Some(character);
-                        if ui.selectable_label(selected, &character.name).clicked() {
+                        if ui
+                            .selectable_label(
+                                self.document.cast.get(role) == Some(character),
+                                &character.name,
+                            )
+                            .clicked()
+                        {
                             self.assign(role, character.clone());
                             ui.close();
                         }
                     }
                     if ui
-                        .selectable_label(!self.cast.contains_key(role), "Uncast")
+                        .selectable_label(!self.document.cast.contains_key(role), "Uncast")
                         .clicked()
                     {
-                        self.cast.remove(role);
+                        self.document.cast.remove(role);
                         ui.close();
                     }
                 });
@@ -196,12 +598,186 @@ impl Screenplay {
         ));
     }
 
-    // Letter paper with conventional screenplay margins.
     pub fn ui(&mut self, ui: &mut egui::Ui, characters: &[CastCharacter]) {
-        ui.horizontal(|ui| {
+        if self.load_failed {
             ui.strong("Screenplay");
-            ui.weak("Last Light · 1 page");
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                self.save_error
+                    .as_deref()
+                    .unwrap_or("Could not load screenplay."),
+            );
+            if ui.button("Retry loading screenplay").clicked() {
+                let root = self.path.as_ref().unwrap().parent().unwrap().to_owned();
+                *self = Self::load(&root);
+            }
+            return;
+        }
+        let editor_id = ui.id().with("screenplay_editor");
+        let before = self.snapshot();
+        let mut typed = None;
+        let mut history_navigation = false;
+        let editor_focused = ui.memory(|m| m.focused()).is_some_and(|id| {
+            self.document
+                .blocks
+                .iter()
+                .any(|b| id == editor_id.with(("text", b.id)))
         });
+        if editor_focused {
+            // A newly focused text widget has no focus filter until the next
+            // frame. Suppress egui's spatial navigation while we own these keys.
+            ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        }
+        if editor_focused && self.rename.is_none() {
+            if ui.input_mut(|i| {
+                i.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                ) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+            }) {
+                self.redo();
+                history_navigation = true;
+            } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+                self.undo();
+                history_navigation = true;
+            }
+        }
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+            self.save();
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Screenplay");
+            if self.path.is_some() {
+                let status = if self.save_error.is_some() {
+                    "Not saved"
+                } else if self.pending_save.is_some() {
+                    "Saving…"
+                } else {
+                    "Saved locally"
+                };
+                ui.weak(status).on_hover_text(
+                    "Saved to screenplay.json in your workspace. ⌘/Ctrl+S saves now.",
+                );
+            }
+            ui.menu_button("Help", |ui| {
+                ui.label("Click any text to edit.");
+                ui.label("Enter: next screenplay element");
+                ui.label("Shift+Enter: line break within an element");
+                ui.label("Tab / Shift+Tab: change element type");
+                ui.label("Up / Down at the start / end: previous / next element");
+                ui.label("⌘/Ctrl+Z: undo · ⌘/Ctrl+Shift+Z: redo");
+                ui.label("Use Edit → Rename character to change every cue.");
+                ui.label("Click a cast label or drop a gallery character onto a cue or dialogue.");
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            let index = self.active_index();
+            let kind = self.document.blocks[index].kind;
+            egui::ComboBox::from_id_salt("element_type")
+                .selected_text(kind.label())
+                .width(116.0)
+                .show_ui(ui, |ui| {
+                    for candidate in Element::ALL {
+                        if ui
+                            .selectable_value(
+                                &mut self.document.blocks[index].kind,
+                                candidate,
+                                candidate.label(),
+                            )
+                            .changed()
+                        {
+                            self.focus = Some((
+                                self.active,
+                                self.document.blocks[index].text.chars().count(),
+                            ));
+                        }
+                    }
+                });
+            ui.menu_button("+ Insert", |ui| {
+                for kind in Element::ALL {
+                    if ui.button(kind.label()).clicked() {
+                        self.insert(kind);
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Insert an element after the selected paragraph.");
+            ui.menu_button("Edit", |ui| {
+                if ui
+                    .add_enabled(index > 0, egui::Button::new("Move up"))
+                    .clicked()
+                {
+                    self.document.blocks.swap(index, index - 1);
+                    self.focus = Some((self.active, 0));
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        index + 1 < self.document.blocks.len(),
+                        egui::Button::new("Move down"),
+                    )
+                    .clicked()
+                {
+                    self.document.blocks.swap(index, index + 1);
+                    self.focus = Some((self.active, 0));
+                    ui.close();
+                }
+                if ui.button("Delete element").clicked() {
+                    self.delete();
+                    ui.close();
+                }
+                let role = self.document.blocks[..=index]
+                    .iter()
+                    .rev()
+                    .take_while(|b| {
+                        !matches!(
+                            b.kind,
+                            Element::Action | Element::Heading | Element::Transition
+                        )
+                    })
+                    .find(|b| b.kind == Element::Character)
+                    .map(|b| role_name(&b.text));
+                if ui
+                    .add_enabled(
+                        role.as_ref().is_some_and(|r| !r.is_empty()),
+                        egui::Button::new("Rename character…"),
+                    )
+                    .clicked()
+                {
+                    let role = role.unwrap();
+                    self.rename = Some((role.clone(), role));
+                    ui.close();
+                }
+            });
+            if ui
+                .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
+                .clicked()
+            {
+                self.undo();
+                history_navigation = true;
+            }
+            if ui
+                .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo"))
+                .clicked()
+            {
+                self.redo();
+                history_navigation = true;
+            }
+        });
+        if let Some(error) = self.save_error.clone() {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+                if ui.button("Retry save").clicked() {
+                    self.save();
+                }
+            });
+        }
+
+        // Continuous paper grows with the script. Elements retain stable widget IDs
+        // through insertions and moves, so cursor state stays attached to the text.
+        let mut split = None;
+        let mut remove = false;
         egui::Frame::new()
             .fill(egui::Color32::from_gray(48))
             .inner_margin(12)
@@ -210,102 +786,300 @@ impl Screenplay {
                     .id_salt("screenplay_page")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        // Fit ordinary panes; on very narrow windows, scroll the paper
-                        // horizontally rather than making the script too small to read.
                         let scale = (ui.available_width() / 612.0).clamp(0.85, 1.0);
-                        let size = egui::vec2(612.0, 792.0) * scale;
-                        let left = ((ui.available_width() - size.x) * 0.5).max(0.0);
+                        let width = 612.0 * scale;
+                        let left = ((ui.available_width() - width) * 0.5).max(0.0);
                         let origin = ui.cursor().min + egui::vec2(left, 0.0);
-                        let page = egui::Rect::from_min_size(origin, size);
-                        ui.painter().rect_filled(page, 0.0, egui::Color32::WHITE);
-                        let font = egui::FontId::monospace(12.0 * scale);
-                        ui.painter().text(
-                            origin + egui::vec2(540.0, 36.0) * scale,
-                            egui::Align2::RIGHT_TOP,
-                            "1.",
-                            font.clone(),
-                            egui::Color32::BLACK,
-                        );
-
+                        let page_shape = ui.painter().add(egui::Shape::Noop);
                         let mut y = 72.0 * scale;
-                        let mut role = "";
-                        let mut role_text = String::new();
+                        let mut role = String::new();
                         let mut role_top = y;
-                        for (index, &(element, text)) in SCENE.iter().enumerate() {
-                            if element == Element::Character {
-                                role = text;
-                                role_text.clear();
-                                role_top = y;
+                        let mut role_index = 0;
+                        for index in 0..self.document.blocks.len() {
+                            let id = self.document.blocks[index].id;
+                            let kind = self.document.blocks[index].kind;
+                            let widget_id = editor_id.with(("text", id));
+                            let focused = ui.memory(|m| m.has_focus(widget_id));
+                            let mut enter = false;
+                            if focused {
+                                let range = egui::TextEdit::load_state(ui.ctx(), widget_id)
+                                    .and_then(|state| state.cursor.char_range())
+                                    .unwrap_or_default()
+                                    .as_sorted_char_range();
+                                if range.is_empty() {
+                                    if self.document.blocks[index].text.is_empty()
+                                        && ui.input_mut(|i| {
+                                            i.consume_key(
+                                                egui::Modifiers::NONE,
+                                                egui::Key::Backspace,
+                                            )
+                                        })
+                                    {
+                                        remove = true;
+                                    }
+                                    let previous = range.start.0 == 0
+                                        && index > 0
+                                        && ui.input_mut(|i| {
+                                            consume_exact(
+                                                i,
+                                                egui::Modifiers::NONE,
+                                                egui::Key::ArrowUp,
+                                            )
+                                        });
+                                    let next = range.end.0
+                                        == self.document.blocks[index].text.chars().count()
+                                        && index + 1 < self.document.blocks.len()
+                                        && ui.input_mut(|i| {
+                                            consume_exact(
+                                                i,
+                                                egui::Modifiers::NONE,
+                                                egui::Key::ArrowDown,
+                                            )
+                                        });
+                                    if previous {
+                                        let block = &self.document.blocks[index - 1];
+                                        self.focus = Some((block.id, block.text.chars().count()));
+                                    } else if next {
+                                        self.focus = Some((self.document.blocks[index + 1].id, 0));
+                                    }
+                                }
+                                ui.input_mut(|input| {
+                                    enter = consume_exact(
+                                        input,
+                                        egui::Modifiers::NONE,
+                                        egui::Key::Enter,
+                                    );
+                                    let backward =
+                                        input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
+                                    let forward =
+                                        input.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
+                                    if backward || forward {
+                                        let current =
+                                            Element::ALL.iter().position(|k| *k == kind).unwrap();
+                                        self.document.blocks[index].kind = Element::ALL
+                                            [(current + if backward { 5 } else { 1 }) % 6];
+                                    }
+                                });
                             }
-                            let (indent, width) = match element {
-                                Element::Character => (252.0, 288.0),
-                                Element::Parenthetical => (216.0, 180.0),
-                                Element::Dialogue => (180.0, 252.0),
-                                Element::Transition => (432.0, 108.0),
-                                _ => (108.0, 432.0),
-                            };
-                            let galley = ui.painter().layout(
-                                text.to_owned(),
-                                font.clone(),
-                                egui::Color32::BLACK,
-                                width * scale,
+                            if let Some((focus_id, cursor)) = self.focus
+                                && focus_id == id
+                            {
+                                ui.memory_mut(|m| m.request_focus(widget_id));
+                                let mut state = egui::TextEdit::load_state(ui.ctx(), widget_id)
+                                    .unwrap_or_default();
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::one(
+                                        egui::text::CCursor::new(cursor),
+                                    )));
+                                state.store(ui.ctx(), widget_id);
+                            }
+                            let (indent, text_width) = kind.margins();
+                            let pos = origin + egui::vec2(indent * scale, y);
+                            let mut child = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .id_salt(("block", id))
+                                    .max_rect(egui::Rect::from_min_size(
+                                        pos,
+                                        egui::vec2(text_width * scale, 10_000.0),
+                                    ))
+                                    .layout(egui::Layout::top_down(egui::Align::Min)),
                             );
-                            let text_size = galley.size();
-                            let height = text_size.y;
-                            // Character cues and parentheticals stay with the dialogue.
-                            let gap =
-                                if matches!(element, Element::Character | Element::Parenthetical) {
+                            child.visuals_mut().text_cursor.stroke.color = egui::Color32::BLACK;
+                            child.visuals_mut().selection.bg_fill =
+                                egui::Color32::from_rgb(185, 215, 250);
+                            child.visuals_mut().selection.stroke.color = egui::Color32::BLACK;
+                            let output =
+                                egui::TextEdit::multiline(&mut self.document.blocks[index].text)
+                                    .id(widget_id)
+                                    .font(egui::FontId::monospace(12.0 * scale))
+                                    .text_color(egui::Color32::BLACK)
+                                    .frame(egui::Frame::NONE)
+                                    .margin(0)
+                                    .desired_rows(1)
+                                    .desired_width(text_width * scale)
+                                    .lock_focus(true)
+                                    .return_key(egui::KeyboardShortcut::new(
+                                        egui::Modifiers::SHIFT,
+                                        egui::Key::Enter,
+                                    ))
+                                    .hint_text(
+                                        egui::RichText::new(kind.label())
+                                            .color(egui::Color32::from_gray(110)),
+                                    )
+                                    .show(&mut child);
+                            output.response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::TextEdit,
+                                    true,
+                                    kind.label(),
+                                )
+                            });
+                            if output.response.has_focus() {
+                                self.active = id;
+                            }
+                            if output.response.changed() {
+                                typed = Some(id);
+                            }
+                            if self.focus.is_some_and(|(focus_id, _)| focus_id == id) {
+                                output.response.scroll_to_me(None);
+                                self.focus = None;
+                            }
+                            if output.response.has_focus() {
+                                let range = output
+                                    .cursor_range
+                                    .unwrap_or_default()
+                                    .as_sorted_char_range();
+                                let range = range.start.0..range.end.0;
+                                if enter {
+                                    split = Some(range.clone());
+                                }
+                            }
+                            let height = output.response.rect.height();
+                            if self.active == id {
+                                ui.painter().line_segment(
+                                    [
+                                        origin + egui::vec2(94.0 * scale, y),
+                                        origin + egui::vec2(94.0 * scale, y + height),
+                                    ],
+                                    (2.0, egui::Color32::from_rgb(35, 90, 165)),
+                                );
+                            }
+                            match kind {
+                                Element::Character => {
+                                    role = role_name(&self.document.blocks[index].text);
+                                    role_top = y;
+                                    role_index = index;
+                                    if !role.is_empty() {
+                                        let annotation = self.document.cast.get(&role).map_or_else(
+                                            || "Uncast".into(),
+                                            |c| format!("played by {}", c.name),
+                                        );
+                                        let label_pos = origin + egui::vec2(412.0 * scale, y);
+                                        let galley = ui.painter().layout(
+                                            annotation,
+                                            egui::FontId::proportional(10.0 * scale),
+                                            egui::Color32::from_gray(85),
+                                            128.0 * scale,
+                                        );
+                                        let target = egui::Rect::from_min_size(
+                                            label_pos - egui::vec2(2.0, 2.0),
+                                            galley.size() + egui::vec2(4.0, 4.0),
+                                        );
+                                        ui.painter().galley(
+                                            label_pos,
+                                            galley,
+                                            egui::Color32::from_gray(85),
+                                        );
+                                        self.role_ui(ui, &role, "", index, target, characters);
+                                    }
+                                }
+                                Element::Heading | Element::Action | Element::Transition => {
+                                    role.clear()
+                                }
+                                _ => {}
+                            }
+                            // Casting overlays exist only during gallery drags; ordinary clicks
+                            // belong to the editor. The small cast label remains a picker.
+                            if kind == Element::Dialogue
+                                && !role.is_empty()
+                                && egui::DragAndDrop::has_payload_of_type::<CastCharacter>(ui.ctx())
+                            {
+                                let target = egui::Rect::from_min_max(
+                                    origin + egui::vec2(180.0 * scale, role_top - 2.0),
+                                    origin + egui::vec2(540.0 * scale, y + height + 2.0),
+                                );
+                                self.role_ui(
+                                    ui,
+                                    &role,
+                                    &self.document.blocks[index].text.clone(),
+                                    role_index + self.document.blocks.len(),
+                                    target,
+                                    characters,
+                                );
+                            }
+                            y += height
+                                + if matches!(kind, Element::Character | Element::Parenthetical) {
                                     0.0
                                 } else {
                                     12.0 * scale
                                 };
-                            let pos = origin + egui::vec2(indent * scale, y);
-                            if matches!(
-                                element,
-                                Element::Character | Element::Parenthetical | Element::Dialogue
-                            ) {
-                                if element != Element::Character {
-                                    role_text.push_str(text);
-                                    role_text.push('\n');
-                                }
-                                ui.painter().galley(pos, galley, egui::Color32::BLACK);
-                            } else {
-                                ui.put(
-                                    egui::Rect::from_min_size(pos, galley.size()),
-                                    egui::Label::new(galley).selectable(true),
-                                );
-                            }
-                            if element == Element::Character {
-                                let assignment = self.cast.get(role).map_or_else(
-                                    || "Uncast".to_owned(),
-                                    |character| format!("played by {}", character.name),
-                                );
-                                let annotation = ui.painter().layout(
-                                    assignment,
-                                    egui::FontId::proportional(10.0 * scale),
-                                    egui::Color32::from_gray(85),
-                                    (540.0 - indent) * scale - text_size.x - 8.0 * scale,
-                                );
-                                ui.painter().galley(
-                                    pos + egui::vec2(text_size.x + 8.0 * scale, 0.0),
-                                    annotation,
-                                    egui::Color32::from_gray(85),
-                                );
-                            }
-                            if element == Element::Dialogue {
-                                // One target includes the cue, parenthetical, and spoken line.
-                                // Every target for a role reads and updates the same cast entry.
-                                let target = egui::Rect::from_min_max(
-                                    origin + egui::vec2(180.0 * scale, role_top - 4.0 * scale),
-                                    origin + egui::vec2(540.0 * scale, y + height + 4.0 * scale),
-                                );
-                                self.role_ui(ui, role, &role_text, index, target, characters);
-                            }
-                            y += height + gap;
                         }
+                        let page = egui::Rect::from_min_size(
+                            origin,
+                            egui::vec2(width, (y + 72.0 * scale).max(792.0 * scale)),
+                        );
+                        ui.painter().set(
+                            page_shape,
+                            egui::Shape::rect_filled(page, 0.0, egui::Color32::WHITE),
+                        );
                         ui.allocate_rect(page, egui::Sense::hover());
                     });
             });
+        if let Some(range) = split {
+            self.split(range);
+            typed = None;
+        }
+        if remove {
+            self.delete();
+            typed = None;
+        }
+        self.rename_ui(ui);
+        if !history_navigation {
+            self.record(before, typed);
+        }
+        if self.focus.is_some() {
+            ui.ctx().request_repaint();
+        }
+        if let Some(at) = self.pending_save {
+            if at.elapsed() >= Duration::from_millis(600) {
+                self.save();
+            } else {
+                ui.ctx()
+                    .request_repaint_after(Duration::from_millis(600).saturating_sub(at.elapsed()));
+            }
+        }
+    }
+
+    fn rename_ui(&mut self, ui: &mut egui::Ui) {
+        let Some((old, mut new)) = self.rename.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut applied = false;
+        egui::Window::new("Rename character")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.label(format!("Rename every {old} cue and keep its cast."));
+                ui.label("Character name");
+                ui.text_edit_singleline(&mut new);
+                let invalid = new.trim().is_empty()
+                    || (role_name(&new) != old && self.roles().contains(&role_name(&new)));
+                if invalid {
+                    ui.label("Use a nonempty name that is not already in the script.");
+                }
+                if ui
+                    .add_enabled(!invalid, egui::Button::new("Rename"))
+                    .clicked()
+                {
+                    applied = self.rename_role(&old, &new).is_ok();
+                }
+            });
+        self.rename = if open && !applied {
+            Some((old, new))
+        } else {
+            None
+        };
+    }
+}
+
+impl Drop for Screenplay {
+    fn drop(&mut self) {
+        if self.pending_save.is_some() {
+            self.save();
+        }
     }
 }
 

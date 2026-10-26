@@ -8,3 +8,5 @@ outputs/
 .setup.lock
 .render.lock
 __pycache__/
+screenplay.json
+.screenplay.json.tmp

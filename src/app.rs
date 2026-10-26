@@ -37,7 +37,7 @@ impl App {
             video: crate::video::VideoWorkspace::new(root.clone()),
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(&root),
-            screenplay: crate::screenplay::Screenplay::default(),
+            screenplay: crate::screenplay::Screenplay::load(&root),
             codex_started: false,
             root,
             client: None,
