@@ -94,7 +94,10 @@ Draft file import/export.
 - **Up/Down** at the start/end moves between elements. **Backspace** deletes text
   normally; once the element is empty, each press moves back through instructions
   → dialogue → character → action → scene heading, ready for `INT.` or `EXT.`.
-  It keeps the paragraph in place. **Edit → Delete element** removes a paragraph.
+  Another press on an empty scene heading removes it and places the cursor at
+  the end of the previous element. Keep pressing to shorten the script; one blank
+  heading remains so you can start writing again. **Edit → Delete element** also
+  removes a paragraph.
   **Undo/Redo** and **⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z** cover text,
   formatting, insertion, deletion, and casting.
 

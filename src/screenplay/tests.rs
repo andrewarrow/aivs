@@ -702,7 +702,6 @@ fn backspace_only_changes_format_after_all_text_is_gone() {
         (Element::Character, Element::Action),
         (Element::Action, Element::Heading),
         (Element::Transition, Element::Heading),
-        (Element::Heading, Element::Heading),
     ] {
         let mut screenplay = Screenplay::default();
         let mut editor = Editor::new();
@@ -746,7 +745,6 @@ fn repeated_empty_backspaces_reach_a_scene_heading_and_support_undo_and_new_scen
             Element::Character,
             Element::Action,
             Element::Heading,
-            Element::Heading,
         ] {
             editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
             assert_eq!(screenplay.document.blocks[4].kind, kind);
@@ -788,4 +786,98 @@ fn empty_parentheses_are_deleted_before_backspace_changes_the_element_type() {
     assert_eq!(screenplay.document.blocks[4].kind, Element::Parenthetical);
     editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
     assert_eq!(screenplay.document.blocks[4].kind, Element::Dialogue);
+}
+
+#[test]
+fn backspace_removes_an_empty_heading_and_continues_at_the_previous_element_end() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    screenplay.document.blocks[4].kind = Element::Heading;
+    screenplay.document.blocks[4].text.clear();
+    screenplay.document.blocks[3].text = "JOSÉ".into();
+    let original = screenplay.document.clone();
+    editor.focus(&mut screenplay, 4, 0);
+    editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks.len(), original.blocks.len() - 1);
+    assert_eq!(screenplay.active, original.blocks[3].id);
+    assert_eq!(screenplay.document.blocks[3].text, "JOSÉ");
+    assert_eq!(screenplay.document.blocks[..4], original.blocks[..4]);
+    assert_eq!(screenplay.document.blocks[4..], original.blocks[5..]);
+    editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks[3].text, "JOS");
+    assert_eq!(screenplay.document.blocks[3].kind, Element::Character);
+    editor.key(&mut screenplay, egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(screenplay.document.blocks[3].text, "JOSÉ");
+    editor.key(&mut screenplay, egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(screenplay.document, original);
+    editor.key(
+        &mut screenplay,
+        egui::Key::Z,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
+    assert_eq!(screenplay.document.blocks.len(), original.blocks.len() - 1);
+}
+
+#[test]
+fn repeated_backspaces_can_clear_the_whole_script_and_leave_a_writable_heading() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    screenplay.document.blocks = [
+        (Element::Heading, "INT. ROOM - DAY"),
+        (Element::Action, "Rain."),
+        (Element::Character, "JOE"),
+        (Element::Parenthetical, "(quietly)"),
+        (Element::Dialogue, "Café."),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(id, (kind, text))| Block {
+        id: id as u64,
+        kind,
+        text: text.into(),
+    })
+    .collect();
+    editor.focus(&mut screenplay, 4, 5);
+    let mut reached_blank = false;
+    for _ in 0..100 {
+        editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+        if screenplay.document.blocks.len() == 1 && screenplay.document.blocks[0].text.is_empty() {
+            reached_blank = true;
+            break;
+        }
+    }
+    assert!(
+        reached_blank,
+        "Backspace must not get stuck at an element boundary"
+    );
+    assert_eq!(screenplay.document.blocks[0].kind, Element::Heading);
+    for _ in 0..3 {
+        editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    }
+    assert_eq!(screenplay.document.blocks.len(), 1);
+    editor.type_text(&mut screenplay, "EXT. ROAD - NIGHT");
+    assert_eq!(screenplay.document.blocks[0].text, "EXT. ROAD - NIGHT");
+}
+
+#[test]
+fn backspace_can_remove_the_first_empty_heading_without_losing_following_text() {
+    let mut screenplay = Screenplay::default();
+    let mut editor = Editor::new();
+    screenplay.document.blocks[0].text.clear();
+    let following = screenplay.document.blocks[1].clone();
+    let count = screenplay.document.blocks.len();
+    editor.focus(&mut screenplay, 0, 0);
+    editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert_eq!(screenplay.document.blocks.len(), count - 1);
+    assert_eq!(screenplay.document.blocks[0], following);
+    assert_eq!(screenplay.active, following.id);
+    editor.key(&mut screenplay, egui::Key::Backspace, egui::Modifiers::NONE);
+    assert_eq!(
+        screenplay.document.blocks[0].text,
+        following
+            .text
+            .chars()
+            .take(following.text.chars().count() - 1)
+            .collect::<String>()
+    );
 }

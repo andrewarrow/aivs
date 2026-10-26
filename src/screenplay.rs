@@ -536,6 +536,16 @@ impl Screenplay {
 
     fn backspace_empty(&mut self) {
         let index = self.active_index();
+        if self.document.blocks[index].kind == Element::Heading
+            && self.document.blocks[index].text.is_empty()
+            && self.document.blocks.len() > 1
+        {
+            self.document.blocks.remove(index);
+            let previous = &self.document.blocks[index.saturating_sub(1)];
+            self.active = previous.id;
+            self.focus = Some((previous.id, previous.text.chars().count()));
+            return;
+        }
         let block = &mut self.document.blocks[index];
         if block.kind == Element::Parenthetical && block.text == "()" {
             // Delete the automatic pair first. A subsequent Backspace on the
@@ -769,6 +779,7 @@ impl Screenplay {
                 ui.label("Shift+Tab: previous element type");
                 ui.label("Backspace on empty: instructions → dialogue → character");
                 ui.label("Keep pressing to reach action, then a scene heading.");
+                ui.label("Backspace on an empty heading: remove it and go back.");
                 ui.label("Up / Down at the start / end: previous / next element");
                 ui.label("⌘/Ctrl+Z: undo · ⌘/Ctrl+Shift+Z: redo");
                 ui.label("Use Edit → Rename character to change every cue.");
