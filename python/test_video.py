@@ -10,9 +10,42 @@ import unittest
 from unittest.mock import patch
 
 import quality_backend as backend
+import shooting_script
 import video
 from dialogue_helpers import duration_estimate
 from validation import validate_video
+
+
+def screenplay_request():
+    return {
+        "version": 1,
+        "script": (
+            "EXT. OBSERVATORY - NIGHT\n\n"
+            "Mara turns the brass dial. The receiver clicks.\n\n"
+            'VALE: "The signal is below."\n\n'
+            "FADE OUT."
+        ),
+        "cast": [
+            {"role": "Vale", "character": "eli"},
+            {"role": "Mara", "character": "ava"},
+        ],
+    }
+
+
+def validated_screenplay_plan(request, profiles, *, token_counter):
+    candidate = {
+        "shots": [{
+            "seconds": 4,
+            "beat_ids": [1, 2],
+            "prompt_template": "The receiver clicks as the dial reaches its stop. {{line_2}}",
+            "start_state": "Mara's hand rests beside the brass dial.",
+            "end_state": "The signal meter flickers once.",
+            "continue_previous": False,
+        }],
+    }
+    return shooting_script.validate_shooting_script(
+        candidate, request, profiles, token_counter=token_counter
+    )
 
 
 class SetupTests(unittest.TestCase):
@@ -88,6 +121,171 @@ class RenderTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Another AIVS"):
                     with video.project_lock(".render.lock"):
                         pass
+
+    def test_screenplay_translation_reaches_shot_renderer_and_persists_callback_updates(self):
+        request = screenplay_request()
+        captured = {}
+
+        def translate(actual_request, profiles, run_dir, *, token_counter):
+            captured.update(request=actual_request, profiles=profiles, run_dir=run_dir)
+            self.assertEqual(actual_request, request)
+            self.assertEqual(token_counter("Mara turns the dial"), 4)
+            captured["plan"] = validated_screenplay_plan(actual_request, profiles, token_counter)
+            return captured["plan"]
+
+        def render_plan(plan, seed, output, *, on_progress, on_shot):
+            self.assertEqual(plan, captured["plan"])
+            self.assertEqual(seed, 27)
+            on_progress(label="Shot 1/1: Rendering", fraction=0.6, remaining_seconds=2)
+            on_shot(0, {"status": "complete", "runtime": {"output_frames": 96}})
+            output.write_bytes(b"assembled and validated video")
+            return {"pipeline": "directed-shots", "output_frames": 96, "video": {"test": True}}
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(video, "ROOT", Path(directory)), \
+                patch.object(video, "check_environment") as check_environment, \
+                patch.object(video, "prompt_token_counter", return_value=lambda text: len(text.split())), \
+                patch.object(video, "create_shooting_script", side_effect=translate) as translator, \
+                patch.object(video, "render_shooting_script", side_effect=render_plan) as renderer, \
+                patch("sys.stdout", new_callable=io.StringIO) as out:
+            video.generate_screenplay(request, 27)
+
+            translator.assert_called_once()
+            renderer.assert_called_once()
+            check_environment.assert_called_once()
+            self.assertEqual([profile["id"] for profile in captured["profiles"]], ["eli", "ava"])
+            plan = renderer.call_args.args[0]
+            self.assertEqual(plan["source"]["script"], request["script"])
+            self.assertEqual(plan["source"]["cast"], request["cast"])
+            self.assertEqual(plan["shots"][0]["beat_ids"], [1, 2])
+            self.assertEqual(
+                plan["shots"][0]["prompt_template"],
+                "The receiver clicks as the dial reaches its stop. {{line_2}}",
+            )
+            self.assertIn('Vale, says, "The signal is below."', plan["shots"][0]["prompt"])
+
+            run_dir = next((Path(directory) / "outputs").iterdir())
+            report = json.loads((run_dir / "render.json").read_text())
+            self.assertEqual((run_dir / "screenplay.txt").read_text(), request["script"])
+            self.assertEqual(json.loads((run_dir / "screenplay-request.json").read_text()), request)
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["original_script"], request["script"])
+            self.assertEqual(report["cast"], request["cast"])
+            self.assertEqual(report["seconds"], 4)
+            self.assertEqual(report["shots"][0]["status"], "complete")
+            self.assertEqual(report["shots"][0]["runtime"]["output_frames"], 96)
+            self.assertEqual(report["runtime"]["pipeline"], "directed-shots")
+            self.assertEqual(report["sha256"], hashlib.sha256(b"assembled and validated video").hexdigest())
+            self.assertEqual((run_dir / "shooting-script.json").is_file(), True)
+            self.assertEqual((run_dir / "shooting-script.txt").is_file(), True)
+            events = [json.loads(line.removeprefix("AIVS_EVENT ")) for line in out.getvalue().splitlines()]
+            self.assertIn("render_progress", [event["event"] for event in events])
+            self.assertEqual(events[-1]["event"], "complete")
+
+    def test_plan_only_saves_readable_artifacts_without_environment_check_or_renderer(self):
+        request = screenplay_request()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(video, "ROOT", Path(directory)), \
+                patch.object(video, "check_environment") as check_environment, \
+                patch.object(video, "prompt_token_counter", return_value=lambda text: len(text.split())), \
+                patch.object(
+                    video, "create_shooting_script",
+                    side_effect=lambda request, profiles, run_dir, *, token_counter:
+                    validated_screenplay_plan(request, profiles, token_counter=token_counter),
+                ), \
+                patch.object(video, "render_shooting_script") as renderer, \
+                patch("sys.stdout", new_callable=io.StringIO) as out:
+            video.generate_screenplay(request, 28, plan_only=True)
+
+            check_environment.assert_not_called()
+            renderer.assert_not_called()
+            run_dir = next((Path(directory) / "outputs").iterdir())
+            report = json.loads((run_dir / "render.json").read_text())
+            self.assertEqual(report["status"], "planned")
+            self.assertEqual(report["shots"][0]["status"], "pending")
+            self.assertIn("The receiver clicks", (run_dir / "shooting-script.txt").read_text())
+            self.assertEqual(json.loads((run_dir / "shooting-script.json").read_text())["seconds"], 4)
+            events = [json.loads(line.removeprefix("AIVS_EVENT ")) for line in out.getvalue().splitlines()]
+            self.assertEqual(events[-1]["event"], "planned")
+
+    def test_planning_failure_and_interruption_are_persisted_without_rendering(self):
+        request = screenplay_request()
+        for exception, status in ((RuntimeError("Codex unavailable"), "failed"),
+                                  (KeyboardInterrupt(), "interrupted")):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                with patch.object(video, "ROOT", Path(directory)), \
+                        patch.object(video, "check_environment"), \
+                        patch.object(video, "prompt_token_counter", return_value=lambda text: len(text.split())), \
+                        patch.object(video, "create_shooting_script", side_effect=exception), \
+                        patch.object(video, "render_shooting_script") as renderer, \
+                        patch("sys.stdout", new_callable=io.StringIO) as out:
+                    with self.assertRaises(type(exception)):
+                        video.generate_screenplay(request, 29)
+                    renderer.assert_not_called()
+                    run_dir = next((Path(directory) / "outputs").iterdir())
+                    report = json.loads((run_dir / "render.json").read_text())
+                    self.assertEqual(report["status"], status)
+                    self.assertNotIn('"event": "complete"', out.getvalue())
+                    if status == "failed":
+                        self.assertEqual(report["error"], "Codex unavailable")
+
+    def test_stale_reused_shooting_script_failure_is_saved_and_suppresses_render(self):
+        request = screenplay_request()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(video, "ROOT", Path(directory)), \
+                patch.object(video, "check_environment"), \
+                patch.object(video, "prompt_token_counter", return_value=lambda text: len(text.split())), \
+                patch.object(video, "load_shooting_script", side_effect=ValueError("different screenplay or cast")) as loader, \
+                patch.object(video, "render_shooting_script") as renderer, \
+                patch("sys.stdout", new_callable=io.StringIO) as out:
+            with self.assertRaisesRegex(ValueError, "different screenplay or cast"):
+                video.generate_screenplay(request, 30, shooting_script=Path("cached-plan.json"))
+            loader.assert_called_once()
+            renderer.assert_not_called()
+            report = json.loads(next((Path(directory) / "outputs").glob("*/render.json")).read_text())
+            self.assertEqual(report["status"], "failed")
+            self.assertNotIn('"event": "complete"', out.getvalue())
+
+    def test_script_file_cli_builds_exact_request_and_routes_plan_options(self):
+        script = "EXT. TEST SITE - DAY\n\nMara opens a brass case.\n"
+        for extra_args, expected_options in (
+            (["--plan-only"], {"shooting_script": None, "plan_only": True}),
+            (["--shooting-script", "cached-plan.json"],
+             {"shooting_script": Path("cached-plan.json"), "plan_only": False}),
+        ):
+            with self.subTest(options=expected_options), tempfile.TemporaryDirectory() as directory:
+                script_file = Path(directory) / "arbitrary screenplay.txt"
+                script_file.write_text(script, encoding="utf-8")
+                argv = [
+                    "video.py", "render", "--seed", "31", "--script-file", str(script_file),
+                    "--cast", "Vale=eli", "--cast", "Mara=ava", *extra_args,
+                ]
+                with patch.object(video, "generate_screenplay") as generate, \
+                        patch.object(video, "generate") as legacy_generate, \
+                        patch("sys.argv", argv):
+                    self.assertEqual(video.main(), 0)
+                generate.assert_called_once_with(
+                    {"version": 1, "script": script, "cast": [
+                        {"role": "Vale", "character": "eli"},
+                        {"role": "Mara", "character": "ava"},
+                    ]},
+                    31,
+                    **expected_options,
+                )
+                legacy_generate.assert_not_called()
+
+    def test_raw_prompt_cli_still_uses_legacy_generate_path(self):
+        prompt = 'A quiet film. A person says "Let us begin."'
+        with patch.object(video, "generate") as legacy_generate, \
+                patch.object(video, "generate_screenplay") as screenplay_generate, \
+                patch("sys.argv", ["video.py", "render", "--seed", "32", "--prompt", prompt,
+                                   "--character", "Eli", "--character-text-only"]):
+            self.assertEqual(video.main(), 0)
+        legacy_generate.assert_called_once_with(
+            32, prompt, character=["Eli"], character_text_only=True,
+            character_references_only=False,
+        )
+        screenplay_generate.assert_not_called()
 
     def test_selected_prompt_reaches_renderer_timing_and_report_through_cli(self):
         library = Path(video.__file__).resolve().parents[1]

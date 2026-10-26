@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from shooting_script import create_shooting_script, load_shooting_script, parse_request, validate_shooting_script
+from shooting_script import create_shooting_script, load_shooting_script, parse_request, save_shooting_script, validate_shooting_script
 
 
 PROFILES = [
@@ -69,7 +69,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(source["beats"][1]["cue"], "quietly")
         self.assertEqual(source["beats"][4]["scene"], "EXT. GARDEN - NIGHT")
         self.assertTrue(source["fade_out"])
-        self.assertEqual(source["script"], REQUEST["script"].strip())
+        self.assertEqual(source["script"], REQUEST["script"])
 
     def test_fountain_dialogue_and_silent_script(self):
         request = {"version": 1, "cast": REQUEST["cast"],
@@ -95,6 +95,23 @@ I saw it too.
                      [{"role": "MARA", "character": "rhea"}, {"role": "TOMAS", "character": "rhea"}]):
             with self.subTest(cast=cast), self.assertRaises(ValueError):
                 parse_request({**REQUEST, "cast": cast}, PROFILES)
+
+    def test_repeated_heading_and_transition_make_new_scene_context(self):
+        request = {"version": 1, "cast": [], "script": """INT. HALL - DAY
+
+A door opens.
+
+CUT TO:
+
+A shadow crosses the wall.
+
+INT. HALL - DAY
+
+The door closes.
+"""}
+        beats = parse_request(request, [])["beats"]
+        self.assertEqual([beat["scene_id"] for beat in beats], [1, 2, 3])
+        self.assertEqual(beats[1]["transition"], "CUT TO:")
 
 
 class ValidationTests(unittest.TestCase):
@@ -148,7 +165,8 @@ class ValidationTests(unittest.TestCase):
         artifact = validate_shooting_script(candidate(), REQUEST, PROFILES)
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "shooting-script.json"
-            path.write_text(json.dumps(artifact), encoding="utf-8")
+            save_shooting_script(artifact, Path(temp))
+            self.assertIn("SHOT 1 | 6s", (Path(temp) / "shooting-script.txt").read_text())
             self.assertEqual(load_shooting_script(path, REQUEST, PROFILES)["seconds"], 18)
             with self.assertRaisesRegex(ValueError, "different screenplay"):
                 load_shooting_script(path, {**REQUEST, "script": REQUEST["script"] + "\nA bell rings."}, PROFILES)
@@ -174,6 +192,8 @@ if os.environ.get('FAKE_CODEX_FAIL') == '1':
     sys.exit(7)
 output = pathlib.Path(args[args.index('--output-last-message')+1])
 response = json.loads(pathlib.Path(os.environ['FAKE_CODEX_RESPONSE']).read_text())
+if os.environ.get('FAKE_CODEX_BAD_FIRST') == '1' and 'Correct this validation error:' not in prompt:
+    response['shots'][0]['beat_ids'] = [2]
 output.write_text(json.dumps(response))
 print(json.dumps({'type': 'turn.completed'}))
 """, encoding="utf-8")
@@ -208,6 +228,19 @@ print(json.dumps({'type': 'turn.completed'}))
                     create_shooting_script(REQUEST, PROFILES, base / "run", executable=fake)
             with self.assertRaisesRegex(RuntimeError, "executable is unavailable"):
                 create_shooting_script(REQUEST, PROFILES, base / "run", executable=base / "missing")
+
+    def test_one_corrective_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            response = base / "response.json"
+            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            fake = self._fake(base)
+            run = base / "run"
+            with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_BAD_FIRST": "1"}):
+                plan = create_shooting_script(REQUEST, PROFILES, run, executable=fake)
+            self.assertEqual(plan["seconds"], 18)
+            self.assertTrue((run / "shooting-script-request-2.txt").is_file())
+            self.assertIn("Correct this validation error:", (run / "shooting-script-request-2.txt").read_text())
 
 
 if __name__ == "__main__":

@@ -242,6 +242,8 @@ expected_profiles = [
     {'id': 'ava', 'name': 'Ava', 'description': 'A red-haired traveler.', 'voice_description': 'Clear alto.', 'voice_id': 'ava-voice'},
 ]
 video.characters.resolve_characters = lambda *args, **kwargs: expected_profiles
+video.characters.snapshot_characters = lambda profiles, *args, **kwargs: profiles
+video.prompt_token_counter = lambda: (lambda text: len(text.split()))
 def create(request, profiles, run_dir, **options):
     assert request == expected_request
     assert profiles == expected_profiles

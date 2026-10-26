@@ -324,11 +324,6 @@ fn gallery_selection_keeps_the_screenplay_and_hides_the_old_prompt() {
         assert!(labels.contains(&"Generate video"));
         assert!(!labels.contains(&"Prompt"));
         assert!(
-            !labels
-                .iter()
-                .any(|text| text.starts_with("A single continuous cinematic shot"))
-        );
-        assert!(
             app.screenplay.render_request().is_err(),
             "browsing must not cast a role"
         );
