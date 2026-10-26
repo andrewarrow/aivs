@@ -29,7 +29,7 @@ _MAX_SCRIPT = 100_000
 _MAX_TEXT = 4_000
 _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
                    "image", "scene_image", "voice_sample")
-_CODEX_TIMEOUT_SECONDS = 360
+_CODEX_TIMEOUT_SECONDS = 3600
 
 
 def _json(value: object) -> str:
