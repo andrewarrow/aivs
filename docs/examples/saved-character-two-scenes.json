@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "render_format": "landscape",
+  "cast": [
+    { "role": "TRAVELER", "character": "ava" }
+  ],
+  "script": "INT. QUIET OFFICE - DAY\n\nTRAVELER sits alone at a desk. Soft daylight falls through a window. She looks up, thoughtful.\n\nTRAVELER\nWe still have some time.\n\nINT. TRAIN COMPARTMENT - NIGHT\n\nTRAVELER sits alone beside a dark window in a quiet, stationary train. She turns from the window and pauses.\n\nTRAVELER\nThe next train leaves at noon.\n"
+}
