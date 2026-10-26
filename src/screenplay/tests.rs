@@ -52,7 +52,22 @@ fn fountain_import_converts_elements_saves_and_undoes_the_screenplay_and_cast() 
     assert_eq!(screenplay.focus, Some((old_next_id, 0)));
     assert!(screenplay.save_error.is_none());
     let imported = screenplay.document.clone();
-    assert_eq!(Screenplay::load(root.path()).document, imported);
+    let restored = Screenplay::load(root.path());
+    // IDs are local to an editing session and are reassigned when loading.
+    assert_eq!(
+        restored
+            .document
+            .blocks
+            .iter()
+            .map(|block| (block.kind, block.text.as_str()))
+            .collect::<Vec<_>>(),
+        imported
+            .blocks
+            .iter()
+            .map(|block| (block.kind, block.text.as_str()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(restored.document.cast, imported.cast);
     assert_eq!(fs::read_to_string(&path).unwrap(), source);
     screenplay.undo();
     assert_eq!(screenplay.document, original);
@@ -163,9 +178,26 @@ fn fountain_import_preserves_action_boundaries_dialogue_lines_and_literal_punctu
             let heading = format!("{prefix}{separator}ROOM - DAY");
             assert_eq!(
                 fountain::parse(&heading).unwrap(),
-                vec![(Element::Heading, heading)]
+                vec![(Element::Heading, heading.clone())]
+            );
+            assert_eq!(
+                fountain::parse(&format!("{heading}\nA line of action.")).unwrap(),
+                vec![(Element::Action, format!("{heading}\nA line of action."))]
             );
         }
+    }
+    for (cue, name) in [
+        ("EXTENSION", "EXTENSION"),
+        ("INT", "INT"),
+        ("@INT. ROOM - DAY", "INT. ROOM - DAY"),
+    ] {
+        assert_eq!(
+            fountain::parse(&format!("{cue}\nStill here.\n")).unwrap(),
+            vec![
+                (Element::Character, name.into()),
+                (Element::Dialogue, "Still here.".into())
+            ]
+        );
     }
 }
 

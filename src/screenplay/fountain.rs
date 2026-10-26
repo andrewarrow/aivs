@@ -98,7 +98,11 @@ pub(super) fn parse(source: &str) -> Result<Vec<(Element, String)>, String> {
         } else if line.starts_with('~') {
             append(&mut elements, Element::Action, &text[1..], !separated);
         } else if line.starts_with('@')
-            || (separated && next_nonempty && !line.starts_with('\\') && character_cue(&text))
+            || (separated
+                && next_nonempty
+                && !line.starts_with('\\')
+                && !scene_heading(&text)
+                && character_cue(&text))
         {
             let cue = text.trim_start_matches('@').trim_end_matches('^').trim();
             let name = cue.split('(').next().unwrap_or(cue).trim();
