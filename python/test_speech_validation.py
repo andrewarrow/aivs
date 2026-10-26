@@ -86,7 +86,18 @@ class ShotAudioValidationTests(unittest.TestCase):
         self.assertNotIn(text, " ".join(calls[1]))
         self.assertNotIn("--grammar", calls[1])
         self.assertIn("--no-gpu", calls[1])
+        self.assertEqual(calls[1][calls[1].index("--language") + 1], "auto")
         self.assertEqual(self.clip.read_bytes(), b"video fixture")
+
+    def test_segments_without_leading_spaces_do_not_merge_words(self):
+        segments = [{"text": "Hello", "offsets": {"from": 0, "to": 800}},
+                    {"text": "world.", "offsets": {"from": 900, "to": 1500}}]
+        _, run = self.fake_commands(segments)
+        with patch.object(speech, "check_available", return_value=self.identity), \
+                patch.object(speech.subprocess, "run", side_effect=run):
+            report = speech.validate_shot_audio(self.clip, "Hello world.")
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["transcript"], "Hello world.")
 
     def test_extra_tail_speech_raises_with_saved_difference_report(self):
         segments = [

@@ -1,4 +1,4 @@
-"""Independent local transcription checks for generated English dialogue.
+"""Independent local transcription checks for generated dialogue.
 
 Whisper receives only the generated audio, never the expected screenplay. This
 is a conservative recognition gate, not proof of intelligibility, speaker
@@ -24,9 +24,9 @@ import wave
 
 MODEL_REPO = "ggerganov/whisper.cpp"
 MODEL_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1"
-MODEL_FILENAME = "ggml-small.en.bin"
-MODEL_SHA256 = "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
-MODEL_BYTES = 487614201
+MODEL_FILENAME = "ggml-small.bin"
+MODEL_SHA256 = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+MODEL_BYTES = 487601967
 _TIMEOUT_SECONDS = 180
 _WORDS = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 
@@ -69,7 +69,7 @@ def check_available(root: Path | None = None) -> dict:
     return {"engine": "whisper.cpp", "executable": executable,
             "model": str(model), "model_repo": MODEL_REPO,
             "model_revision": MODEL_REVISION, "model_sha256": MODEL_SHA256,
-            "language": "en", "device": "CPU"}
+            "language": "auto", "device": "CPU"}
 
 
 def setup(root: Path | None = None, *, on_progress=None) -> dict:
@@ -144,7 +144,7 @@ def _read_transcript(raw: dict, duration: float) -> tuple[str, list[dict]]:
         # clipped estimate without treating it as an edit decision.
         segments.append({"text": segment["text"], "start_seconds": start / 1000,
                          "end_seconds": min(duration, end / 1000)})
-    return "".join(segment["text"] for segment in segments).strip(), segments
+    return " ".join(segment["text"].strip() for segment in segments).strip(), segments
 
 
 def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None = None,
@@ -187,7 +187,7 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
                 raise ValueError("Generated audio is empty.")
             command = [
                 identity["executable"], "--model", identity["model"], "--file", str(wav_file),
-                "--language", "en", "--no-gpu", "--threads", "4",
+                "--language", "auto", "--no-gpu", "--threads", "4",
                 "--output-json-full", "--output-file", str(raw_file.with_suffix("")),
                 "--no-prints", "--suppress-nst", "--temperature", "0", "--no-fallback",
             ]
@@ -199,6 +199,8 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
         transcript_file.write_text(transcript + "\n", encoding="utf-8")
         report.update(compare_transcript(expected_text, transcript))
         report.update(duration_seconds=duration, segments=segments)
+        if isinstance(raw.get("result"), dict):
+            report["detected_language"] = raw["result"].get("language")
         spoken_segments = [segment for segment in segments if normalize_words(segment["text"])]
         report["last_speech_end_seconds"] = max((segment["end_seconds"] for segment in spoken_segments), default=None)
         if report["last_speech_end_seconds"] is not None:

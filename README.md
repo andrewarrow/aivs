@@ -28,23 +28,27 @@ On startup AIVS checks the selected workspace before showing its controls:
   safetensors headers and lengths, and an actual Apple GPU calculation.
 
 Missing Python packages and model files are installed automatically after the
-token is present. If `uv` or FFmpeg is missing, setup installs them through an
+token is present. If `uv`, FFmpeg, or `whisper-cpp` is missing, setup installs them through an
 existing Homebrew installation. Without Homebrew, it shows an installation error
 and **Retry setup**. Python installation shows activity; model downloads report
 file/byte progress. Initial model setup downloads about **43 GB** and requires
 **50 GiB free**. Cached files are reused, and interrupted downloads can be retried.
+Speech verification also caches a checksum-verified Whisper small model (about
+488 MB) in `.cache/whisper`; transcription runs locally on the CPU.
 Errors keep setup locked. A ready installation skips the setup modal.
 
-Choose **Generate video** to perform the displayed screenplay as one continuous
-shot with native jointly generated speech at **1280×704 and 24 fps**. All spoken
-lines determine speech time; screenplay action paragraphs each reserve another
-three seconds for physical action, including the final walk. This is a timing
-heuristic, not a guarantee that the model completes every action. **Stop**
+Choose **Generate video** to plan and film the displayed screenplay as connected
+4–12 second shots with native jointly generated speech at **1280×704 and 24 fps**.
+The planner budgets the exact dialogue and source actions, with a brief settling
+beat instead of a mandatory silent ending. Timing remains a heuristic, not a
+guarantee that the model completes every action. **Stop**
 interrupts the Python process group, including FFmpeg. Closing AIVS also stops
 its active work.
 Each run saves its prompt, random seed, dialogue timing, runtime details, and
-status in `outputs/<timestamp>_<seed>/render.json`. Only a video that passes
-decoded-frame and audio/video timing checks is published as `video.mp4`.
+status in `outputs/<timestamp>_<seed>/render.json`. Screenplay renders check each
+take's recognized words against the source dialogue before continuing. The
+assembled video must also pass speech, decoded-frame, and audio/video timing
+checks before it is published as `video.mp4`.
 The progress bar estimates overall completion and time remaining using measured
 transformer blocks, denoising steps, and decoder tiles, with time reserved for
 encoding and validation. Successful runs save phase timings so later estimates
@@ -64,8 +68,24 @@ Each shot prompt must include its essential opening state and sound through the
 end of the take; the separate start/end notes are for continuity review and are
 not passed to the model. Python checks source dialogue, beat order, duration,
 and token limits. Story-specific fixes belong in the director instructions,
-rather than Python rules for particular objects or actions. These checks do not
-verify the generated performance; picture and speech still need review.
+rather than Python rules for particular objects or actions.
+
+Within a scene, every shot after the first starts from the previous shot's final
+decoded frame. The planner must preserve that opening composition; a new camera
+angle must develop through a continuous move. This carries actual clothes,
+faces, positions, and props into the next generation. New scenes reset the frame
+reference. This backend cannot independently lock each person's identity across
+new locations, and first-frame guidance cannot guarantee freedom from later drift.
+
+Speech verification sends only generated audio to Whisper, never the expected
+script. Missing, substituted, repeated, or extra recognized words stop the run;
+completed takes remain available for review. Each shot and the final assembly
+save `speech-recognition.json`, `speech-transcript.txt`, and
+`speech-validation.json`. Missing recognition tools or weights also stop the run
+before video inference. Recognition can mishear valid dialogue or miss
+unintelligible sounds; an exact transcript match is not proof of a flawless
+performance, correct speaker, or lip synchronization. Picture and sound still
+need review. The raw-prompt CLI path retains its existing structural checks.
 
 Completed videos appear inside AIVS with native macOS playback controls for
 play/pause, seeking, volume, and fullscreen, including the generated audio.
@@ -118,11 +138,9 @@ Python resolves the assigned `@name` references and adds appearance and voice
 descriptions, with explicit performer-to-role bindings in the render prompt.
 GUI renders do not infer cast from bare names in the script, even when a role
 shares a saved character's name.
-The GUI renders from these saved descriptions, with a fixed wide camera showing
-both actors head to toe beside the whole car, with room to move and walk. Camera
-instructions hold the composition while allowing actors to change position.
-The current scene reserves 32 seconds for its dialogue and action, rather than
-the 14-second speech-only estimate. No joint image is required. Cast resolution
+The GUI uses the saved descriptions for the first shot of each scene, then carries
+the previous frame through subsequent shots. The director chooses framing that
+keeps the source actions visible. No joint image is required. Cast resolution
 has no two-character limit. The renderer's image inputs anchor complete frames, rather than separate
 per-person identities, so the GUI does not feed solo portraits into an ensemble
 scene. Saved photos remain available for a future identity-conditioning backend;
@@ -152,7 +170,7 @@ review. Setup, commands, and known limitations are documented there; the broader
 implementation plan is in [PLAN.md](PLAN.md).
 Alternate renderers, speech synthesis, and the remaining
 Hunter menu options have not been migrated. Generation uses local cached models;
-file checks do not establish speech accuracy or lip synchronization.
+structural file checks do not establish performance quality or lip synchronization.
 The Python sources currently ship in this checkout; keep `python/` alongside the
 source when building. `.env`, `.venv`, `.cache`, and generated outputs are ignored
 by Git. No runtime path points back to the Hunter checkout.
