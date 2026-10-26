@@ -57,6 +57,16 @@ diagnostics as they arrive, with periodic updates during quiet stretches and
 visible validation retries. Raw Codex events and diagnostics are saved as they
 arrive in the run's output directory, including when planning times out or stops.
 
+The director instructions live in `python/shooting-script-instructions.txt`.
+Codex resolves physical staging, prop handoffs, dialogue timing, and quiet
+reactions there, then reviews the plan for continuity before returning it.
+Each shot prompt must include its essential opening state and sound through the
+end of the take; the separate start/end notes are for continuity review and are
+not passed to the model. Python checks source dialogue, beat order, duration,
+and token limits. Story-specific fixes belong in the director instructions,
+rather than Python rules for particular objects or actions. These checks do not
+verify the generated performance; picture and speech still need review.
+
 Completed videos appear inside AIVS with native macOS playback controls for
 play/pause, seeking, volume, and fullscreen, including the generated audio.
 **Show files** opens the output directory. Playback pauses when its preview is
