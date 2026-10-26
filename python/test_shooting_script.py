@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import shooting_script
 from shooting_script import create_shooting_script, load_shooting_script, parse_request, save_shooting_script, validate_shooting_script
 
 
@@ -88,16 +89,21 @@ I saw it too.
         self.assertEqual(beats[0]["cue"], "under her breath")
         silent = {"version": 1, "cast": [], "script": "EXT. ROOFTOP - DAWN\n\nA kite catches wind.\n\nIt rises over the city.\n"}
         self.assertEqual([b["kind"] for b in parse_request(silent, [])["beats"]], ["action", "action"])
+        missing = {**request, "script": "INT. OBSERVATORY - DAY\n\nLENA\nThe lens is cracked.\n"}
+        with self.assertRaisesRegex(ValueError, "no cast binding"):
+            parse_request(missing, PROFILES)
 
     def test_cast_errors(self):
         for cast in ([{"role": "MARA", "character": "missing"}],
-                     [{"role": "MARA", "character": "rhea"}, {"role": "mara", "character": "omar"}],
-                     [{"role": "MARA", "character": "rhea"}, {"role": "TOMAS", "character": "rhea"}]):
+                     [{"role": "MARA", "character": "rhea"}, {"role": "mara", "character": "omar"}]):
             with self.subTest(cast=cast), self.assertRaises(ValueError):
                 parse_request({**REQUEST, "cast": cast}, PROFILES)
+        shared = {**REQUEST, "cast": [{"role": "MARA", "character": "rhea"},
+                                      {"role": "TOMAS", "character": "rhea"}]}
+        self.assertEqual(len(parse_request(shared, [PROFILES[0]])["cast"]), 2)
 
     def test_repeated_heading_and_transition_make_new_scene_context(self):
-        request = {"version": 1, "cast": [], "script": """INT. HALL - DAY
+        request = {"version": 1, "cast": [], "script": """INT./EXT. HALL - DAY
 
 A door opens.
 
@@ -105,13 +111,15 @@ CUT TO:
 
 A shadow crosses the wall.
 
-INT. HALL - DAY
+EXT./INT. HALL - DAY
 
 The door closes.
 """}
         beats = parse_request(request, [])["beats"]
         self.assertEqual([beat["scene_id"] for beat in beats], [1, 2, 3])
         self.assertEqual(beats[1]["transition"], "CUT TO:")
+        self.assertEqual(beats[0]["scene"], "INT./EXT. HALL - DAY")
+        self.assertEqual(beats[2]["scene"], "EXT./INT. HALL - DAY")
 
 
 class ValidationTests(unittest.TestCase):
@@ -119,9 +127,11 @@ class ValidationTests(unittest.TestCase):
         artifact = validate_shooting_script(candidate(), REQUEST, PROFILES, token_counter=lambda s: len(s.split()))
         self.assertEqual(artifact["seconds"], 18)
         self.assertEqual(artifact["source"]["beats"][3]["text"], "Then we have time.")
-        self.assertIn('MARA, quietly, says, "The seedlings are alive."', artifact["shots"][0]["prompt"])
-        self.assertIn("MARA: A woman with copper hair", artifact["shots"][0]["prompt"])
-        self.assertIn("TOMAS voice: A warm, quick voice", artifact["shots"][2]["prompt"])
+        self.assertIn('MARA (quietly) says, "The seedlings are alive."', artifact["shots"][0]["prompt"])
+        self.assertTrue(artifact["shots"][0]["prompt"].startswith("In the glasshouse Mara lifts"))
+        self.assertIn("MARA looks like a woman with copper hair", artifact["shots"][0]["prompt"])
+        self.assertIn("TOMAS speaks with a warm, quick voice", artifact["shots"][2]["prompt"])
+        self.assertNotIn("MARA:", artifact["shots"][0]["prompt"])
         self.assertTrue(artifact["fade_out"])
 
     def test_missing_reordered_duplicate_beats(self):
@@ -179,7 +189,7 @@ class CodexTests(unittest.TestCase):
     def _fake(self, directory: Path, *, fail: bool = False) -> Path:
         path = directory / "fake-codex"
         path.write_text("""#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, sys, time
 args = sys.argv
 assert args[1] == 'exec'
 assert '--output-schema' in args and '--ephemeral' in args and '--json' in args
@@ -187,6 +197,20 @@ assert '--sandbox' in args and args[args.index('--sandbox')+1] == 'read-only'
 assert 'approval_policy=never' in args
 prompt = sys.stdin.read()
 assert 'Create a shooting plan' in prompt
+if os.environ.get('FAKE_CODEX_PID'):
+    pathlib.Path(os.environ['FAKE_CODEX_PID']).write_text(str(os.getpid()))
+print(json.dumps({'type': 'turn.started'}), flush=True)
+print(json.dumps({'type': 'item.completed', 'item': {
+    'type': 'reasoning', 'text': 'Mapping dialogue to shots.'}}), flush=True)
+sys.stderr.write('Checking shot continuity.\\n' + 'diagnostic ' * 10000)
+sys.stderr.flush()
+if os.environ.get('FAKE_CODEX_GATE'):
+    deadline = time.monotonic() + 5
+    while not pathlib.Path(os.environ['FAKE_CODEX_GATE']).exists():
+        if time.monotonic() >= deadline:
+            sys.exit('activity was buffered instead of streamed')
+        time.sleep(0.01)
+time.sleep(float(os.environ.get('FAKE_CODEX_PAUSE', '0')))
 if os.environ.get('FAKE_CODEX_FAIL') == '1':
     print('login required', file=sys.stderr)
     sys.exit(7)
@@ -195,6 +219,8 @@ response = json.loads(pathlib.Path(os.environ['FAKE_CODEX_RESPONSE']).read_text(
 if os.environ.get('FAKE_CODEX_BAD_FIRST') == '1' and 'Correct this validation error:' not in prompt:
     response['shots'][0]['beat_ids'] = [2]
 output.write_text(json.dumps(response))
+print(json.dumps({'type': 'item.completed', 'item': {
+    'type': 'agent_message', 'text': json.dumps(response)}}), flush=True)
 print(json.dumps({'type': 'turn.completed'}))
 """, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -217,6 +243,70 @@ print(json.dumps({'type': 'turn.completed'}))
             self.assertTrue((run / "shooting-script-request-1.txt").is_file())
             self.assertTrue((run / "shooting-script-response-1.json").is_file())
 
+    def test_activity_and_both_logs_arrive_before_codex_exits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            response = base / "response.json"
+            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            fake = self._fake(base)
+            run = base / "run"
+            gate = base / "continue"
+            messages = []
+
+            def activity(message):
+                messages.append(message)
+                if "Mapping dialogue" in message:
+                    self.assertIn("Mapping dialogue", (run / "shooting-script-events-1.jsonl").read_text())
+                if "Checking shot continuity" in message:
+                    self.assertIn("Checking shot continuity", (run / "shooting-script-errors-1.txt").read_text())
+                if not gate.exists() and any("Mapping dialogue" in line for line in messages) \
+                        and any("Checking shot continuity" in line for line in messages):
+                    self.assertFalse((run / "shooting-script-response-1.json").exists())
+                    gate.touch()
+
+            with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_GATE": str(gate)}):
+                plan = create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity=activity)
+            self.assertEqual(plan["seconds"], 18)
+            self.assertTrue(any('"prompt_template"' in message for message in messages))
+            self.assertIn("Shooting script ready: 3 shots, 18 seconds.", messages)
+            self.assertEqual((run / "shooting-script-errors-1.txt").read_text().count("diagnostic "), 10000)
+
+    def test_quiet_codex_emits_activity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            response = base / "response.json"
+            response.write_text(json.dumps(candidate()), encoding="utf-8")
+            fake = self._fake(base)
+            messages = []
+            with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_PAUSE": "0.6"}), \
+                    patch.object(shooting_script, "_CODEX_ACTIVITY_INTERVAL", 0.05):
+                create_shooting_script(REQUEST, PROFILES, base / "run", executable=fake, on_activity=messages.append)
+            self.assertTrue(any("still preparing" in message and "elapsed" in message for message in messages))
+
+    def test_timeout_and_interruption_reap_codex_and_keep_partial_logs(self):
+        for interrupt in (False, True):
+            with self.subTest(interrupt=interrupt), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                fake = self._fake(base)
+                pid = base / "pid"
+                run = base / "run"
+
+                def activity(message):
+                    if interrupt and "Mapping dialogue" in message:
+                        raise KeyboardInterrupt()
+
+                with patch.dict(os.environ, {"FAKE_CODEX_PID": str(pid), "FAKE_CODEX_PAUSE": "10"}), \
+                        patch.object(shooting_script, "_CODEX_TIMEOUT_SECONDS", 0.5):
+                    if interrupt:
+                        with self.assertRaises(KeyboardInterrupt):
+                            create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity=activity)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "timed out"):
+                            create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity=activity)
+                self.assertIn("Mapping dialogue", (run / "shooting-script-events-1.jsonl").read_text())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(pid.read_text()), 0)
+
     def test_codex_failure_is_explicit(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -236,11 +326,14 @@ print(json.dumps({'type': 'turn.completed'}))
             response.write_text(json.dumps(candidate()), encoding="utf-8")
             fake = self._fake(base)
             run = base / "run"
+            messages = []
             with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_BAD_FIRST": "1"}):
-                plan = create_shooting_script(REQUEST, PROFILES, run, executable=fake)
+                plan = create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity=messages.append)
             self.assertEqual(plan["seconds"], 18)
             self.assertTrue((run / "shooting-script-request-2.txt").is_file())
             self.assertIn("Correct this validation error:", (run / "shooting-script-request-2.txt").read_text())
+            self.assertTrue(any("needs a correction" in message for message in messages))
+            self.assertIn("Retrying shooting script with Codex (attempt 2/2).", messages)
 
 
 if __name__ == "__main__":

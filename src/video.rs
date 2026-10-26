@@ -9,7 +9,7 @@ use std::{
         mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/video.py");
@@ -353,6 +353,11 @@ fn read_output(
                             });
                         }
                     }
+                    "activity" => {
+                        if let Some(message) = value["message"].as_str() {
+                            let _ = sender.send(Event::Log(message.to_owned()));
+                        }
+                    }
                     "ready" => output.ready = true,
                     "needs_token" => output.needs_token = true,
                     "complete" => output.output = value["output"].as_str().map(PathBuf::from),
@@ -376,6 +381,7 @@ pub struct VideoWorkspace {
     status: String,
     fraction: Option<f32>,
     remaining_seconds: Option<f64>,
+    started_at: Instant,
     logs: VecDeque<String>,
     error: Option<String>,
     output: Option<PathBuf>,
@@ -401,6 +407,7 @@ impl VideoWorkspace {
             status: "Checking local setup…".into(),
             fraction: None,
             remaining_seconds: None,
+            started_at: Instant::now(),
             logs: VecDeque::new(),
             error: None,
             output: None,
@@ -418,6 +425,7 @@ impl VideoWorkspace {
         self.logs.clear();
         self.fraction = None;
         self.remaining_seconds = None;
+        self.started_at = Instant::now();
         self.stopping = false;
         self.rendering = matches!(task, Task::Render(_));
         if !self.rendering {
@@ -466,9 +474,6 @@ impl VideoWorkspace {
                 self.remaining_seconds = remaining_seconds;
             }
             Event::Log(line) => {
-                if self.rendering && self.fraction.is_none() {
-                    self.status.clone_from(&line);
-                }
                 self.logs.push_back(line);
                 if self.logs.len() > 250 {
                     self.logs.pop_front();
@@ -612,8 +617,10 @@ impl VideoWorkspace {
                     ui.add(egui::Label::new(message).wrap());
                 }
                 ui.add_space(8.0);
-                if self.rendering {
-                    let fraction = self.fraction.unwrap_or(0.0).min(0.99);
+                if self.rendering
+                    && let Some(fraction) = self.fraction
+                {
+                    let fraction = fraction.min(0.99);
                     let text = self.remaining_seconds.map_or_else(
                         || "Estimating time remaining…".into(),
                         |seconds| {
@@ -624,18 +631,31 @@ impl VideoWorkspace {
                             )
                         },
                     );
-                    ui.add(
-                        egui::ProgressBar::new(fraction)
-                            .animate(self.fraction.is_none())
-                            .text(text),
-                    );
+                    ui.add(egui::ProgressBar::new(fraction).text(text));
                 }
-                if self.stopping && self.rendering {
+                if self.rendering && self.fraction.is_none() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        let status = if self.stopping {
+                            "Stopping…"
+                        } else {
+                            &self.status
+                        };
+                        ui.add(
+                            egui::Label::new(format!(
+                                "{status} · {} elapsed",
+                                remaining_time(self.started_at.elapsed().as_secs() as f64)
+                            ))
+                            .wrap(),
+                        );
+                    });
+                } else if self.stopping && self.rendering {
                     ui.label("Stopping…");
                 } else if !self.status.is_empty() {
                     ui.add(egui::Label::new(&self.status).wrap());
                 }
                 self.error_ui(ui);
+                self.activity_ui(ui, 240.0);
                 if let Some(path) = &self.output {
                     ui.add_space(8.0);
                     let width = ui.available_width();
@@ -663,7 +683,6 @@ impl VideoWorkspace {
                             .selectable(true),
                     );
                 }
-                self.activity_ui(ui, 240.0);
             });
     }
 
@@ -675,17 +694,22 @@ impl VideoWorkspace {
 
     fn activity_ui(&self, ui: &mut egui::Ui, max_height: f32) {
         if !self.logs.is_empty() {
-            ui.collapsing("Activity", |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("video_activity")
-                    .max_height(max_height)
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for line in &self.logs {
-                            ui.add(egui::Label::new(egui::RichText::new(line).monospace()).wrap());
-                        }
-                    });
-            });
+            egui::CollapsingHeader::new("Activity")
+                .id_salt(("video_activity", self.started_at))
+                .default_open(self.rendering)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("video_activity")
+                        .max_height(max_height)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &self.logs {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(line).monospace()).wrap(),
+                                );
+                            }
+                        });
+                });
         }
     }
 

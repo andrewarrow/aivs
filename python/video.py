@@ -197,7 +197,8 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
             if shooting_script is not None:
                 plan = load_shooting_script(shooting_script, request, profiles, token_counter=count_tokens)
             else:
-                plan = create_shooting_script(request, profiles, run_dir, token_counter=count_tokens)
+                plan = create_shooting_script(request, profiles, run_dir, token_counter=count_tokens,
+                                              on_activity=lambda message: emit("activity", message=message))
             save_shooting_script(plan, run_dir)
             report.update(seconds=plan["seconds"],
                           planning_seconds=round(time.monotonic() - started, 3),

@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import subprocess
 import tempfile
@@ -27,6 +28,8 @@ _WORDS = re.compile(r"\b[\w]+(?:['’][\w]+)*\b", re.UNICODE)
 _MAX_SCRIPT = 100_000
 _MAX_TEXT = 4_000
 _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id")
+_CODEX_TIMEOUT_SECONDS = 180
+_CODEX_ACTIVITY_INTERVAL = 5
 
 
 def _json(value: object) -> str:
@@ -190,18 +193,22 @@ def _line_text(beat: dict) -> str:
 
 def _cast_context(source: dict) -> str:
     by_id = {profile["id"]: profile for profile in source["characters"]}
+
+    def phrase(value: str) -> str:
+        value = value.strip().rstrip(".")
+        value = value[:1].lower() + value[1:]
+        if not re.match(r"^(?:a|an|the)\s", value, re.I):
+            value = ("an " if value[:1] in "aeiou" else "a ") + value
+        return value
+
     parts = []
     for binding in source["cast"]:
         profile = by_id[binding["character"]]
         role = binding["role"]
-        appearance = profile["description"].strip().rstrip(".")
-        appearance = appearance[:1].lower() + appearance[1:]
-        parts.append(f"{role} looks like {appearance}")
+        parts.append(f"{role} looks like {phrase(profile['description'])}")
         voice = (profile.get("voice_description") or "").strip()
         if voice:
-            voice = voice.rstrip(".")
-            voice = voice[:1].lower() + voice[1:]
-            parts.append(f"{role} speaks with {voice}")
+            parts.append(f"{role} speaks with {phrase(voice)}")
     return ". ".join(parts).rstrip(". ") + ". " if parts else ""
 
 
@@ -273,7 +280,10 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
         if re.search(r"\b(?:says|speaks|talks|whispers|shouts|mutters|asks|replies|exclaims)\b", template, re.I):
             raise ValueError(f"Shot {index} contains unsourced speech direction; use dialogue placeholders.")
         action_prompt = _PLACEHOLDER.sub(lambda m: _line_text(by_id[int(m.group(1))]), template)
-        prompt = (action_prompt.rstrip(". ") + ". " + _cast_context(source)
+        action_prompt = action_prompt.rstrip()
+        if action_prompt[-1] not in ".!?":
+            action_prompt += "."
+        prompt = (action_prompt + " " + _cast_context(source)
                   + "Only the current speaker moves their mouth. No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
@@ -350,9 +360,11 @@ def _instruction(source: dict, correction: str | None) -> str:
             "Use 4-12 seconds per shot. Cover dialogue time at 160 words/minute, plus at least one second for each action beat. "
             "Write short, self-contained, chronological present-tense visual prompts with explicit body movement and object interaction. "
             "Map each ROLE directly to its cast character, without introducing a second performer identity. "
-            "The application prepends the exact saved appearance and voice details; do not repeat those details in your templates. "
+            "The application appends saved appearance and voice details as prose after your visual action. Do not repeat cast descriptions, actor ages, or voice details in templates. "
+            "Saved cast appearance overrides ages or appearance written in the screenplay. "
             "Carry positions, object possession and state, wardrobe, and camera through start_state and end_state. "
-            "No titles, captions, still posing, new plot, new speech, or raw quoted dialogue. "
+            "Do not write words such as caption, subtitle, title card, fade, says, speaks, talks, whispers, shouts, mutters, asks, replies, or exclaims in templates, even in negative instructions. "
+            "Do not include quoted words, raw dialogue, still posing, new plot, or new speech. The application appends mouth and overlay constraints itself. "
             "Put exactly one {{line_BEATID}} placeholder for each dialogue beat in its shot, in order; the application fills the exact source words. "
             "Reserve at least three seconds for the final physical action before any fade; fade is applied after assembly. "
             "Infer only minimal movement needed for continuity. Keep each prompt under about 200 words.\n\n"
@@ -369,13 +381,100 @@ def _executable(executable) -> str:
     return resolved
 
 
-def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *, executable=None, token_counter=None) -> dict:
+def _codex_activity(line: str) -> str | None:
+    """Turn CLI JSONL into readable activity; keep the raw events on disk."""
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return f"Codex: {line}" if line.strip() else None
+    if not isinstance(event, dict):
+        return None
+    kind = event.get("type")
+    if kind == "thread.started":
+        return "Codex connected."
+    if kind == "turn.started":
+        return "Codex is preparing shot staging and camera direction."
+    if kind == "turn.completed":
+        return "Codex response received."
+    if kind in ("error", "turn.failed"):
+        error = event.get("error")
+        message = error.get("message") if isinstance(error, dict) else error
+        return f"Codex: {event.get('message') or message or 'Request failed.'}"
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return None
+    if kind == "item.completed":
+        text = item.get("text") or item.get("aggregated_output")
+        if isinstance(text, str) and text.strip():
+            return f"Codex: {text}"
+    if kind == "item.started" and item.get("type") == "command_execution":
+        return f"Codex running: {item.get('command', '')}"
+    return None
+
+
+def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, on_activity):
+    """Drain both pipes while Codex runs, including during otherwise quiet turns."""
+    with tempfile.TemporaryFile() as prompt, events_path.open("wb") as events, \
+            errors_path.open("wb") as errors, selectors.DefaultSelector() as selector:
+        # A file avoids blocking on a large screenplay before the output is drained.
+        prompt.write(instruction.encode("utf-8"))
+        prompt.seek(0)
+        process = subprocess.Popen(cmd, stdin=prompt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+        started = last_activity = time.monotonic()
+        pending = {True: b"", False: b""}
+
+        def publish(data, protocol):
+            nonlocal last_activity
+            line = data.decode("utf-8", errors="replace").rstrip("\r")
+            message = _codex_activity(line) if protocol else (f"Codex: {line}" if line.strip() else None)
+            if message:
+                on_activity(message)
+                last_activity = time.monotonic()
+
+        try:
+            selector.register(process.stdout, selectors.EVENT_READ, (events, True))
+            selector.register(process.stderr, selectors.EVENT_READ, (errors, False))
+            while selector.get_map() or process.poll() is None:
+                now = time.monotonic()
+                if now >= deadline:
+                    raise subprocess.TimeoutExpired(cmd, _CODEX_TIMEOUT_SECONDS)
+                for key, _ in selector.select(min(0.25, deadline - now)):
+                    log, protocol = key.data
+                    data = os.read(key.fd, 65536)
+                    if not data:
+                        selector.unregister(key.fileobj)
+                        if pending[protocol]:
+                            publish(pending[protocol], protocol)
+                            pending[protocol] = b""
+                        continue
+                    log.write(data)
+                    log.flush()
+                    lines = (pending[protocol] + data).split(b"\n")
+                    pending[protocol] = lines.pop()
+                    for line in lines:
+                        publish(line, protocol)
+                now = time.monotonic()
+                if now - last_activity >= _CODEX_ACTIVITY_INTERVAL and process.poll() is None:
+                    on_activity(f"Codex is still preparing the shooting script ({int(now - started)}s elapsed).")
+                    last_activity = now
+            return process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+            process.stderr.close()
+
+
+def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *, executable=None,
+                           token_counter=None, on_activity=None) -> dict:
     """Ask the signed-in local Codex CLI for staging, with one validation retry."""
     source = parse_request(request, profiles)
     codex = _executable(executable)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 180
+    deadline = time.monotonic() + _CODEX_TIMEOUT_SECONDS
+    activity = on_activity or (lambda message: None)
     correction = None
     with tempfile.TemporaryDirectory(prefix="aivs-shooting-") as temp:
         temp_path = Path(temp)
@@ -389,21 +488,24 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
             cmd = [codex, "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
                    "-c", "approval_policy=never", "-C", temp, "--output-schema", str(schema_path),
                    "--output-last-message", str(response_path), "--json", "-"]
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError("Codex shooting-script translation timed out after 180 seconds.")
+            activity("Starting Codex to prepare the shooting script." if attempt == 1
+                     else "Retrying shooting script with Codex (attempt 2/2).")
+            events_path = run_dir / f"shooting-script-events-{attempt}.jsonl"
+            errors_path = run_dir / f"shooting-script-errors-{attempt}.txt"
             try:
-                result = subprocess.run(cmd, input=instruction, text=True, capture_output=True,
-                                        cwd=temp, timeout=remaining, check=False)
+                returncode = _stream_codex(cmd, instruction, cwd=temp, deadline=deadline,
+                                           events_path=events_path, errors_path=errors_path,
+                                           on_activity=activity)
             except subprocess.TimeoutExpired as exc:
-                raise RuntimeError("Codex shooting-script translation timed out after 180 seconds.") from exc
-            (run_dir / f"shooting-script-events-{attempt}.jsonl").write_text(result.stdout, encoding="utf-8")
-            (run_dir / f"shooting-script-errors-{attempt}.txt").write_text(result.stderr, encoding="utf-8")
+                raise RuntimeError(f"Codex shooting-script translation timed out after {_CODEX_TIMEOUT_SECONDS:g} seconds.") from exc
             raw = response_path.read_text(encoding="utf-8") if response_path.is_file() else ""
             (run_dir / f"shooting-script-response-{attempt}.json").write_text(raw, encoding="utf-8")
-            if result.returncode:
-                detail = (result.stderr or result.stdout or "Codex produced no details.").strip()[-1000:]
-                raise RuntimeError(f"Codex shooting-script translation failed (exit {result.returncode}). Check login and CLI setup. {detail}")
+            if returncode:
+                detail = (errors_path.read_text(encoding="utf-8", errors="replace")
+                          or events_path.read_text(encoding="utf-8", errors="replace")
+                          or "Codex produced no details.").strip()[-1000:]
+                raise RuntimeError(f"Codex shooting-script translation failed (exit {returncode}). Check login and CLI setup. {detail}")
+            activity("Validating shooting script.")
             try:
                 candidate = json.loads(raw)
                 artifact = validate_shooting_script(candidate, request, profiles, token_counter=token_counter)
@@ -411,7 +513,9 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
                 correction = str(exc)
                 if attempt == 2:
                     raise ValueError(f"Codex returned an invalid shooting script after one correction: {correction}") from exc
+                activity(f"Shooting script needs a correction: {correction}")
                 continue
             save_shooting_script(artifact, run_dir)
+            activity(f"Shooting script ready: {len(artifact['shots'])} shots, {artifact['seconds']} seconds.")
             return artifact
     raise AssertionError("Unreachable shooting-script translation state")

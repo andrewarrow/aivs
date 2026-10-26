@@ -51,6 +51,12 @@ encoding and validation. Successful runs save phase timings so later estimates
 adapt to this Mac. Estimates can change with GPU load and cache performance;
 100% is reserved for a validated result.
 
+While Codex prepares the shooting script, an elapsed timer and spinner show that
+the job is active. Activity opens automatically and displays Codex messages and
+diagnostics as they arrive, with periodic updates during quiet stretches and
+visible validation retries. Raw Codex events and diagnostics are saved as they
+arrive in the run's output directory, including when planning times out or stops.
+
 Completed videos appear inside AIVS with native macOS playback controls for
 play/pause, seeking, volume, and fullscreen, including the generated audio.
 **Show files** opens the output directory. Playback pauses when its preview is

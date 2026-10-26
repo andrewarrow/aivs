@@ -126,10 +126,11 @@ class RenderTests(unittest.TestCase):
         request = screenplay_request()
         captured = {}
 
-        def translate(actual_request, profiles, run_dir, *, token_counter):
+        def translate(actual_request, profiles, run_dir, *, token_counter, on_activity):
             captured.update(request=actual_request, profiles=profiles, run_dir=run_dir)
             self.assertEqual(actual_request, request)
             self.assertEqual(token_counter("Mara turns the dial"), 4)
+            on_activity("Mapping dialogue to shots.")
             captured["plan"] = validated_screenplay_plan(
                 actual_request, profiles, token_counter=token_counter
             )
@@ -164,7 +165,7 @@ class RenderTests(unittest.TestCase):
                 plan["shots"][0]["prompt_template"],
                 "The receiver clicks as the dial reaches its stop. {{line_2}}",
             )
-            self.assertIn('Vale, says, "The signal is below."', plan["shots"][0]["prompt"])
+            self.assertIn('Vale says, "The signal is below."', plan["shots"][0]["prompt"])
 
             run_dir = next((Path(directory) / "outputs").iterdir())
             report = json.loads((run_dir / "render.json").read_text())
@@ -182,6 +183,7 @@ class RenderTests(unittest.TestCase):
             self.assertEqual((run_dir / "shooting-script.txt").is_file(), True)
             events = [json.loads(line.removeprefix("AIVS_EVENT ")) for line in out.getvalue().splitlines()]
             self.assertIn("render_progress", [event["event"] for event in events])
+            self.assertIn({"event": "activity", "message": "Mapping dialogue to shots."}, events)
             self.assertEqual(events[-1]["event"], "complete")
 
     def test_plan_only_saves_readable_artifacts_without_environment_check_or_renderer(self):
@@ -192,7 +194,7 @@ class RenderTests(unittest.TestCase):
                 patch.object(video, "prompt_token_counter", return_value=lambda text: len(text.split())), \
                 patch.object(
                     video, "create_shooting_script",
-                    side_effect=lambda request, profiles, run_dir, *, token_counter:
+                    side_effect=lambda request, profiles, run_dir, *, token_counter, on_activity:
                     validated_screenplay_plan(request, profiles, token_counter=token_counter),
                 ), \
                 patch.object(video, "render_shooting_script") as renderer, \

@@ -105,6 +105,71 @@ AIVS_EVENT {"event":"render_progress","label":"Validating","fraction":1,"remaini
 }
 
 #[test]
+fn planning_activity_is_visible_without_replacing_the_phase_or_inventing_progress() {
+    let (sender, events) = mpsc::channel();
+    let stream = br#"AIVS_EVENT {"event":"progress","label":"Preparing shooting script with Codex"}
+AIVS_EVENT {"event":"activity","message":"Codex: Mapping dialogue to shots."}
+"#;
+    read_output(std::io::Cursor::new(stream.to_vec()), sender, true)
+        .join()
+        .unwrap();
+    for (width, height) in [
+        (390.0, 844.0),
+        (768.0, 1024.0),
+        (1280.0, 800.0),
+        (1440.0, 900.0),
+    ] {
+        let mut workspace = VideoWorkspace::ready_for_test(PathBuf::from("/workspace"));
+        workspace.rendering = true;
+        workspace.started_at = Instant::now() - Duration::from_secs(65);
+        workspace.output = Some(PathBuf::from("/workspace/previous-video.mp4"));
+        workspace.handle_event(Event::Progress(
+            "Preparing shooting script with Codex".into(),
+            None,
+        ));
+        workspace.handle_event(Event::Log("Codex: Mapping dialogue to shots.".into()));
+        assert_eq!(workspace.status, "Preparing shooting script with Codex");
+        assert!(workspace.fraction.is_none());
+        let ctx = egui::Context::default();
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+        let mut output = None;
+        for _ in 0..3 {
+            output = Some(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(bounds),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default()
+                        .show(ui, |ui| workspace.ui(ui, &Ok("screenplay".into())));
+                    assert!(ui.min_rect().right() <= bounds.right() + 1.0);
+                },
+            ));
+        }
+        let output = output.unwrap();
+        for expected in [
+            "Preparing shooting script with Codex · 1m 5s elapsed",
+            "Codex: Mapping dialogue to shots.",
+        ] {
+            let visible = output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::epaint::Shape::Text(text)
+                    if text.galley.text() == expected && text.visual_bounding_rect().intersects(shape.clip_rect))
+            });
+            assert!(visible, "{expected} should be visible at {width}×{height}");
+        }
+    }
+    let mut workspace = VideoWorkspace::ready_for_test(PathBuf::from("/workspace"));
+    for event in events.try_iter() {
+        workspace.handle_event(event);
+    }
+    assert_eq!(
+        workspace.logs.back().unwrap(),
+        "Codex: Mapping dialogue to shots."
+    );
+    assert_eq!(workspace.status, "Preparing shooting script with Codex");
+}
+
+#[test]
 fn completed_video_has_a_visible_player_at_supported_sizes() {
     for (width, height) in [
         (390.0, 844.0),
@@ -247,6 +312,7 @@ video.prompt_token_counter = lambda: (lambda text: len(text.split()))
 def create(request, profiles, run_dir, **options):
     assert request == expected_request
     assert profiles == expected_profiles
+    options['on_activity']('Codex: Mapping dialogue to shots.')
     pathlib.Path(run_dir, 'shooting-script.json').write_text('{}')
     return {'version': 1, 'source_sha256': 'test', 'seconds': 8, 'fade_out': True, 'shots': [
         {'seconds': 8, 'beat_ids': [1], 'prompt_template': 'A traveler turns toward the road.',
@@ -300,8 +366,12 @@ raise SystemExit(video.main())
         args,
         ["-u", SCRIPT, "render", "--screenplay-json", &request]
     );
+    let events: Vec<_> = events.try_iter().collect();
+    assert!(events.iter().any(
+        |event| matches!(event, Event::Log(line) if line == "Codex: Mapping dialogue to shots.")
+    ));
     let path = events
-        .try_iter()
+        .into_iter()
         .find_map(|event| match event {
             Event::Complete(path) => Some(path),
             _ => None,
