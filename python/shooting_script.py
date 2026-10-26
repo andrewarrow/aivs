@@ -18,7 +18,7 @@ import tempfile
 import time
 
 
-_HEADING = re.compile(r"^(?:INT\.?|EXT\.?|INT/EXT\.?|EXT/INT\.?|I/E\.?|EST\.?)\s+", re.I)
+_HEADING = re.compile(r"^(?:INT\.?\s*/\s*EXT\.?|EXT\.?\s*/\s*INT\.?|I\s*/\s*E\.?|INT\.?|EXT\.?|EST\.?)\s+", re.I)
 _TRANSITION = re.compile(r"^(?:FADE\s+(?:IN|OUT)\.?|CUT TO:|DISSOLVE TO:|SMASH CUT TO:|THE END\.?|[A-Z][A-Z\s]+ TO:)\s*$", re.I)
 _INLINE = re.compile(r"^(?P<role>[\w][\w .'-]*?)(?:\s*\((?P<cue>[^\n()]*)\))?\s*:\s*[\"“](?P<speech>.*?)[\"”]\s*$")
 _ROLE = re.compile(r"^[\w][\w .'-]*(?:\s*\([^\n()]*\))?$")
@@ -79,18 +79,16 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
     known = _profile_map(profiles)
     bindings: list[dict] = []
     roles: dict[str, str] = {}
-    used_characters: set[str] = set()
     for item in cast:
         if not isinstance(item, dict) or set(item) != {"role", "character"}:
             raise ValueError("Each cast binding needs role and character only.")
         role = _bounded(item["role"], "Cast role", 128)
         char_id = _bounded(item["character"], "Cast character", 128)
-        if role.casefold() in roles or char_id in used_characters:
-            raise ValueError(f"Duplicate cast role or character: {role}.")
+        if role.casefold() in roles:
+            raise ValueError(f"Duplicate cast role: {role}.")
         if char_id not in known:
             raise ValueError(f"Unknown cast character: {char_id}.")
         roles[role.casefold()] = role
-        used_characters.add(char_id)
         bindings.append({"role": role, "character": char_id})
 
     beats: list[dict] = []
@@ -152,7 +150,7 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
         # Fountain-style cue: uppercase cast role, optional parenthetical on cue
         # or following line, followed by unquoted dialogue until a blank line.
         role, cue = _split_role_cue(line) if _ROLE.fullmatch(line) else ("", None)
-        if role and role.casefold() in roles and role.upper() == role:
+        if role and role.upper() == role and len(role) <= 48 and len(role.split()) <= 3:
             next_i = i
             if next_i < len(lines) and re.fullmatch(r"\([^()]*\)", lines[next_i].strip()):
                 cue = lines[next_i].strip()[1:-1].strip() or cue
@@ -162,6 +160,11 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
                 spoken.append(lines[next_i].strip())
                 next_i += 1
             if spoken:
+                if role.casefold() not in roles and not re.match(r"^(?:A|AN|THE)\b", role):
+                    raise ValueError(f"Dialogue speaker {role!r} has no cast binding.")
+                if role.casefold() not in roles:
+                    action.append(line)
+                    continue
                 add_action()
                 speech = " ".join(spoken)
                 if len(speech) >= 2 and speech[0] in '\"“' and speech[-1] in '\"”':
@@ -181,8 +184,8 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
 
 
 def _line_text(beat: dict) -> str:
-    cue = f", {beat['cue']}" if beat["cue"] else ""
-    return f'{beat["speaker"]}{cue}, says, "{beat["text"]}".'
+    cue = f" ({beat['cue']})" if beat["cue"] else ""
+    return f'{beat["speaker"]}{cue} says, "{beat["text"]}".'
 
 
 def _cast_context(source: dict) -> str:
@@ -191,10 +194,14 @@ def _cast_context(source: dict) -> str:
     for binding in source["cast"]:
         profile = by_id[binding["character"]]
         role = binding["role"]
-        parts.append(f'{role}: {profile["description"].strip()}')
+        appearance = profile["description"].strip().rstrip(".")
+        appearance = appearance[:1].lower() + appearance[1:]
+        parts.append(f"{role} looks like {appearance}")
         voice = (profile.get("voice_description") or "").strip()
         if voice:
-            parts.append(f'{role} voice: {voice}')
+            voice = voice.rstrip(".")
+            voice = voice[:1].lower() + voice[1:]
+            parts.append(f"{role} speaks with {voice}")
     return ". ".join(parts).rstrip(". ") + ". " if parts else ""
 
 
@@ -265,7 +272,9 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
                 raise ValueError(f"Shot {index} contains raw dialogue; use placeholders.")
         if re.search(r"\b(?:says|speaks|talks|whispers|shouts|mutters|asks|replies|exclaims)\b", template, re.I):
             raise ValueError(f"Shot {index} contains unsourced speech direction; use dialogue placeholders.")
-        prompt = _cast_context(source) + _PLACEHOLDER.sub(lambda m: _line_text(by_id[int(m.group(1))]), template)
+        action_prompt = _PLACEHOLDER.sub(lambda m: _line_text(by_id[int(m.group(1))]), template)
+        prompt = (action_prompt.rstrip(". ") + ". " + _cast_context(source)
+                  + "Only the current speaker moves their mouth. No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
         spoken_words = sum(len(_WORDS.findall(by_id[n]["text"])) for n in required)
@@ -321,11 +330,11 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
 
 
 _SCHEMA = {"type": "object", "additionalProperties": False, "required": ["shots"],
-           "properties": {"shots": {"type": "array", "minItems": 1, "maxItems": 64,
+           "properties": {"shots": {"type": "array",
              "items": {"type": "object", "additionalProperties": False,
                "required": ["seconds", "beat_ids", "prompt_template", "start_state", "end_state", "continue_previous"],
-               "properties": {"seconds": {"type": "integer", "minimum": 4, "maximum": 12},
-                 "beat_ids": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
+               "properties": {"seconds": {"type": "integer"},
+                 "beat_ids": {"type": "array", "items": {"type": "integer"}},
                  "prompt_template": {"type": "string"}, "start_state": {"type": "string"},
                  "end_state": {"type": "string"}, "continue_previous": {"type": "boolean"}}}}}}
 
