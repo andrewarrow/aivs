@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -194,8 +194,13 @@ impl Worker {
 
     fn render(&self, request: &str) -> Result<(), String> {
         self.progress("Preparing shooting script…");
+        let mut request_file = tempfile::NamedTempFile::new()
+            .map_err(|error| format!("Cannot create screenplay request file: {error}"))?;
+        request_file
+            .write_all(request.as_bytes())
+            .map_err(|error| format!("Cannot write screenplay request file: {error}"))?;
         let mut command = self.python("render");
-        command.arg("--screenplay-json").arg(request);
+        command.arg("--screenplay-file").arg(request_file.path());
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));

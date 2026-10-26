@@ -350,6 +350,8 @@ def main():
     screenplay = parser.add_mutually_exclusive_group()
     screenplay.add_argument("--screenplay-json", type=json.loads,
                             help="Versioned screenplay request containing human script text and cast bindings")
+    screenplay.add_argument("--screenplay-file", type=Path,
+                            help="UTF-8 JSON file containing a versioned screenplay request")
     screenplay.add_argument("--script-file", type=Path, help="Human screenplay text to translate and film")
     parser.add_argument("--cast", action="append", default=[], metavar="ROLE=CHARACTER",
                         help="Bind a role in --script-file to a saved character; repeat for each role")
@@ -373,6 +375,8 @@ def main():
             download()
         else:
             request = args.screenplay_json
+            if args.screenplay_file is not None:
+                request = json.loads(args.screenplay_file.read_text(encoding="utf-8"))
             if args.script_file is not None:
                 bindings = []
                 for binding in args.cast:
@@ -393,9 +397,9 @@ def main():
                 generate_screenplay(request, args.seed, shooting_script=args.shooting_script, plan_only=args.plan_only)
             else:
                 if args.render_format is not None:
-                    raise ValueError("--render-format requires --screenplay-json or --script-file.")
+                    raise ValueError("--render-format requires --screenplay-file, --screenplay-json, or --script-file.")
                 if args.plan_only or args.shooting_script is not None:
-                    raise ValueError("Shooting-script options require --screenplay-json or --script-file.")
+                    raise ValueError("Shooting-script options require --screenplay-file, --screenplay-json, or --script-file.")
                 generate(args.seed, args.prompt, character=args.character,
                          character_text_only=args.character_text_only,
                          character_references_only=args.character_references_only)

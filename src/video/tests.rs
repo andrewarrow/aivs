@@ -606,10 +606,9 @@ raise SystemExit(video.main())
     worker.render(&request).unwrap();
     let args: Vec<String> =
         serde_json::from_slice(&std::fs::read(root.path().join("args.json")).unwrap()).unwrap();
-    assert_eq!(
-        args,
-        ["-u", SCRIPT, "render", "--screenplay-json", &request]
-    );
+    assert_eq!(args.len(), 5);
+    assert_eq!(&args[..4], ["-u", SCRIPT, "render", "--screenplay-file"]);
+    assert!(!Path::new(&args[4]).exists());
     let events: Vec<_> = events.try_iter().collect();
     assert!(events.iter().any(
         |event| matches!(event, Event::Log(line) if line == "Codex: Mapping dialogue to shots.")
