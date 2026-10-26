@@ -10,6 +10,7 @@ struct Message {
 pub struct App {
     root: PathBuf,
     characters: crate::characters::CharacterGallery,
+    screenplay: crate::screenplay::Screenplay,
     video: crate::video::VideoWorkspace,
     screenplay_fraction: f32,
     codex_started: bool,
@@ -36,6 +37,7 @@ impl App {
             video: crate::video::VideoWorkspace::new(root.clone()),
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(&root),
+            screenplay: crate::screenplay::Screenplay::default(),
             codex_started: false,
             root,
             client: None,
@@ -340,7 +342,8 @@ impl App {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         screenplay.set_clip_rect(ui.clip_rect().intersect(top));
-        crate::screenplay::ui(&mut screenplay);
+        self.screenplay
+            .ui(&mut screenplay, &self.characters.cast_choices());
         let mut context = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("video_context")
@@ -348,7 +351,8 @@ impl App {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         context.set_clip_rect(ui.clip_rect().intersect(bottom));
-        self.video.ui(&mut context);
+        self.video
+            .ui(&mut context, &self.screenplay.render_prompt());
 
         let visuals = ui.style().interact(&response);
         ui.painter().rect_filled(divider, 0.0, visuals.bg_fill);

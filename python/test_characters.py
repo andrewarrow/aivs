@@ -47,6 +47,16 @@ class CharacterTests(unittest.TestCase):
         for prompt in ("Eli-Smith walks.", "@ELI-SMITH walks."):
             self.assertEqual(characters.resolve_characters(prompt, root=self.root), [longer])
 
+    def test_explicit_cast_does_not_resolve_script_role_names_as_performers(self):
+        ava = self.profile("Ava")
+        eli = self.profile("Eli")
+        self.profile("Sue")
+        self.profile("Joe")
+        prompt = 'Cast: @eli plays JOE; @ava plays SUE. Sue turns to Joe. JOE: "Sue, contact @unknown."'
+        self.assertEqual(characters.resolve_characters(prompt, root=self.root, references_only=True), [eli, ava])
+        self.assertEqual(characters.resolve_characters('SUE: "Hello."', explicit="ava",
+                                                      root=self.root, references_only=True), [ava])
+
     def test_quoted_references_and_apostrophes_are_preserved(self):
         eli = self.profile("Eli")
         for prompt in (

@@ -192,8 +192,9 @@ def _quoted_mask(prompt: str) -> list[bool]:
     return masked
 
 
-def resolve_characters(prompt: str, explicit=(), root: str | os.PathLike[str] | None = None) -> list[dict]:
-    """Resolve explicit selectors plus saved names mentioned outside dialogue."""
+def resolve_characters(prompt: str, explicit=(), root: str | os.PathLike[str] | None = None,
+                       *, references_only: bool = False) -> list[dict]:
+    """Resolve selectors and @references; optionally infer bare saved names outside dialogue."""
     if not isinstance(prompt, str):
         raise ValueError("Prompt must be text.")
     library = _library_dir(root)
@@ -234,7 +235,8 @@ def resolve_characters(prompt: str, explicit=(), root: str | os.PathLike[str] | 
             raise ValueError(f"Unknown character reference: @{match.group(1)}")
         mentions.append((match.start(), char_id))
 
-    for char_id in known_ids:
+    # Screenplay roles can share saved character names without casting them.
+    for char_id in (() if references_only else known_ids):
         pattern = re.compile(
             rf"(?<![A-Za-z0-9_@-]){re.escape(char_id)}(?![A-Za-z0-9_-])",
             re.IGNORECASE,

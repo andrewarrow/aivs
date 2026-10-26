@@ -60,10 +60,19 @@ use Up/Down to resize or Home to reset. The page and generation share the same
 scene data, with explicit speaker labels for all five lines of dialogue.
 
 Character reference images appear in a scrollable gallery beside the workspace.
-Gallery selection browses the library; the screenplay determines the cast.
-Python resolves saved names and `@name` references outside quoted dialogue and
-adds appearance and voice descriptions. The current scene uses **Ava and Eli**.
-The GUI renders from their saved descriptions, with fixed-camera, wide-framing
+Gallery selection browses the library. Drag a character's name or portrait onto
+any role cue, parenthetical, or dialogue to cast that role throughout the script.
+You can also click or keyboard-activate a dialogue block to choose or clear its
+cast. Every occurrence shows the assigned performer. The current script's roles
+are **Sue and Joe**; for example, cast **Ava as Sue** and **Eli as Joe**. Script
+names and dialogue stay unchanged when casting or recasting. Both roles must be
+cast before **Generate video** becomes available. Assignments last for the current
+session.
+Python resolves the assigned `@name` references and adds appearance and voice
+descriptions, with explicit performer-to-role bindings in the render prompt.
+GUI renders do not infer cast from bare names in the script, even when a role
+shares a saved character's name.
+The GUI renders from these saved descriptions, with fixed-camera, wide-framing
 instructions and no required joint image. Cast resolution has no two-character
 limit. The renderer's image inputs anchor complete frames, rather than separate
 per-person identities, so the GUI does not feed solo portraits into an ensemble

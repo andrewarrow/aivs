@@ -124,7 +124,8 @@ fn completed_video_has_a_visible_player_at_supported_sizes() {
                     ..Default::default()
                 },
                 |ui| {
-                    egui::CentralPanel::default().show(ui, |ui| workspace.ui(ui));
+                    egui::CentralPanel::default()
+                        .show(ui, |ui| workspace.ui(ui, &Ok("test prompt".into())));
                     assert!(ui.min_rect().right() <= bounds.right() + 1.0);
                 },
             );
@@ -174,7 +175,8 @@ fn startup_modal_and_render_states_fit_supported_sizes() {
                     },
                     |ui| {
                         if workspace.is_ready() {
-                            egui::CentralPanel::default().show(ui, |ui| workspace.ui(ui));
+                            egui::CentralPanel::default()
+                                .show(ui, |ui| workspace.ui(ui, &Ok("test prompt".into())));
                         } else {
                             workspace.setup_ui(ui);
                         }
@@ -250,7 +252,22 @@ raise SystemExit(video.main())
         sender,
         cancel: Arc::default(),
     };
-    let prompt = crate::screenplay::render_prompt();
+    let mut screenplay = crate::screenplay::Screenplay::default();
+    screenplay.assign(
+        "SUE",
+        crate::characters::CastCharacter {
+            id: "ava".into(),
+            name: "Ava".into(),
+        },
+    );
+    screenplay.assign(
+        "JOE",
+        crate::characters::CastCharacter {
+            id: "eli".into(),
+            name: "Eli".into(),
+        },
+    );
+    let prompt = screenplay.render_prompt().unwrap();
     worker.render(&prompt).unwrap();
     let args: Vec<String> =
         serde_json::from_slice(&std::fs::read(root.path().join("args.json")).unwrap()).unwrap();
@@ -262,7 +279,8 @@ raise SystemExit(video.main())
             "render",
             "--prompt",
             &prompt,
-            "--character-text-only"
+            "--character-text-only",
+            "--character-references-only"
         ]
     );
     let path = events
@@ -277,6 +295,7 @@ raise SystemExit(video.main())
             .unwrap();
     assert_eq!(report["original_prompt"], prompt);
     assert_eq!(report["character_text_only"], true);
+    assert_eq!(report["character_references_only"], true);
     assert!(report.get("image_source").is_none());
     let profiles = report["characters"].as_array().unwrap();
     assert_eq!(
@@ -287,6 +306,7 @@ raise SystemExit(video.main())
         ["eli", "ava"]
     );
     let expanded = report["prompt"].as_str().unwrap();
+    assert!(expanded.contains("Eli plays JOE; Ava plays SUE"));
     for profile in profiles {
         assert!(expanded.contains(profile["description"].as_str().unwrap()));
         assert!(expanded.contains(profile["voice_description"].as_str().unwrap()));
@@ -313,11 +333,11 @@ raise SystemExit(video.main())
         ])
     );
     for turn in [
-        "ELI: \"Good news. It's definitely the car.\"",
-        "AVA: \"My dad said you could see the ocean from here.\"",
-        "ELI (looking around): \"He was an optimistic man.\"",
-        "AVA: \"He made it sound closer.\"",
-        "ELI: \"We've still got some light.\"",
+        "JOE: \"Good news. It's definitely the car.\"",
+        "SUE: \"My dad said you could see the ocean from here.\"",
+        "JOE (looking around): \"He was an optimistic man.\"",
+        "SUE: \"He made it sound closer.\"",
+        "JOE: \"We've still got some light.\"",
     ] {
         assert!(expanded.contains(turn));
     }

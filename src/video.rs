@@ -189,7 +189,8 @@ impl Worker {
         command
             .arg("--prompt")
             .arg(prompt)
-            .arg("--character-text-only");
+            .arg("--character-text-only")
+            .arg("--character-references-only");
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
@@ -567,7 +568,7 @@ impl VideoWorkspace {
         });
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, prompt: &Result<String, String>) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -581,12 +582,13 @@ impl VideoWorkspace {
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
-                            self.job.is_none(),
+                            self.job.is_none() && prompt.is_ok(),
                             egui::Button::new("Generate video").min_size(egui::vec2(128.0, 44.0)),
                         )
                         .clicked()
+                        && let Ok(prompt) = prompt
                     {
-                        self.start(Task::Render(crate::screenplay::render_prompt()));
+                        self.start(Task::Render(prompt.clone()));
                     }
                     if self.rendering
                         && ui
@@ -610,6 +612,9 @@ impl VideoWorkspace {
                         self.open(parent);
                     }
                 });
+                if let Err(message) = prompt {
+                    ui.add(egui::Label::new(message).wrap());
+                }
                 ui.add_space(8.0);
                 if self.rendering {
                     let fraction = self.fraction.unwrap_or(0.0).min(0.99);

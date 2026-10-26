@@ -10,8 +10,24 @@ pub struct CharacterGallery {
 
 pub struct Character {
     pub name: String,
+    id: String,
     image: Option<egui::ColorImage>,
     texture: Option<egui::TextureHandle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CastCharacter {
+    pub id: String,
+    pub name: String,
+}
+
+impl Character {
+    fn cast_character(&self) -> CastCharacter {
+        CastCharacter {
+            id: self.id.clone(),
+            name: self.name.clone(),
+        }
+    }
 }
 
 impl CharacterGallery {
@@ -44,6 +60,10 @@ impl CharacterGallery {
                 let image_file = data["image"]["file"].as_str().unwrap_or("reference.png");
                 let image = decode_image(&folder.join(image_file)).ok();
                 Character {
+                    id: data["id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| name.to_lowercase()),
                     name,
                     image,
                     texture: None,
@@ -57,6 +77,13 @@ impl CharacterGallery {
         }
     }
 
+    pub fn cast_choices(&self) -> Vec<CastCharacter> {
+        self.characters
+            .iter()
+            .map(Character::cast_character)
+            .collect()
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<&Character> {
         ui.heading("Characters");
         if self.characters.is_empty() {
@@ -68,10 +95,16 @@ impl CharacterGallery {
             for (index, character) in self.characters.iter_mut().enumerate() {
                 ui.add_space(6.0);
                 let selected = self.selected == Some(index);
-                if ui
-                    .add(egui::Button::selectable(selected, &character.name).wrap())
-                    .clicked()
-                {
+                let payload = character.cast_character();
+                let response = ui
+                    .add(
+                        egui::Button::selectable(selected, &character.name)
+                            .wrap()
+                            .sense(egui::Sense::click_and_drag()),
+                    )
+                    .on_hover_text("Drag onto a screenplay role to cast this character.");
+                response.dnd_set_drag_payload(payload.clone());
+                if response.clicked() {
                     clicked = Some(index);
                 }
                 if character.texture.is_none()
@@ -88,16 +121,18 @@ impl CharacterGallery {
                     let width = (ui.available_width() - 2.0 * ui.spacing().button_padding.x)
                         .clamp(1.0, 136.0);
                     let scale = (width / size.x).min(136.0 / size.y).min(1.0);
-                    if ui
+                    let response = ui
                         .add(
                             egui::Button::new(
                                 egui::Image::new((texture.id(), size * scale))
                                     .alt_text(format!("Select {}", character.name)),
                             )
-                            .selected(selected),
+                            .selected(selected)
+                            .sense(egui::Sense::click_and_drag()),
                         )
-                        .clicked()
-                    {
+                        .on_hover_text("Drag onto a screenplay role to cast this character.");
+                    response.dnd_set_drag_payload(payload);
+                    if response.clicked() {
                         clicked = Some(index);
                     }
                 } else {
@@ -105,6 +140,20 @@ impl CharacterGallery {
                 }
             }
         });
+        if let Some(character) = egui::DragAndDrop::payload::<CastCharacter>(ui.ctx()) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                egui::Area::new(egui::Id::new("dragged_character"))
+                    .order(egui::Order::Tooltip)
+                    .interactable(false)
+                    .fixed_pos(pos + egui::vec2(16.0, 16.0))
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.label(&character.name);
+                        });
+                    });
+            }
+        }
         if let Some(index) = clicked {
             self.selected = Some(index);
             Some(&self.characters[index])

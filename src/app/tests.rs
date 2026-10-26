@@ -9,6 +9,7 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
             video: crate::video::VideoWorkspace::ready_for_test(PathBuf::from("/workspace")),
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(Path::new("/workspace")),
+            screenplay: crate::screenplay::Screenplay::default(),
             codex_started: true,
             root: PathBuf::from("/workspace"),
             client: Some(client),
@@ -165,7 +166,7 @@ fn sample_screenplay_fits_one_letter_page_at_supported_scales() {
                 )),
                 ..Default::default()
             },
-            crate::screenplay::ui,
+            |ui| crate::screenplay::Screenplay::default().ui(ui, &[]),
         );
         let page = output
             .shapes
@@ -178,7 +179,7 @@ fn sample_screenplay_fits_one_letter_page_at_supported_scales() {
             })
             .expect("screenplay needs a white paper surface");
         assert!((page.width() / page.height() - 612.0 / 792.0).abs() < 0.001);
-        for text in ["EXT. DESERT ROAD - DUSK", "AVA", "ELI", "FADE OUT."] {
+        for text in ["EXT. DESERT ROAD - DUSK", "SUE", "JOE", "FADE OUT."] {
             let text = output
                 .shapes
                 .iter()
@@ -327,5 +328,101 @@ fn gallery_selection_keeps_the_screenplay_and_hides_the_old_prompt() {
                 .iter()
                 .any(|text| text.starts_with("A single continuous cinematic shot"))
         );
+        assert!(
+            app.screenplay.render_prompt().is_err(),
+            "browsing must not cast a role"
+        );
+    }
+}
+
+#[test]
+fn gallery_names_and_portraits_drag_onto_roles_and_recast_all_occurrences() {
+    let (mut app, _commands) = app();
+    let ctx = egui::Context::default();
+    let mut time = 0.0;
+    let mut frame = |app: &mut App, events| {
+        time += 0.05;
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 1800.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| app.ui(ui),
+        )
+    };
+    let pointer = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(&mut app, vec![]);
+    let mut output = frame(&mut app, vec![]);
+    for (name, portrait, target, occurrence) in [
+        ("Ava", false, "SUE", 0),
+        ("Eli", true, "We've still got some light.", 0),
+        ("Eli", false, "SUE", 1),
+        ("Ava", true, "EXT. DESERT ROAD - DUSK", 0),
+    ] {
+        let positions = |text| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
+                        Some(shape.pos)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let source = positions(name)[0] + egui::vec2(8.0, if portrait { 60.0 } else { 6.0 });
+        let target_pos = positions(target)[occurrence] + egui::vec2(8.0, 6.0);
+        let previous = app.screenplay.render_prompt();
+        frame(&mut app, vec![egui::Event::PointerMoved(source)]);
+        frame(&mut app, vec![pointer(source, true)]);
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(source - egui::vec2(24.0, 0.0))],
+        );
+        let payload = egui::DragAndDrop::payload::<crate::characters::CastCharacter>(&ctx)
+            .expect("both the name and portrait should start a character drag");
+        assert_eq!(payload.name, name);
+        frame(&mut app, vec![egui::Event::PointerMoved(target_pos)]);
+        frame(&mut app, vec![pointer(target_pos, false)]);
+        output = frame(&mut app, vec![]);
+        if target == "SUE" && occurrence == 0 {
+            assert_eq!(
+                app.screenplay.render_prompt().unwrap_err(),
+                "Assign characters to JOE before generating."
+            );
+        } else if target == "EXT. DESERT ROAD - DUSK" {
+            assert_eq!(
+                app.screenplay.render_prompt(),
+                previous,
+                "dropping on action must not change the cast"
+            );
+        } else {
+            let prompt = app.screenplay.render_prompt().unwrap();
+            assert!(prompt.contains("@eli plays JOE"));
+            if occurrence == 1 {
+                assert!(prompt.contains("@eli plays SUE"));
+                assert!(!prompt.contains("@ava"));
+                let annotations = output.shapes.iter().filter(|shape| {
+                    matches!(&shape.shape, egui::epaint::Shape::Text(shape) if shape.galley.text() == "played by Eli")
+                }).count();
+                assert_eq!(
+                    annotations, 5,
+                    "all five cues should show the shared casting"
+                );
+            } else {
+                assert!(prompt.contains("@ava plays SUE"));
+            }
+        }
     }
 }

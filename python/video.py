@@ -88,11 +88,13 @@ def download():
     check()
 
 
-def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_only=False):
+def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_only=False,
+             character_references_only=False):
     check_environment()
     os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", TQDM_DISABLE="1")
     character_root = ROOT if (ROOT / "characters").is_dir() else Path(__file__).resolve().parents[1]
-    profiles = characters.resolve_characters(prompt, explicit=character, root=character_root)
+    profiles = characters.resolve_characters(prompt, explicit=character, root=character_root,
+                                             references_only=character_references_only)
     if not character_text_only and sum(bool(profile.get("scene_image") or profile.get("image")) for profile in profiles) > 1:
         raise ValueError("Multiple saved characters have reference images. Use --character-text-only to use descriptions without image guidance.")
     timing = duration_estimate(prompt)
@@ -111,6 +113,7 @@ def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_o
             "seconds": timing["seconds"], "fps": FPS, "width": WIDTH, "height": HEIGHT,
             "audio": "generated", "dialogue_timing": timing,
             "characters": profiles, "character_text_only": character_text_only,
+            "character_references_only": character_references_only,
         }
         if image is not None:
             image_source = {
@@ -148,6 +151,8 @@ def main():
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--character", action="append", default=[], metavar="NAME")
     parser.add_argument("--character-text-only", action="store_true")
+    parser.add_argument("--character-references-only", action="store_true",
+                        help="Resolve @references and --character selections without inferring cast from script names")
     args = parser.parse_args()
     try:
         if args.command == "check":
@@ -156,7 +161,8 @@ def main():
             download()
         else:
             generate(args.seed, args.prompt, character=args.character,
-                     character_text_only=args.character_text_only)
+                     character_text_only=args.character_text_only,
+                     character_references_only=args.character_references_only)
         return 0
     except KeyboardInterrupt:
         emit("error", message="Stopped. Partial output is kept in outputs.")
