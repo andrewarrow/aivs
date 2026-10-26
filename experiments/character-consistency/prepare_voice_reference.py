@@ -1,4 +1,4 @@
-"""Prepare an immutable, reviewed native take and canonical Lena voice reference."""
+"""Prepare an immutable, reviewed native take and its canonical voice reference."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import wave
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ACCEPTANCE = ROOT / "experiments/character-consistency/native-reference-control.json"
+SUPPORTED_VOICES = {"lena": "af_sarah", "owen": "am_michael"}
 ACTIVITY_THRESHOLD_DBFS = -45.0
 PCM16_FULL_SCALE = 32768.0
 SOURCE_FILES = {
@@ -131,11 +132,10 @@ def prepare_voice_reference(acceptance_path: Path, run_dir: Path) -> dict:
     acceptance = _json(acceptance_path)
     human = acceptance.get("human_review", {})
     if (acceptance.get("status") != "accepted-diagnostic-native-take"
-            or acceptance.get("milestone_a_passed") is not True
             or acceptance.get("fixed_voice_acceptance") is not False
             or human.get("status") != "accepted"
             or any(human.get(key) != "accepted" for key in ("lip_sync", "face_identity", "spoken_words"))):
-        raise ValueError("Acceptance must record a human-approved Milestone A take with fixed voice still unaccepted.")
+        raise ValueError("Acceptance must record a human-approved native take with fixed voice still unaccepted.")
 
     acceptance_hash = characters._digest(acceptance_path)
     source_run_rel = acceptance.get("run")
@@ -150,8 +150,16 @@ def prepare_voice_reference(acceptance_path: Path, run_dir: Path) -> dict:
     render = _json(render_path)
     if manifest.get("fixed_voice_acceptance") is not False or render.get("fixed_voice_acceptance") is not False:
         raise ValueError("Source run incorrectly claims fixed voice acceptance.")
-    if manifest.get("character_id") != "lena" or manifest.get("character_snapshot", manifest.get("character", {})).get("id") != "lena":
-        raise ValueError("Accepted source is not Lena's take.")
+    character = manifest.get("character_id")
+    accepted_profile = manifest.get("character_snapshot", manifest.get("character"))
+    if (not isinstance(character, str) or character not in SUPPORTED_VOICES
+            or not isinstance(accepted_profile, dict) or accepted_profile.get("id") != character
+            or acceptance.get("character_id", character) != character):
+        raise ValueError("Accepted source character and snapshot must identify the same supported performer.")
+    if (acceptance.get("native_take_accepted") is not True
+            and not (character == "lena" and acceptance.get("milestone_a_passed") is True)):
+        raise ValueError("Acceptance must explicitly approve this native take; legacy Milestone A approval applies only to Lena.")
+    voice_id = SUPPORTED_VOICES[character]
     evidence_record = acceptance.get("automated_observations", {}).get("evidence")
     evidence_path = _verified_file(evidence_record, "review evidence")
     expected_evidence = (source_run / "review/evidence.json").resolve()
@@ -199,8 +207,7 @@ def prepare_voice_reference(acceptance_path: Path, run_dir: Path) -> dict:
     audio = output_paths["native_audio"]
     stats = _wav_stats(audio)
 
-    accepted_profile = manifest.get("character_snapshot", manifest.get("character"))
-    snapshot_path = source_run / "characters/lena/character.json"
+    snapshot_path = source_run / "characters" / character / "character.json"
     source_profile = characters._read_profile(snapshot_path)
     if source_profile != accepted_profile:
         raise ValueError("Source character snapshot differs from the accepted manifest.")
@@ -210,12 +217,12 @@ def prepare_voice_reference(acceptance_path: Path, run_dir: Path) -> dict:
             or not source_voice.is_file()
             or characters._digest(source_voice) != accepted_profile.get("voice_sample", {}).get("sha256")):
         raise ValueError("Source voice reference does not match the accepted manifest snapshot.")
-    current = characters.load_character("lena", ROOT)
-    if accepted_profile != current or accepted_profile.get("voice_id") != "af_sarah":
-        raise ValueError("Current Lena profile differs from the accepted snapshot or expected voice ID af_sarah.")
+    current = characters.load_character(character, ROOT)
+    if accepted_profile != current or accepted_profile.get("voice_id") != voice_id:
+        raise ValueError(f"Current {character.title()} profile differs from the accepted snapshot or expected voice ID {voice_id}.")
     accepted_voice_hash = accepted_profile.get("voice_sample", {}).get("sha256")
     if current.get("voice_sample", {}).get("sha256") != accepted_voice_hash:
-        raise ValueError("Current Lena voice reference hash differs from the accepted take snapshot.")
+        raise ValueError(f"Current {character.title()} voice reference hash differs from the accepted take snapshot.")
 
     expected_outputs = {
         "source-video.mp4": video,
@@ -248,20 +255,21 @@ def prepare_voice_reference(acceptance_path: Path, run_dir: Path) -> dict:
         for name, source in SOURCE_FILES.items():
             shutil.copyfile(source, source_snap / name)
             source_code[name] = characters._digest(source_snap / name)
-        voice_path = staging / "characters/lena/voice.wav"
+        reference_path = f"characters/{character}/voice.wav"
+        voice_path = staging / reference_path
         voice_stats = _wav_stats(voice_path)
         manifest_out = {
             "version": 1, "status": "reference-prepared-needs-quality-review",
             "fixed_voice_acceptance": False, "source_acceptance_sha256": acceptance_hash,
             "source_run": source_run_rel, "source_manifest_sha256": characters._digest(manifest_path),
             "source_render_sha256": characters._digest(render_path), "source_evidence_sha256": characters._digest(evidence_path),
-        "source_video_sha256": characters._digest(video), "source_native_video_sha256": characters._digest(output_paths["native_video"]),
-        "source_audio_sha256": characters._digest(audio),
+            "source_video_sha256": characters._digest(video), "source_native_video_sha256": characters._digest(output_paths["native_video"]),
+            "source_audio_sha256": characters._digest(audio),
             "source_character_voice_sha256": accepted_voice_hash,
-            "character": {"id": "lena", "voice_id": current["voice_id"],
-                          "voice_reference": "characters/lena/voice.wav",
+            "character": {"id": character, "voice_id": current["voice_id"],
+                          "voice_reference": reference_path,
                           "voice_reference_sha256": characters._digest(voice_path)},
-            "canonical_reference_path": "characters/lena/voice.wav",
+            "canonical_reference_path": reference_path,
             "inputs": files, "source_code_sha256": source_code,
             "accepted_git_sha": acceptance.get("source", {}).get("git_head"), "prepared_git_sha": _git_head(),
             "native_audio_stats": stats, "voice_reference_stats": voice_stats,
@@ -281,7 +289,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--acceptance", type=Path, default=DEFAULT_ACCEPTANCE)
     parser.add_argument("--run-dir", type=Path,
-                        default=ROOT / "outputs" / f"{datetime.now():%Y-%m-%d_%H-%M-%S-%f}_voice-conversion-lena")
+                        default=ROOT / "outputs" / f"{datetime.now():%Y-%m-%d_%H-%M-%S-%f}_voice-conversion")
     args = parser.parse_args(argv)
     try:
         manifest = prepare_voice_reference(args.acceptance, args.run_dir)

@@ -1,5 +1,6 @@
-"""Offline contracts for accepted Lena voice-reference preparation."""
+"""Offline contracts for accepted character voice-reference preparation."""
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -62,27 +63,27 @@ class VoiceReferencePreparationTests(unittest.TestCase):
         path.write_text(f"synthetic source: {name}\n", encoding="utf-8")
         return path
 
-    def _create_fixture(self):
-        assets = self.root / "characters/lena"
-        assets.mkdir(parents=True)
+    def _create_fixture(self, character="lena", voice_id=None):
+        assets = self.root / "characters" / character
+        assets.mkdir(parents=True, exist_ok=True)
         (assets / "reference.png").write_bytes(b"synthetic portrait asset")
         (assets / "scene-reference.png").write_bytes(b"synthetic scene asset")
         write_wav(assets / "voice.wav", [1000, -1000, 2000, -2000] * 500)
         self.profile = {
             "schema_version": 1,
-            "id": "lena",
-            "name": "Lena",
-            "description": "Synthetic Lena profile for an offline test.",
-            "voice_description": "Clear, even feminine voice.",
-            "voice_id": "af_sarah",
+            "id": character,
+            "name": character.title(),
+            "description": f"Synthetic {character.title()} profile for an offline test.",
+            "voice_description": "Clear, even voice.",
+            "voice_id": voice_id or {"lena": "af_sarah", "owen": "am_michael"}[character],
             "image": {"file": "reference.png", "sha256": digest(assets / "reference.png")},
             "scene_image": {"file": "scene-reference.png", "sha256": digest(assets / "scene-reference.png")},
             "voice_sample": {"file": "voice.wav", "sha256": digest(assets / "voice.wav")},
         }
         write_json(assets / "character.json", self.profile)
 
-        run_chars = self.source / "characters/lena"
-        run_chars.mkdir(parents=True)
+        run_chars = self.source / "characters" / character
+        run_chars.mkdir(parents=True, exist_ok=True)
         for asset in ("reference.png", "scene-reference.png", "voice.wav"):
             (run_chars / asset).write_bytes((assets / asset).read_bytes())
         write_json(run_chars / "character.json", self.profile)
@@ -90,7 +91,7 @@ class VoiceReferencePreparationTests(unittest.TestCase):
         (self.source / "video.mp4").write_bytes(b"synthetic accepted final video bytes")
         (self.source / "video.native.mp4").write_bytes(b"synthetic native video bytes")
         write_wav(self.source / "native-audio.wav", [1500, -1500, 2400, -2400] * 500)
-        manifest = {"character_id": "lena", "character_snapshot": self.profile,
+        manifest = {"character_id": character, "character_snapshot": self.profile,
                     "fixed_voice_acceptance": False}
         write_json(self.source / "manifest.json", manifest)
         render = {
@@ -101,7 +102,7 @@ class VoiceReferencePreparationTests(unittest.TestCase):
         }
         write_json(self.source / "render.json", render)
         review = self.source / "review"
-        review.mkdir()
+        review.mkdir(exist_ok=True)
         evidence = {"inputs": {
             name: {"file": filename, "sha256": digest(self.source / filename)}
             for name, filename in {
@@ -119,7 +120,6 @@ class VoiceReferencePreparationTests(unittest.TestCase):
         }
         acceptance = {
             "status": "accepted-diagnostic-native-take",
-            "milestone_a_passed": True,
             "fixed_voice_acceptance": False,
             "run": self.run_rel,
             "source": {
@@ -136,6 +136,10 @@ class VoiceReferencePreparationTests(unittest.TestCase):
                              "face_identity": "accepted", "spoken_words": "accepted"},
             "visual_review": {"sheets": {}},
         }
+        if character == "lena":
+            acceptance["milestone_a_passed"] = True
+        else:
+            acceptance.update(character_id=character, native_take_accepted=True)
         write_json(self.acceptance_path, acceptance)
 
     def _acceptance(self):
@@ -161,6 +165,59 @@ class VoiceReferencePreparationTests(unittest.TestCase):
         self.assertTrue((self.out / "source/prepare_voice_reference.py").is_file())
         (self.source / "video.mp4").write_bytes(b"later source mutation")
         self.assertEqual((self.out / "source-video.mp4").read_bytes(), b"synthetic accepted final video bytes")
+
+    def test_owen_uses_accepted_performer_and_canonical_voice_without_milestone_a(self):
+        self._create_fixture("owen")
+        self.assertNotIn("milestone_a_passed", self._acceptance())
+        manifest = helper.prepare_voice_reference(self.acceptance_path, self.out)
+        self.assertEqual(manifest["character"]["id"], "owen")
+        self.assertEqual(manifest["character"]["voice_id"], "am_michael")
+        self.assertEqual(manifest["canonical_reference_path"], "characters/owen/voice.wav")
+        self.assertEqual(manifest["character"]["voice_reference_sha256"],
+                         digest(self.out / "characters/owen/voice.wav"))
+        self.assertEqual((self.out / "characters/owen/voice.wav").read_bytes(),
+                         (self.source / "characters/owen/voice.wav").read_bytes())
+        self.assertFalse((self.out / "characters/lena").exists())
+        self.assertFalse(manifest["fixed_voice_acceptance"])
+
+    def test_rejects_owen_wrong_acceptance_performer_or_missing_native_approval(self):
+        self._create_fixture("owen")
+        original = self._acceptance()
+        mutations = {
+            "wrong performer": lambda value: value.update(character_id="lena"),
+            "pending take": lambda value: value.update(status="rendered-needs-review"),
+            "unaccepted take": lambda value: value.update(native_take_accepted=False),
+            "legacy approval for Owen": lambda value: value.update(native_take_accepted=False, milestone_a_passed=True),
+            "pending lip sync": lambda value: value["human_review"].update(lip_sync="pending"),
+            "pending human review": lambda value: value["human_review"].update(status="pending"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                acceptance = copy.deepcopy(original)
+                mutate(acceptance)
+                self._save_acceptance(acceptance)
+                with self.assertRaises(ValueError):
+                    helper.prepare_voice_reference(self.acceptance_path, self.out)
+                self.assertFalse(self.out.exists())
+
+    def test_rejects_mismatched_owen_manifest_snapshot_with_updated_acceptance_hash(self):
+        self._create_fixture("owen")
+        manifest_path = self.source / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["character_snapshot"]["id"] = "lena"
+        write_json(manifest_path, manifest)
+        acceptance = self._acceptance()
+        acceptance["source"]["manifest"]["sha256"] = digest(manifest_path)
+        self._save_acceptance(acceptance)
+        with self.assertRaisesRegex(ValueError, "same supported performer"):
+            helper.prepare_voice_reference(self.acceptance_path, self.out)
+        self.assertFalse(self.out.exists())
+
+    def test_rejects_owen_wrong_voice_even_when_current_profile_matches_snapshot(self):
+        self._create_fixture("owen", voice_id="af_sarah")
+        with self.assertRaisesRegex(ValueError, "expected voice ID am_michael"):
+            helper.prepare_voice_reference(self.acceptance_path, self.out)
+        self.assertFalse(self.out.exists())
 
     def test_rejects_replaced_evidence_and_acceptance_output_mismatch(self):
         evidence = self.source / "review/evidence.json"

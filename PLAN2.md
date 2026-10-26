@@ -10,10 +10,11 @@ liked at commit `084d048887f47a54eb959196d19d4944903a9615`. Add canonical visual
 references, then test whether voice conversion can give the resulting performance
 the saved performer's voice **without changing its words or local timing**.
 
-Voice conversion has passed human review for one Lena performance. This is
-evidence for that take only; it does not establish Owen, new dialogue, or
-scene-to-scene consistency. Neither the frozen-audio prototype nor conversion
-becomes the default until both performers pass the planned end-to-end review.
+Voice conversion has passed human review for one Lena performance and one Owen
+performance. Milestone B is complete for those takes; this does not establish new
+dialogue or scene-to-scene consistency. Neither the frozen-audio prototype nor
+conversion becomes the default until both performers pass the planned scene and
+dialogue review.
 
 This plan revises the architecture and execution order in [PLAN.md](PLAN.md).
 Retain that document and the existing takes as the history of the first approach.
@@ -42,8 +43,8 @@ Retain that document and the existing takes as the history of the first approach
   found no unwanted captions. Its generated voice remains diagnostic.
   [Run evidence](experiments/character-consistency/native-reference-control.json)
   records the result. Milestone A passed. A pinned voice conversion has now
-  passed human review for Lena on this line; Owen and broader scene consistency
-  remain untested.
+  passed human review for Lena on this line and Owen on “Then let's keep going.”
+  Broader scene consistency and new dialogue remain untested.
   The preserved native output from the earlier period lacks a Git SHA, so it
   cannot be identified conclusively as the exact take the user remembers.
 
@@ -51,10 +52,11 @@ Evidence: [four-shot review](experiments/character-consistency/acceptance.json),
 [human feedback and clip hashes](experiments/character-consistency/human-review.json),
 and [prompt-only trial](experiments/character-consistency/lip-sync-trial.json).
 
-The user also confirmed that the accepted Lena source contains clean speech with
-quiet around it. The converted take retained the source video frames and was
-accepted for voice match, lip sync, and audio quality. Its evidence is in the
-[Lena conversion record](experiments/character-consistency/voice-conversion-lena.json).
+The user confirmed that both accepted native sources contain clean speech with
+quiet around it. Both converted takes retained their source video frames and were
+accepted for voice match, lip sync, words, and audio quality. Evidence is in the
+[Lena conversion record](experiments/character-consistency/voice-conversion-lena.json)
+and [Owen conversion record](experiments/character-consistency/voice-conversion-owen.json).
 
 ## What stays
 
@@ -183,14 +185,20 @@ remains temporary diagnostic audio.
 
 ## Milestone B: prove voice conversion on the accepted take
 
-**Immediate next step:** produce one native Owen control and obtain human review
-of its performance and source speech quality. Then repeat the same bounded
-conversion experiment using Owen's canonical voice reference.
+Milestone B passed for one short desert performance per performer. Owen's
+[native control](experiments/character-consistency/native-reference-owen.json) was
+accepted for lip sync, likeness, words, captions, and clean source speech. His
+conversion using the canonical `am_michael` sample was then accepted for voice
+match, lip sync, words, and audio quality.
+
+**Immediate next step:** Milestone C, completing the two-location matrix with new
+cafe counterparts to the accepted desert takes, using the same canonical
+identities and initial dialogue, then testing new lines.
 
 Reuse the accepted native video and speech. Lena's first conversion was accepted
 for the exact line “We still have some time.” No new video inference was needed.
-The acceptance applies to this performance and does not establish Owen, new
-dialogue, or scene-to-scene consistency.
+That acceptance applies to this Lena performance. Owen's separate accepted
+performance is recorded below; neither proves new dialogue or scene consistency.
 
 - [x] Lena: snapshot the canonical voice reference and record PCM quality
       measurements; the measurements are descriptive, not a perceptual pass.
@@ -204,7 +212,7 @@ dialogue, or scene-to-scene consistency.
       conversion artifacts, and compare against the canonical voice.
 - [x] Lena: the user accepted voice match, lip sync, and audio quality for this
       converted performance.
-- [ ] Repeat with Owen, starting with an accepted native Owen take.
+- [x] Repeat with Owen, starting with an accepted native Owen take.
 
 The Lena conversion took 23.70 seconds. Its PCM16 derivative is 88,064 samples
 at 22,050 Hz (3.993832 seconds); only 136 zero samples (6.17 ms) were appended
@@ -217,19 +225,36 @@ The user separately accepted the audible voice match and lip sync. See the
 [run record](experiments/character-consistency/voice-conversion-lena.json) and
 [reviewed converted clip](outputs/2026-10-26_voice-conversion-lena/voice-review/converted-video.mp4).
 
-This is a Lena-only acceptance. Milestone B overall remains incomplete until
-Owen also passes. Fixed-voice acceptance is true for this Lena take only; it does
-not enable a default GUI path or establish a general conversion capability.
+Owen's native control took 239.98 seconds at the same seed 83, 1280×704, 24 fps,
+and four-second duration. Independent transcription recovered “Then let's keep
+going.” and all-frame OCR found no text in 96 frames. The user accepted the
+performance and confirmed clean speech with quiet around it.
+
+Owen's conversion took 32.91 seconds using the same pinned V1 configuration and
+his original 4.700-second `am_michael` reference. The raw float output is retained;
+the PCM16 derivative has 88,064 samples at 22,050 Hz with no clipping. Only 136
+zero samples (6.17 ms) were appended at the end. All 96 decoded video frame hashes
+and their timing match the native take. AAC correlation is 0.999922 at zero offset;
+ALAC decoding is exact. Both transcripts match. Corrected Whisper token alignment
+differences are 0–20 ms; a preserved addendum fixes contraction matching for
+“let's,” without changing any media. These estimates are not proof of sync.
+The user separately accepted the [converted Owen clip](outputs/2026-10-26_voice-conversion-owen/voice-review/converted-video.mp4)
+for voice match, lip sync, words, and audio quality. Full provenance and review are
+in the [Owen conversion record](experiments/character-consistency/voice-conversion-owen.json).
+
+Fixed-voice acceptance is true for these two reviewed takes only. Milestone B is
+complete; it does not enable a default GUI path or establish general conversion
+or scene-consistency capability.
 
 Try one conservative configuration per performer first; allow at most two
 documented adjustments before evaluating another method. A conversion failure
 must leave the take failed or awaiting review. Never silently publish the native
 generated voice as the saved performer.
 
-**Exit condition:** both performers have accepted target voices and retain the
-native take's accepted sync. Lena has passed for one performance; Owen remains
-pending. Matching duration, transcript, approximate alignment, or waveform
-checks alone cannot satisfy this condition.
+**Exit condition met:** both performers have accepted target voices and retain
+their native take's accepted sync for one performance each. Human audiovisual
+review established this; matching duration, transcript, approximate alignment,
+or waveform checks alone cannot satisfy the condition.
 
 ## Milestone C: consistency across scenes and new dialogue
 

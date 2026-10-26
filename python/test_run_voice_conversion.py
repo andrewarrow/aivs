@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from contextlib import nullcontext
@@ -50,22 +51,26 @@ class VoiceConversionRunnerTests(unittest.TestCase):
         config.parent.mkdir(parents=True)
         config.write_text("pinned config")
 
-    def _make_prepared_run(self):
+    def _make_prepared_run(self, character_id="lena", acceptance_changes=None):
         run = self.run_dir
         run.mkdir()
-        chars = run / "characters/lena"
+        binding = runner.BINDINGS[character_id]
+        name = character_id.title()
+        chars = run / f"characters/{character_id}"
         chars.mkdir(parents=True)
         voice = chars / "voice.wav"
         voice.write_bytes(b"canonical sample")
-        profile = {"schema_version": 1, "id": "lena", "name": "Lena", "description": "A performer.",
-                   "voice_description": "", "voice_id": "af_sarah",
+        profile = {"schema_version": 1, "id": character_id, "name": name, "description": "A performer.",
+                   "voice_description": "", "voice_id": binding["voice_id"],
                    "voice_sample": {"file": "voice.wav", "sha256": runner._hash(voice)}}
         (chars / "character.json").write_text(json.dumps(profile))
         for filename, content in (("source-video.mp4", b"video bytes"), ("source-native-video.mp4", b"native video"),
                                   ("source-audio.wav", b"native audio"),
                                   ("source-render.json", b"{}"), ("source-review-evidence.json", b"{}")):
             (run / filename).write_bytes(content)
-        source_manifest_obj = {"character_snapshot": profile}
+        source_manifest_obj = {"character_id": character_id, "role": binding["role"],
+                              "line_id": binding["line_id"], "dialogue": binding["dialogue"],
+                              "character_snapshot": profile}
         source_manifest = run / "source-manifest.json"
         source_manifest.write_text(json.dumps(source_manifest_obj))
         source_hashes = {name: runner._hash(run / name) for name in (
@@ -83,7 +88,9 @@ class VoiceConversionRunnerTests(unittest.TestCase):
         (run / "source-review-evidence.json").write_text(json.dumps(evidence))
         source_hashes["source-review-evidence.json"] = runner._hash(run / "source-review-evidence.json")
         source_run = "fixture-native-run"
-        acceptance = {"status": "accepted-diagnostic-native-take", "milestone_a_passed": True,
+        acceptance = {"status": "accepted-diagnostic-native-take",
+                      "native_take_accepted": character_id == "owen",
+                      "milestone_a_passed": character_id == "lena",
                       "fixed_voice_acceptance": False,
                       "human_review": {"status": "accepted", "lip_sync": "accepted",
                                        "face_identity": "accepted", "spoken_words": "accepted"},
@@ -99,6 +106,7 @@ class VoiceConversionRunnerTests(unittest.TestCase):
                           "file": f"{source_run}/review/evidence.json",
                           "sha256": source_hashes["source-review-evidence.json"]}},
                       "visual_review": {"sheets": {}}}
+        acceptance.update(acceptance_changes or {})
         acceptance_path = run / "acceptance.json"
         acceptance_path.write_text(json.dumps(acceptance))
         input_names = {"source-video.mp4": "source_video_sha256",
@@ -109,10 +117,11 @@ class VoiceConversionRunnerTests(unittest.TestCase):
         prepared = {"version": 1, "status": "reference-prepared-needs-quality-review",
                     "fixed_voice_acceptance": False, "source_acceptance_sha256": runner._hash(acceptance_path),
                     "source_run": source_run,
-                    "character": {"id": "lena", "voice_id": "af_sarah",
+                    "character": {"id": character_id, "voice_id": binding["voice_id"],
+                                  "voice_reference": f"characters/{character_id}/voice.wav",
                                   "voice_reference_sha256": runner._hash(voice)},
                     "source_character_voice_sha256": runner._hash(voice),
-                    "canonical_reference_path": "characters/lena/voice.wav",
+                    "canonical_reference_path": f"characters/{character_id}/voice.wav",
                     "inputs": {name: {"sha256": source_hashes[name]} for name in input_names}}
         prepared.update({key: source_hashes[name] for name, key in input_names.items()})
         (run / "manifest.json").write_text(json.dumps(prepared))
@@ -122,6 +131,39 @@ class VoiceConversionRunnerTests(unittest.TestCase):
             "source_audio_sha256": source_hashes["source-audio.wav"],
             "question": "Is the native speech clean with quiet around it?",
             "response": "Clean speech with quiet around it", "timestamp": "2026-10-26T12:00:00Z"}))
+
+    def _rewrite_source_manifest(self, **changes):
+        source_path = self.run_dir / "source-manifest.json"
+        source_manifest = json.loads(source_path.read_text())
+        source_manifest.update(changes)
+        source_path.write_text(json.dumps(source_manifest))
+        source_hash = runner._hash(source_path)
+
+        evidence_path = self.run_dir / "source-review-evidence.json"
+        evidence = json.loads(evidence_path.read_text())
+        evidence["inputs"]["manifest"]["sha256"] = source_hash
+        evidence_path.write_text(json.dumps(evidence))
+        evidence_hash = runner._hash(evidence_path)
+
+        acceptance_path = self.run_dir / "acceptance.json"
+        acceptance = json.loads(acceptance_path.read_text())
+        acceptance["source"]["manifest"]["sha256"] = source_hash
+        acceptance["automated_observations"]["evidence"]["sha256"] = evidence_hash
+        acceptance_path.write_text(json.dumps(acceptance))
+        acceptance_hash = runner._hash(acceptance_path)
+
+        prepared_path = self.run_dir / "manifest.json"
+        prepared = json.loads(prepared_path.read_text())
+        prepared["source_manifest_sha256"] = source_hash
+        prepared["source_evidence_sha256"] = evidence_hash
+        prepared["source_acceptance_sha256"] = acceptance_hash
+        prepared["inputs"]["source-manifest.json"]["sha256"] = source_hash
+        prepared["inputs"]["source-review-evidence.json"]["sha256"] = evidence_hash
+        prepared_path.write_text(json.dumps(prepared))
+
+    def _reset_prepared_run(self, character_id="lena", acceptance_changes=None):
+        shutil.rmtree(self.run_dir)
+        self._make_prepared_run(character_id, acceptance_changes)
 
     def _patch_validation(self):
         return (
@@ -159,6 +201,80 @@ class VoiceConversionRunnerTests(unittest.TestCase):
         record["source_audio_sha256"] = "0" * 64
         source_quality.write_text(json.dumps(record))
         with self.assertRaisesRegex(ValueError, "bound to different source media"):
+            runner.validate_prepared(self.run_dir)
+
+    def test_prepared_validation_returns_lena_dialogue(self):
+        inputs = runner.validate_prepared(self.run_dir)
+        self.assertEqual(inputs["dialogue"], runner.BINDINGS["lena"]["dialogue"])
+        self.assertEqual(inputs["voice_id"], "af_sarah")
+
+    def test_owen_prepared_validation_and_conversion_status_use_michael_voice(self):
+        self._reset_prepared_run("owen")
+        inputs = runner.validate_prepared(self.run_dir)
+        self.assertEqual(inputs["dialogue"], "Then let's keep going.")
+        self.assertEqual(inputs["character"]["id"], "owen")
+        self.assertEqual(inputs["voice_id"], "am_michael")
+        self.assertEqual(inputs["reference"], (self.run_dir / "characters/owen/voice.wav").resolve())
+
+        if sf is None or np is None:
+            self.skipTest("requires optional Seed-VC soundfile/numpy conversion dependencies")
+        contexts = self._patch_validation()
+        with contexts[0], contexts[1], contexts[2], patch.object(runner, "_mps_info", return_value={"device": "mps"}), \
+                patch.object(runner, "_run_inference") as fake_inference:
+            def convert(code, models, conversion, inputs, **kwargs):
+                raw = conversion / "raw" / "generated.wav"
+                write_wav(raw)
+                config = conversion / "config.local.yml"
+                config.write_text("test config")
+                return {"raw_output": raw, "elapsed_seconds": 3.0, "config_file": config,
+                        "pinned_config": self.pinned_config, "settings": {"diffusion_steps": 30}}
+            fake_inference.side_effect = convert
+            result = runner.run(self.run_dir, code_dir=self.code, models_dir=self.models,
+                                lock_factory=nullcontext)
+        self.assertEqual(result["status"], "converted-needs-review")
+        self.assertEqual(result["voice_id"], "am_michael")
+        self.assertFalse(result["fixed_voice_acceptance"])
+        status = json.loads((self.run_dir / "conversion-status.json").read_text())
+        self.assertEqual(status["voice_id"], "am_michael")
+
+    def test_rejects_wrong_source_character_voice_or_prepared_reference(self):
+        self._rewrite_source_manifest(character_id="owen")
+        with self.assertRaisesRegex(ValueError, "source manifest character"):
+            runner.validate_prepared(self.run_dir)
+
+        self._reset_prepared_run()
+        source = json.loads((self.run_dir / "source-manifest.json").read_text())
+        source["character_snapshot"]["voice_id"] = "am_michael"
+        self._rewrite_source_manifest(character_snapshot=source["character_snapshot"])
+        with self.assertRaisesRegex(ValueError, "source manifest character"):
+            runner.validate_prepared(self.run_dir)
+
+        self._reset_prepared_run()
+        prepared_path = self.run_dir / "manifest.json"
+        prepared = json.loads(prepared_path.read_text())
+        prepared["character"]["voice_id"] = "am_michael"
+        prepared_path.write_text(json.dumps(prepared))
+        with self.assertRaisesRegex(ValueError, "review-pending supported voice"):
+            runner.validate_prepared(self.run_dir)
+
+        self._reset_prepared_run()
+        prepared = json.loads(prepared_path.read_text())
+        prepared["canonical_reference_path"] = "characters/owen/voice.wav"
+        prepared_path.write_text(json.dumps(prepared))
+        with self.assertRaisesRegex(ValueError, "reference hash"):
+            runner.validate_prepared(self.run_dir)
+
+    def test_owen_requires_native_take_acceptance_not_legacy_lena_flag(self):
+        self._reset_prepared_run("owen", {"native_take_accepted": False, "milestone_a_passed": True})
+        with self.assertRaisesRegex(ValueError, "acceptance copy"):
+            runner.validate_prepared(self.run_dir)
+
+        self._reset_prepared_run("owen", {"character_id": "lena"})
+        with self.assertRaisesRegex(ValueError, "acceptance copy"):
+            runner.validate_prepared(self.run_dir)
+
+        self._reset_prepared_run("lena", {"native_take_accepted": False, "milestone_a_passed": False})
+        with self.assertRaisesRegex(ValueError, "acceptance copy"):
             runner.validate_prepared(self.run_dir)
 
     def test_rejects_self_consistent_prep_manifest_with_unanchored_accepted_video(self):

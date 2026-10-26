@@ -1,4 +1,4 @@
-"""Remux and independently review a converted Lena voice take without accepting it."""
+"""Remux and independently review a converted voice take without accepting it."""
 
 from __future__ import annotations
 
@@ -276,8 +276,9 @@ def _word_timings(transcript: dict) -> list[dict]:
     return words
 
 
-def _compare_word_timings(source: list[dict], converted: list[dict]) -> list[dict]:
-    expected = _normalize(EXPECTED_TEXT).split()
+def _compare_word_timings(source: list[dict], converted: list[dict],
+                           expected_text: str = EXPECTED_TEXT) -> list[dict]:
+    expected = _normalize(expected_text.replace("'", "").replace("’", "")).split()
     source_map = {word["word"]: word for word in source}
     converted_map = {word["word"]: word for word in converted}
     result = []
@@ -335,10 +336,15 @@ def review_voice_conversion(run_dir: Path) -> dict:
     import run_voice_conversion as conversion_runner
 
     prepared = conversion_runner.validate_prepared(run_dir)
+    expected_text = prepared["dialogue"]
+    character_id = prepared["character"]["id"]
+    voice_id = prepared["voice_id"]
     status = _json(status_path)
     if (status.get("status") != "converted-needs-review"
             or status.get("fixed_voice_acceptance") is not False):
         raise ValueError("Conversion status must be converted-needs-review with fixed voice unaccepted.")
+    if status.get("voice_id") != voice_id:
+        raise ValueError("Conversion status voice ID differs from the validated prepared run.")
     if status.get("source_hashes") != prepared["source_hashes"]:
         raise ValueError("Conversion status source hashes differ from the validated prepared run.")
     output_record = status.get("converted_output", {})
@@ -350,10 +356,11 @@ def review_voice_conversion(run_dir: Path) -> dict:
     output_dir.mkdir()
     review = {"version": 1, "status": "reviewing", "fixed_voice_acceptance": False,
               "human_review": {"status": "pending", "reviewer": None},
+              "character_id": character_id, "voice_id": voice_id,
               "source_hashes": prepared["source_hashes"],
               "conversion_status_sha256": _hash(status_path),
               "converted_input": {"file": "conversion/converted.wav", "sha256": _hash(converted)},
-              "expected_text": EXPECTED_TEXT, "created_at": datetime.now(timezone.utc).isoformat(),
+              "expected_text": expected_text, "created_at": datetime.now(timezone.utc).isoformat(),
               "limitations": ["Transcription, codec checks, and frame hashes do not establish lip sync.",
                               "Whisper t_dtw values are rough token-alignment estimates, not word centers, onsets, or ends.",
                               "No independent listening, speaker identity, or acceptance decision is claimed."]}
@@ -448,14 +455,16 @@ def review_voice_conversion(run_dir: Path) -> dict:
                                      "json_sha256": _hash(transcript_path), "text_file": text_path.name,
                                      "text_sha256": _hash(text_path) if text_path.is_file() else None,
                                      "observed": observed, "normalized_observed": _normalize(observed),
-                                     "normalized_expected": _normalize(EXPECTED_TEXT),
-                                     "automated_result": "match" if _normalize(observed) == _normalize(EXPECTED_TEXT) else "mismatch",
+                                     "expected_text": expected_text,
+                                     "normalized_expected": _normalize(expected_text),
+                                     "automated_result": "match" if _normalize(observed) == _normalize(expected_text) else "mismatch",
                                      "estimated_word_timings": word_times,
                                      "timing_reliability": "rough estimates only; not calibrated phoneme or lip-sync timing"}
         review["transcriptions"] = transcriptions
         review["word_timing_comparison"] = {
             "words": _compare_word_timings(transcriptions["source"]["estimated_word_timings"],
-                                             transcriptions["converted"]["estimated_word_timings"]),
+                                             transcriptions["converted"]["estimated_word_timings"],
+                                             expected_text=expected_text),
             "method": "Whisper token offsets and t_dtw token-alignment timestamps; integers interpreted as 10 ms units",
             "use_limit": "Rough token alignment only, not a word center/onset/end or calibrated speech boundary; cannot establish lip sync or acceptance."}
         review["commands"] = {"source_framemd5": remux["source_framemd5_command"],
@@ -480,7 +489,7 @@ def review_voice_conversion(run_dir: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("run_dir", type=Path, help="prepared Lena run with completed conversion")
+    parser.add_argument("run_dir", type=Path, help="validated prepared run with completed conversion")
     args = parser.parse_args(argv)
     try:
         result = review_voice_conversion(args.run_dir)

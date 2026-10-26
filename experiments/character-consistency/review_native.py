@@ -1,4 +1,4 @@
-"""Collect independent, reviewable evidence for one native Lena diagnostic take.
+"""Collect independent, reviewable evidence for one native character diagnostic take.
 
 Run after python/native_reference.py has finished. This command creates a fresh
 ``review`` directory and never changes the render or existing review evidence.
@@ -23,7 +23,10 @@ SCRIPT = Path(__file__).resolve()
 VISION_SCRIPT = SCRIPT.with_name("inspect_native.swift")
 MODEL = ROOT / ".cache/whisper/ggml-base.en.bin"
 MODEL_RECORD = MODEL.with_name("model.json")
-EXPECTED = "We still have some time."
+BINDINGS = {
+    "lena": ("SUE", "sue-line", "We still have some time."),
+    "owen": ("JOE", "joe-line", "Then let's keep going."),
+}
 FRAMES, FPS, WIDTH, HEIGHT = 96, 24, 1280, 704
 
 
@@ -41,6 +44,29 @@ def file_record(path: Path, run: Path) -> dict:
 
 def normalize(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+(?:'[a-z0-9]+)?", text.casefold()))
+
+
+def validate_manifest(manifest: dict, render: dict) -> tuple[str, str]:
+    character = manifest.get("character_id")
+    binding = BINDINGS.get(character)
+    snapshot = manifest.get("character_snapshot", {})
+    if (binding is None
+            or (manifest.get("role"), manifest.get("line_id"), manifest.get("dialogue")) != binding
+            or snapshot.get("id") != character or render.get("character", {}).get("id") != character):
+        raise ValueError("Native diagnostic character, role, dialogue, and snapshot binding do not match")
+    if (manifest.get("label") != "diagnostic-native-voice" or render.get("status") != "rendered-needs-review"
+            or manifest.get("fixed_voice_acceptance") is not False
+            or render.get("fixed_voice_acceptance") is not False
+            or manifest.get("seed") != 83
+            or (manifest.get("frames"), manifest.get("fps"), manifest.get("width"), manifest.get("height"))
+            != (FRAMES, FPS, WIDTH, HEIGHT)):
+        raise ValueError("Run is not a completed 96-frame native-reference diagnostic")
+    source_manifest = {key: value for key, value in manifest.items() if key != "source_fingerprint"}
+    fingerprint = hashlib.sha256(json.dumps(source_manifest, sort_keys=True,
+                                            separators=(",", ":")).encode()).hexdigest()
+    if fingerprint != manifest.get("source_fingerprint"):
+        raise ValueError("Native-reference manifest changed after preparation")
+    return character, binding[2]
 
 
 def command(args: list[str], *, stdout: Path | None = None, stderr: Path | None = None) -> None:
@@ -158,6 +184,7 @@ def review_native(run: Path) -> dict:
     evidence: dict = {"version": 1, "status": "collecting", "review": {
         "spoken_words": "pending-human-listening", "captions": "pending-human-visual-review",
         "face_identity": "pending-human-visual-review", "lip_sync": "pending-human-audiovisual-review",
+        "source_speech_quality": "pending-human-listening",
         "fixed_voice_acceptance": False}}
 
     def save() -> None:
@@ -174,20 +201,14 @@ def review_native(run: Path) -> dict:
         manifest_path, render_path = run / "manifest.json", run / "render.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         render = json.loads(render_path.read_text(encoding="utf-8"))
-        if (manifest.get("label") != "diagnostic-native-voice" or render.get("status") != "rendered-needs-review"
-                or manifest.get("dialogue") != EXPECTED or manifest.get("seed") != 83
-                or (manifest.get("frames"), manifest.get("fps"), manifest.get("width"), manifest.get("height"))
-                != (FRAMES, FPS, WIDTH, HEIGHT)):
-            raise ValueError("Run is not the completed 96-frame Lena native-reference diagnostic")
-        source_manifest = {key: value for key, value in manifest.items() if key != "source_fingerprint"}
-        fingerprint = hashlib.sha256(json.dumps(source_manifest, sort_keys=True,
-                                                separators=(",", ":")).encode()).hexdigest()
-        if fingerprint != manifest.get("source_fingerprint"):
-            raise ValueError("Native-reference manifest changed after preparation")
+        character, expected = validate_manifest(manifest, render)
+        evidence["character_id"] = character
+        evidence["role"] = manifest["role"]
+        evidence["line_id"] = manifest["line_id"]
         inputs = {name: run / relative for name, relative in {
             "manifest": "manifest.json", "render": "render.json", "video": "video.mp4",
             "native_video": "video.native.mp4", "native_audio": "native-audio.wav",
-            "canonical_portrait": "characters/lena/reference.png", "starting_image": "start.png",
+            "canonical_portrait": f"characters/{character}/reference.png", "starting_image": "start.png",
             "prompt": "prompt.txt", "dialogue": "dialogue.txt",
         }.items()}
         evidence["inputs"] = {name: file_record(path, run) for name, path in inputs.items()}
@@ -196,7 +217,7 @@ def review_native(run: Path) -> dict:
             recorded = render.get(field, {}).get("sha256")
             if recorded != evidence["inputs"][name]["sha256"]:
                 raise ValueError(f"Rendered {name} hash does not match render.json")
-        if inputs["dialogue"].read_text(encoding="utf-8").strip() != EXPECTED:
+        if inputs["dialogue"].read_text(encoding="utf-8").strip() != expected:
             raise ValueError("Saved dialogue differs from the requested line")
         if inputs["prompt"].read_text(encoding="utf-8").strip() != manifest["prompt"]:
             raise ValueError("Saved prompt differs from the rendered prompt")
@@ -243,9 +264,9 @@ def review_native(run: Path) -> dict:
         transcript_path = transcript_prefix.with_suffix(".json")
         transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
         observed = " ".join(item.get("text", "").strip() for item in transcript.get("transcription", []))
-        match = normalize(observed) == normalize(EXPECTED)
+        match = normalize(observed) == normalize(expected)
         evidence["transcript"] = {
-            "expected": EXPECTED, "observed": observed, "normalized_expected": normalize(EXPECTED),
+            "expected": expected, "observed": observed, "normalized_expected": normalize(expected),
             "normalized_observed": normalize(observed), "automated_result": "match" if match else "mismatch",
             "method": "whisper.cpp base.en, CPU, no initial prompt; verify by listening",
         }
@@ -266,7 +287,7 @@ def review_native(run: Path) -> dict:
             "frames_with_detected_face": sum(bool(frame.get("faces")) for frame in frames),
             "frames_with_multiple_faces": sum(len(frame.get("faces", [])) > 1 for frame in frames),
             "frames_inspected": len(frames), "vision_revision": inspection["face_revision"],
-            "limitation": "Face detection and landmarks do not establish Lena's identity or lip sync.",
+            "limitation": "Face detection and landmarks do not establish the performer's identity or lip sync.",
         }
         evidence["contact_sheets"] = make_sheets(inputs["video"], frames,
             inputs["canonical_portrait"], review, ffmpeg)

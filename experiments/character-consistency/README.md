@@ -8,7 +8,7 @@ rendering continues to use its current path while this experiment is evaluated.
 
 ## Native-reference control (PLAN2 Milestone A)
 
-The next experiment in [PLAN2.md](../../PLAN2.md) restores joint audio/video
+The native control in [PLAN2.md](../../PLAN2.md) restores joint audio/video
 generation with Lena's existing desert starting image:
 
 ```sh
@@ -20,6 +20,21 @@ line “We still have some time.” It uses the pinned `DistilledPipeline`, the
 workspace GPU lock, and first-frame image conditioning. It does not change GUI
 defaults. Every invocation requires a new output directory; an existing take
 cannot be overwritten. An optional `--run-dir outputs/<new-run>` sets its location.
+
+For Owen's Milestone B control, select his saved desert reference and exact line
+“Then let's keep going.” with the same settings:
+
+```sh
+.venv/bin/python python/native_reference.py --character owen --run-dir outputs/<new-owen-run>
+.venv/bin/python experiments/character-consistency/review_native.py outputs/<new-owen-run>
+```
+
+The helper defaults to Lena. Both render and review validate the selected
+performer's role and exact dialogue; rendering verifies the starting image and
+canonical portrait hashes. Human review must accept Owen's likeness, words,
+captions, lip sync, and clean source speech before conversion. The review records
+remain pending until that assessment; transcript and duration checks cannot
+establish it.
 
 The `diagnostic-native-voice` run saves the complete prompt, source request,
 original starting image, canonical character snapshots, code and dependency
@@ -47,8 +62,9 @@ below.
 
 ## Voice-conversion experiment (PLAN2 Milestone B)
 
-The experiment uses Seed-VC V1 with the accepted native take and Lena's original
-`af_sarah` reference. Preparation verifies the acceptance record, media, review
+The experiment uses Seed-VC V1 with the accepted native take and its original
+canonical reference: Lena's `af_sarah` or Owen's `am_michael`. Preparation derives
+the performer from the accepted manifest and verifies the acceptance record, media, review
 evidence, and canonical character hashes before copying them to a new run.
 It preserves the original reference and records PCM statistics; those statistics
 do not establish perceptual quality or speaker identity.
@@ -67,6 +83,22 @@ git -C .cache/seed-vc checkout --detach 51383efd921027683c89e5348211d93ff12ac2a8
 cp outputs/2026-10-26_voice-conversion-lena/source-quality.json \
   outputs/<new-run>/source-quality.json
 ```
+
+Preparation defaults to Lena's accepted source. For Owen's
+[accepted native control](native-reference-owen.json), use:
+
+```sh
+.venv/bin/python experiments/character-consistency/prepare_voice_reference.py \
+  --acceptance experiments/character-consistency/native-reference-owen.json \
+  --run-dir outputs/<new-owen-conversion>
+cp outputs/2026-10-26_native-reference-owen/source-quality.json \
+  outputs/<new-owen-conversion>/source-quality.json
+```
+
+Owen's native control passed human review for lip sync, likeness, words, and
+captions, and the user confirmed clean speech with quiet around it. Independent
+transcription recovered “Then let's keep going.” and OCR found no text in all
+96 frames. The native generated voice remains diagnostic.
 
 The copied source-quality confirmation is valid only when the new prepared
 run's source video and audio hashes match that confirmation. The runner checks
@@ -115,8 +147,20 @@ All 96 video frame hashes and their timing match the source. The remuxed AAC has
 match the source line. DTW reports approximate token alignment differences of
 0–40 ms, which are estimates rather than proof of synchronization. Full settings,
 hashes, and review are in the [Lena conversion record](voice-conversion-lena.json).
-Fixed-voice acceptance is true for this Lena performance only. Owen remains
-pending, so Milestone B is incomplete and the GUI/default render path is unchanged.
+Owen's [converted clip](../../outputs/2026-10-26_voice-conversion-owen/voice-review/converted-video.mp4)
+has also passed human review for voice match, lip sync, exact words, and audio
+quality. It uses his original `am_michael` reference and the accepted native line
+“Then let's keep going.” Conversion took 32.91 seconds; all 96 video frame hashes
+and timing match the source. The PCM16 output has no clipping, and only 136 zero
+samples (6.17 ms) were appended to reach four seconds. AAC correlation is 0.999922
+at zero offset, ALAC is exact, and both transcripts match. A preserved addendum
+corrects contraction matching in the rough token alignment comparison; the
+0–20 ms differences remain estimates, not proof of sync. See the
+[Owen conversion record](voice-conversion-owen.json) for hashes and acceptance.
+
+Milestone B is complete for these two reviewed performances. Fixed-voice
+acceptance is limited to those takes. The GUI/default render path is unchanged;
+Milestone C must establish consistency across scenes and new dialogue next.
 
 ## Prepare speech and reference assets
 

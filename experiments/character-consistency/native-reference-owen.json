@@ -1,0 +1,244 @@
+{
+  "version": 1,
+  "recorded_at": "2026-10-26T11:16:24.050696+00:00",
+  "status": "accepted-diagnostic-native-take",
+  "label": "diagnostic-native-voice",
+  "character_id": "owen",
+  "role": "JOE",
+  "line_id": "joe-line",
+  "dialogue": "Then let's keep going.",
+  "native_take_accepted": true,
+  "milestone_b_passed": false,
+  "fixed_voice_acceptance": false,
+  "run": "outputs/2026-10-26_native-reference-owen",
+  "commands": [
+    ".venv/bin/python python/native_reference.py --character owen --run-dir outputs/2026-10-26_native-reference-owen",
+    ".venv/bin/python experiments/character-consistency/review_native.py outputs/2026-10-26_native-reference-owen"
+  ],
+  "reproduction_note": "Use a new --run-dir for a new take; existing runs and review evidence cannot be overwritten.",
+  "settings": {
+    "seed": 83,
+    "frames": 96,
+    "fps": 24,
+    "width": 1280,
+    "height": 704,
+    "image_conditioning": "whole-first-frame",
+    "hold_image_framing": false,
+    "audio_input": null
+  },
+  "runtime": {
+    "backend": "mlx",
+    "model": "dgrauet/ltx-2.5-mlx-q8",
+    "model_revision": "746ca9aacb697d2c739f544d68b584214dedcc75",
+    "runtime_revision": "14a3ddd6054736beb45b4d836135fa4d44490531",
+    "pipeline": "distilled-two-stage",
+    "stage1_steps": 8,
+    "stage2_steps": 3,
+    "quantization": "int8",
+    "audio": "generated",
+    "inference_frames": 97,
+    "output_frames": 96,
+    "elapsed_seconds": 239.98,
+    "phase_seconds": {
+      "runtime": 0.001,
+      "cache": 0.204,
+      "pipeline": 0.003,
+      "prompt": 6.556,
+      "stage1": 76.559,
+      "upscale": 0.516,
+      "refine": 0.552,
+      "stage2": 131.952,
+      "decoders": 0.038,
+      "decode": 22.854,
+      "encode": 0.327,
+      "validate": 0.358
+    },
+    "source_image": {
+      "source_file": "/Users/aa/os/aivs/outputs/2026-10-26_native-reference-owen/start.png",
+      "source_sha256": "48f59a0ec47a9f2d324063246b90c5d274bef43c23b46d3d8290b3356e2a4a22",
+      "width": 1672,
+      "height": 941,
+      "conditioning": "whole-first-frame",
+      "strength": 1.0
+    },
+    "source_audio": null,
+    "peak_decode_mlx_memory_gib": 13.97,
+    "video": {
+      "codec_name": "h264",
+      "codec_type": "video",
+      "width": 1280,
+      "height": 704,
+      "pix_fmt": "yuv420p",
+      "r_frame_rate": "24/1",
+      "start_time": "0.000000",
+      "duration": "4.000000",
+      "nb_read_frames": "96",
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "48000",
+        "channels": 2,
+        "r_frame_rate": "0/0",
+        "start_time": "0.000000",
+        "duration": "4.000000",
+        "nb_read_frames": "188"
+      }
+    },
+    "software": {
+      "mlx": "0.32.4",
+      "mlx-metal": "0.32.4",
+      "mlx-arsenal": "0.17.0",
+      "ltx-core-mlx": "0.18.0",
+      "ltx-pipelines-mlx": "0.18.0",
+      "transformers": "5.20.2"
+    }
+  },
+  "source": {
+    "manifest": {
+      "file": "outputs/2026-10-26_native-reference-owen/manifest.json",
+      "sha256": "85d55d1a2b59c4e2943ea15e7fa117a8dc7893adaa1eaa502067d304c3660693"
+    },
+    "render_report": {
+      "file": "outputs/2026-10-26_native-reference-owen/render.json",
+      "sha256": "d7ba3f3faf7f690b641f79bf33986527d78eac81f7540aa244d777f97b432ccb"
+    },
+    "prompt": "A natural live-action medium close-up of the man in the reference image, in the same setting: desert road at dusk. He looks toward an off-camera conversation partner to the left. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition. He speaks naturally and calmly: \u201cThen let's keep going.\u201d Leave a brief quiet moment at the beginning and end, with clean isolated speech.",
+    "hashes": {
+      "request": "f7f8b0f6cc083fff670bede7db80959c6ad8e130e1515285f4cfc16371fdf498",
+      "starting_image": "48f59a0ec47a9f2d324063246b90c5d274bef43c23b46d3d8290b3356e2a4a22",
+      "canonical_portrait": "9ccd8acb916c1a4e8bbed42707772bfac7ac69c750fed1fab66b44d8881e15c5",
+      "reference_provenance": "f97e6fb305ac4e9c1b16942412cda01e22007b73e6b8965f4d7104b53e2b582b"
+    },
+    "git_head": "3ec72ac8294b9f509bed0bd1e1060d366e4b8976",
+    "git_status": " M experiments/character-consistency/review_native.py\n M python/native_reference.py\n M python/test_native_reference.py\n"
+  },
+  "outputs": {
+    "video": {
+      "file": "outputs/2026-10-26_native-reference-owen/video.mp4",
+      "sha256": "661f5d163b348ad5b18005b83e4906d15b67fe7f1a4d63a15bd26ea9558dc838"
+    },
+    "original_native_video": {
+      "file": "outputs/2026-10-26_native-reference-owen/video.native.mp4",
+      "sha256": "8648c8a1fa65ce7bcecf7a2060a6c7980fcef3f05cafd1d623d72de089dbe0e1"
+    },
+    "native_audio": {
+      "file": "outputs/2026-10-26_native-reference-owen/native-audio.wav",
+      "sha256": "207c8ed335e83b94aba50cd8258e8c6b9388f8a99fb38ed7f7658938b20ddbc1"
+    }
+  },
+  "audio_derivation": "native-audio.wav is 48 kHz stereo 16-bit PCM decoded from final video AAC, not a lossless pre-encoding waveform. Original native media is retained separately.",
+  "automated_observations": {
+    "transcript": {
+      "expected": "Then let's keep going.",
+      "observed": "Then let's keep going.",
+      "normalized_expected": "then let's keep going",
+      "normalized_observed": "then let's keep going",
+      "automated_result": "match",
+      "method": "whisper.cpp base.en, CPU, no initial prompt; verify by listening"
+    },
+    "ocr": {
+      "frames_inspected": 96,
+      "text_bearing_frames": 0,
+      "candidates": [],
+      "automated_result": "no-text-detected",
+      "limitation": "OCR misses are possible; inspect whole frames for captions and overlays.",
+      "vision_revision": 3
+    },
+    "faces": {
+      "frames_with_detected_face": 96,
+      "frames_with_multiple_faces": 0,
+      "frames_inspected": 96,
+      "vision_revision": 3,
+      "limitation": "Face detection and landmarks do not establish the performer's identity or lip sync."
+    },
+    "evidence": {
+      "file": "outputs/2026-10-26_native-reference-owen/review/evidence.json",
+      "sha256": "a03339f92dbc575b9bb9a667c34a045f36eb4964b9163129a6fc708b1b71171c"
+    }
+  },
+  "visual_review": {
+    "reviewer": "assistant",
+    "method": "Compared canonical portrait and desert starting image with all 96 decoded face frames, first/middle/last whole frames and a 6fps whole-frame contact sheet.",
+    "face_identity": "Short salt-and-pepper hair, broad face, beard, eye/nose shape and denim wardrobe remain visually consistent. Expression changes and brief motion softness around 1.7\u20132.0 seconds; no obvious identity swap or persistent deformation observed.",
+    "captions": "No captions or overlay text visible in sampled whole frames; all-frame OCR detected none.",
+    "limitations": "Visual comparison is not calibrated identity measurement. Static frames do not establish lip sync. Assistant did not listen to the clip or claim audiovisual acceptance.",
+    "sheets": {
+      "whole-frames-6fps.png": {
+        "file": "outputs/2026-10-26_native-reference-owen/review/whole-frames-6fps.png",
+        "sha256": "86f33e135e8d6c2b4e4b26c53a2e8bb18e04a2b7c7e102d423d2c21b08ad9c97"
+      },
+      "portrait-first-middle-last.png": {
+        "file": "outputs/2026-10-26_native-reference-owen/review/portrait-first-middle-last.png",
+        "sha256": "806b3cb39e08a081bb768624a461e28ce853f7c1846e104736feb679a293037b"
+      },
+      "faces-00-23.png": {
+        "file": "outputs/2026-10-26_native-reference-owen/review/faces-00-23.png",
+        "sha256": "c3c4d61e23af23e35ab673c4cec70607ac9b1e071c121e7a13cd149274afbc18"
+      },
+      "faces-24-47.png": {
+        "file": "outputs/2026-10-26_native-reference-owen/review/faces-24-47.png",
+        "sha256": "220df6f9c99cc9d87161dc1e2af43607df45e0437310f7c9f1b039e8bec3c9fe"
+      },
+      "faces-48-71.png": {
+        "file": "outputs/2026-10-26_native-reference-owen/review/faces-48-71.png",
+        "sha256": "a54761a9c604aa57e2149d5572e7eb78d26f2c7b816c470a7490efd1535a7876"
+      },
+      "faces-72-95.png": {
+        "file": "outputs/2026-10-26_native-reference-owen/review/faces-72-95.png",
+        "sha256": "48ca17b122ba958a3363d11bf09dbbcd8d4f8ad779519a7c70623d74266ccc4d"
+      }
+    }
+  },
+  "human_review": {
+    "status": "accepted",
+    "reviewer": "user",
+    "recorded_at": "2026-10-26T11:16:24.050696+00:00",
+    "question": "After watching Owen\u2019s clip with sound, are its lip sync, likeness, exact words (\u201cThen let's keep going.\u201d), and absence of captions acceptable? Clip: /Users/aa/os/aivs/outputs/2026-10-26_native-reference-owen/video.mp4 \u2014 portrait: /Users/aa/os/aivs/outputs/2026-10-26_native-reference-owen/canonical-portrait.png. PLAN2 Milestone B requires this review before conversion.",
+    "response": "Accept lip sync, likeness, words, and captions",
+    "lip_sync": "accepted",
+    "face_identity": "accepted",
+    "spoken_words": "accepted",
+    "captions": "accepted",
+    "source_speech_quality": "clean-speech-confirmed",
+    "source_quality": {
+      "file": "outputs/2026-10-26_native-reference-owen/source-quality.json",
+      "sha256": "cc0012b9843ddd09ee3cd491abcca948e6ce7a50113b690c4dc86db44f3e181f"
+    },
+    "reviewed_video": {
+      "file": "outputs/2026-10-26_native-reference-owen/video.mp4",
+      "sha256": "661f5d163b348ad5b18005b83e4906d15b67fe7f1a4d63a15bd26ea9558dc838"
+    },
+    "assistant_audio_review": false
+  },
+  "validation": {
+    "python_tests": {
+      "command": ".venv/bin/python -m unittest discover -s python",
+      "tests_run": 110,
+      "skips": 3,
+      "result": "passed"
+    },
+    "media": {
+      "codec_name": "h264",
+      "codec_type": "video",
+      "width": 1280,
+      "height": 704,
+      "pix_fmt": "yuv420p",
+      "r_frame_rate": "24/1",
+      "start_time": "0.000000",
+      "duration": "4.000000",
+      "nb_read_frames": "96",
+      "audio": {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "48000",
+        "channels": 2,
+        "r_frame_rate": "0/0",
+        "start_time": "0.000000",
+        "duration": "4.000000",
+        "nb_read_frames": "188"
+      }
+    }
+  },
+  "interpretation": "Human acceptance applies to this native Owen take. Its generated voice remains diagnostic and does not establish the saved voice identity or broader scene consistency.",
+  "next_step": "Prepare Owen\u2019s canonical am_michael voice reference and repeat the pinned conservative conversion on this accepted performance, then obtain human voice-match and lip-sync review."
+}

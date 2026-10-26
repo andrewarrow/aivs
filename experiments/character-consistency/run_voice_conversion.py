@@ -1,4 +1,4 @@
-"""Run one pinned, offline Seed-VC conversion on a prepared accepted Lena take."""
+"""Run one pinned, offline Seed-VC conversion on a prepared accepted Lena or Owen take."""
 
 from __future__ import annotations
 
@@ -30,6 +30,12 @@ REQUIRED_MODELS = {
     "whisper": ("openai/whisper-small", ("config.json", "preprocessor_config.json", "model.safetensors")),
 }
 SEED = 83
+BINDINGS = {
+    "lena": {"role": "SUE", "line_id": "sue-line", "dialogue": "We still have some time.",
+             "voice_id": "af_sarah"},
+    "owen": {"role": "JOE", "line_id": "joe-line", "dialogue": "Then let's keep going.",
+             "voice_id": "am_michael"},
+}
 
 sys.path.insert(0, str(ROOT / "python"))
 import characters  # noqa: E402
@@ -57,16 +63,23 @@ def validate_prepared(run_dir: Path) -> dict:
     run_dir = Path(run_dir).resolve()
     manifest_path = _safe_file(run_dir / "manifest.json", "prepared manifest")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    character_id = manifest.get("character", {}).get("id")
+    binding = BINDINGS.get(character_id) if isinstance(character_id, str) else None
+    if binding is None:
+        raise ValueError("Prepared voice reference has an unsupported character identity.")
+    voice_id = binding["voice_id"]
     if (manifest.get("status") != "reference-prepared-needs-quality-review"
             or manifest.get("fixed_voice_acceptance") is not False
-            or manifest.get("character", {}).get("id") != "lena"
-            or manifest.get("character", {}).get("voice_id") != "af_sarah"):
-        raise ValueError("Input is not an unaccepted, review-pending Lena voice-reference preparation.")
+            or manifest.get("character", {}).get("voice_id") != voice_id):
+        raise ValueError("Input is not an unaccepted, review-pending supported voice-reference preparation.")
     acceptance_path = _safe_file(run_dir / "acceptance.json", "acceptance copy")
     acceptance = json.loads(acceptance_path.read_text(encoding="utf-8"))
     if (_hash(acceptance_path) != manifest.get("source_acceptance_sha256")
+            or (acceptance.get("character_id") is not None
+                and acceptance.get("character_id") != character_id)
             or acceptance.get("status") != "accepted-diagnostic-native-take"
-            or acceptance.get("milestone_a_passed") is not True
+            or not (acceptance.get("native_take_accepted") is True
+                    or (character_id == "lena" and acceptance.get("milestone_a_passed") is True))
             or acceptance.get("fixed_voice_acceptance") is not False
             or acceptance.get("human_review", {}).get("status") != "accepted"
             or any(acceptance.get("human_review", {}).get(k) != "accepted"
@@ -95,8 +108,14 @@ def validate_prepared(run_dir: Path) -> dict:
         if _hash(path) != expected or copied.get(name, {}).get("sha256") != expected:
             raise ValueError(f"Prepared source file hash does not match its manifest: {name}")
     source_manifest_obj = json.loads(source_manifest.read_text(encoding="utf-8"))
-    if source_manifest_obj.get("character_snapshot", {}).get("id") != "lena":
-        raise ValueError("Prepared source manifest is not the accepted Lena take.")
+    source_snapshot = source_manifest_obj.get("character_snapshot", {})
+    if (source_manifest_obj.get("character_id") != character_id
+            or source_snapshot.get("id") != character_id
+            or source_snapshot.get("voice_id") != voice_id
+            or (source_manifest_obj.get("role"), source_manifest_obj.get("line_id"),
+                source_manifest_obj.get("dialogue"))
+            != (binding["role"], binding["line_id"], binding["dialogue"])):
+        raise ValueError("Prepared source manifest character, voice, or dialogue binding is invalid.")
     accepted_source = acceptance.get("source", {})
     for key, expected in (("manifest", _hash(source_manifest)), ("render_report", _hash(source_render))):
         if accepted_source.get(key, {}).get("sha256") != expected:
@@ -129,19 +148,25 @@ def validate_prepared(run_dir: Path) -> dict:
         path = _safe_file(run_dir / f"evidence-{name}", f"visual evidence {name}")
         if _hash(path) != record.get("sha256"):
             raise ValueError(f"Copied visual evidence hash mismatch: {name}")
-    profile = characters._read_profile(run_dir / "characters/lena/character.json")
+    profile = characters._read_profile(run_dir / f"characters/{character_id}/character.json")
+    if profile.get("id") != character_id or profile.get("voice_id") != voice_id:
+        raise ValueError("Prepared character profile does not match the selected character and voice.")
     characters.verify_snapshots([profile], run_dir)
-    if profile != source_manifest_obj["character_snapshot"]:
-        raise ValueError("Prepared Lena snapshot differs from the accepted take snapshot.")
-    reference = _safe_file(run_dir / "characters/lena/voice.wav", "canonical voice reference")
+    if profile != source_snapshot:
+        raise ValueError("Prepared character snapshot differs from the accepted take snapshot.")
+    reference_path = f"characters/{character_id}/voice.wav"
+    reference = _safe_file(run_dir / reference_path, "canonical voice reference")
     expected_ref = manifest.get("character", {}).get("voice_reference_sha256")
     if (_hash(reference) != expected_ref or _hash(reference) != profile.get("voice_sample", {}).get("sha256")
             or manifest.get("source_character_voice_sha256") != expected_ref
-            or manifest.get("canonical_reference_path") != "characters/lena/voice.wav"):
+            or manifest.get("character", {}).get("voice_reference") != reference_path
+            or manifest.get("canonical_reference_path") != reference_path):
         raise ValueError("Prepared canonical voice reference hash does not match its accepted snapshot.")
     audio = _safe_file(run_dir / "source-audio.wav", "accepted native source audio")
     return {"manifest": manifest, "acceptance": acceptance, "source_video": run_dir / "source-video.mp4",
             "source_audio": audio, "reference": reference, "character": profile,
+            "dialogue": binding["dialogue"],
+            "voice_id": voice_id,
             "source_hashes": {"prepared_manifest": _hash(manifest_path), "acceptance": _hash(acceptance_path),
                               "source_quality": _hash(source_quality_path),
                               "video": _hash(run_dir / "source-video.mp4"),
@@ -339,7 +364,7 @@ def run(run_dir: Path, *, code_dir: Path = DEFAULT_CODE, models_dir: Path = DEFA
     device_info = (device_info_fn or _mps_info)()
     conversion_dir.mkdir()
     status = {"version": 1, "status": "converting", "fixed_voice_acceptance": False,
-              "source_hashes": inputs["source_hashes"], "voice_id": "af_sarah",
+              "source_hashes": inputs["source_hashes"], "voice_id": inputs["voice_id"],
               "code": code, "models_manifest_sha256": _hash(metadata_path),
               "model_files": model_files, "python": sys.version, "platform": platform.platform(),
               "device": device_info, "dependencies": _dependency_freeze(),

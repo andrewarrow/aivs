@@ -1,3 +1,4 @@
+import copy
 import json
 from contextlib import nullcontext
 from pathlib import Path
@@ -25,7 +26,9 @@ class NativeReferenceTests(unittest.TestCase):
         input_dir = self.root / "input"
         input_dir.mkdir(exist_ok=True)
         request = json.loads(REQUEST.read_text(encoding="utf-8"))
-        for record in (request["shots"][0]["image"], request["reference_provenance"]):
+        records = [shot["image"] for shot in request["shots"]]
+        records.append(request["reference_provenance"])
+        for record in records:
             source = REQUEST.parent / record["file"]
             target = input_dir / record["file"]
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -57,12 +60,13 @@ class NativeReferenceTests(unittest.TestCase):
 
         return calls, render, audio
 
-    def _run(self, *, render_fn=None, run_dir=None, request_file=None):
+    def _run(self, *, render_fn=None, run_dir=None, request_file=None, character="lena"):
         calls, render, audio = self._success_mocks()
         with patch.object(native.quality_backend, "doctor"), \
                 patch.object(native, "_extract_native_audio", audio), \
                 patch.object(native, "_final_video_info", return_value={"codec_name": "h264"}):
             report = native.run(run_dir or self.root / "run", request_file=request_file or self.request_file,
+                                character=character,
                                 character_root=ROOT, render_fn=render_fn or render,
                                 lock_factory=lambda _name: nullcontext())
         return report, run_dir or self.root / "run", calls
@@ -74,6 +78,7 @@ class NativeReferenceTests(unittest.TestCase):
         self.assertEqual(report["label"], "diagnostic-native-voice")
         self.assertFalse(report["fixed_voice_acceptance"])
         self.assertEqual(report["review"]["spoken_words"], "pending")
+        self.assertEqual(report["review"]["source_speech_quality"], "pending")
         self.assertEqual((calls["seed"], calls["frames"]), (83, 96))
         self.assertEqual(calls["kwargs"], {
             "image_file": (run_dir / "start.png").resolve(), "hold_image_framing": False,
@@ -93,6 +98,9 @@ class NativeReferenceTests(unittest.TestCase):
                          native._sha256(run_dir / "start.png"))
         self.assertTrue(manifest["source"]["git_head"])
         self.assertEqual(report["native_audio"]["derived_from"]["file"], "video.mp4")
+        self.assertEqual(report["character_id"], "lena")
+        self.assertEqual(report["role"], "SUE")
+        self.assertEqual(report["line"], "We still have some time.")
 
     def test_source_portrait_mismatch_fails_before_creating_run(self):
         request = json.loads(self.request_file.read_text())
@@ -104,6 +112,51 @@ class NativeReferenceTests(unittest.TestCase):
                        render_fn=lambda *args, **kwargs: self.fail("render must not run"),
                        lock_factory=lambda _name: nullcontext())
         self.assertFalse(run_dir.exists())
+
+    def test_owen_native_reference_is_bound_to_owen_shot_and_line(self):
+        report, run_dir, calls = self._run(character="owen")
+
+        self.assertEqual(report["status"], "rendered-needs-review")
+        self.assertEqual((report["character_id"], report["role"], report["line"]),
+                         ("owen", "JOE", "Then let's keep going."))
+        self.assertEqual((calls["seed"], calls["frames"]), (83, 96))
+        self.assertEqual(calls["kwargs"]["image_file"], (run_dir / "start.png").resolve())
+        self.assertTrue((run_dir / "characters/owen/reference.png").is_file())
+        prompt = (run_dir / "prompt.txt").read_text()
+        self.assertIn("He speaks naturally and calmly: “Then let's keep going.”", prompt)
+        self.assertNotIn("She speaks naturally", prompt)
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        self.assertEqual((manifest["role"], manifest["character_id"], manifest["line_id"]),
+                         ("JOE", "owen", "joe-line"))
+        self.assertEqual(manifest["dialogue"], "Then let's keep going.")
+        self.assertEqual(manifest["source"]["starting_image"]["sha256"],
+                         "48f59a0ec47a9f2d324063246b90c5d274bef43c23b46d3d8290b3356e2a4a22")
+        self.assertIn("--character", report["command"])
+        self.assertIn("owen", report["command"])
+
+    def test_owen_mismatched_identity_dialogue_or_source_hash_fails_before_render(self):
+        original = json.loads(self.request_file.read_text())
+        mutations = {
+            "wrong performer": lambda request: request["cast"][1].update(character="lena"),
+            "wrong role": lambda request: request["lines"][1].update(role="SUE"),
+            "wrong dialogue": lambda request: request["lines"][1].update(text="Wrong words."),
+            "wrong portrait": lambda request: request["shots"][1]["image"]["source_images"].update(owen="0" * 64),
+            "wrong starting image": lambda request: request["shots"][1]["image"].update(
+                file="references/desert-lena.png"),
+            "wrong source hash": lambda request: request["shots"][1]["image"].update(sha256="0" * 64),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                request = copy.deepcopy(original)
+                mutate(request)
+                self.request_file.write_text(json.dumps(request))
+                run_dir = self.root / f"rejected-{label.replace(' ', '-')}"
+                with self.assertRaises(ValueError):
+                    native.run(run_dir, request_file=self.request_file, character="owen",
+                               character_root=ROOT,
+                               render_fn=lambda *args, **kwargs: self.fail("render must not run"),
+                               lock_factory=lambda _name: nullcontext())
+                self.assertFalse(run_dir.exists())
 
     def test_existing_run_is_never_overwritten(self):
         run_dir = self.root / "existing"

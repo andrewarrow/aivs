@@ -1,12 +1,15 @@
 """Offline PCM and lossless-remux contracts for voice conversion review."""
 
 import importlib.util
+import json
 import math
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 import wave
 
 
@@ -93,6 +96,52 @@ class ReviewVoiceConversionTests(unittest.TestCase):
         self.assertNotIn("t_dtw_center_seconds", source[0])
         self.assertAlmostEqual(comparison[0]["t_dtw_alignment_delta_seconds"], -0.02)
         self.assertNotIn("t_dtw_center_delta_seconds", comparison[0])
+
+    def test_owen_dialogue_drives_expected_word_timing_comparison(self):
+        def transcript(tokens, alignments):
+            return {"transcription": [{"tokens": [
+                {"text": text, "offsets": {"from": index * 100, "to": (index + 1) * 100},
+                 "t_dtw": round(alignment * 100)}
+                for index, (text, alignment) in enumerate(zip(tokens, alignments))]}]}
+
+        expected_text = "Then let's keep going."
+        spoken_tokens = [" Then", " let", "'s", " keep", " going"]
+        source = review._word_timings(transcript(spoken_tokens, [0.50, 0.80, 0.90, 1.20, 1.60]))
+        converted = review._word_timings(transcript(spoken_tokens, [0.52, 0.78, 0.90, 1.25, 1.65]))
+        comparison = review._compare_word_timings(source, converted, expected_text=expected_text)
+
+        self.assertEqual([item["word"] for item in comparison], ["then", "lets", "keep", "going"])
+        self.assertAlmostEqual(comparison[0]["t_dtw_alignment_delta_seconds"], 0.02)
+        self.assertEqual(comparison[1]["source"]["word"], "lets")
+        self.assertEqual(comparison[1]["converted"]["word"], "lets")
+        self.assertAlmostEqual(comparison[1]["t_dtw_alignment_delta_seconds"][0], -0.02)
+        self.assertAlmostEqual(comparison[1]["t_dtw_alignment_delta_seconds"][1], 0.0)
+        self.assertAlmostEqual(comparison[2]["t_dtw_alignment_delta_seconds"], 0.05)
+        self.assertAlmostEqual(comparison[3]["t_dtw_alignment_delta_seconds"], 0.05)
+        self.assertNotIn("we", [item["word"] for item in comparison])
+
+    def test_review_rejects_conversion_status_voice_mismatch_before_output(self):
+        run_dir = self.root / "prepared-run"
+        conversion_dir = run_dir / "conversion"
+        conversion_dir.mkdir(parents=True)
+        converted = conversion_dir / "converted.wav"
+        converted.write_bytes(b"conversion output")
+        source_hashes = {"audio": "source-audio-hash"}
+        status = {"status": "converted-needs-review", "fixed_voice_acceptance": False,
+                  "voice_id": "af_sarah", "source_hashes": source_hashes,
+                  "converted_output": {"file": "conversion/converted.wav",
+                                       "sha256": review._hash(converted)}}
+        (run_dir / "conversion-status.json").write_text(json.dumps(status), encoding="utf-8")
+        conversion_runner = types.ModuleType("run_voice_conversion")
+        conversion_runner.validate_prepared = lambda _run_dir: {
+            "dialogue": "Then let's keep going.", "character": {"id": "owen"},
+            "voice_id": "owen_voice", "source_hashes": source_hashes}
+
+        with patch.dict("sys.modules", {"run_voice_conversion": conversion_runner}):
+            with self.assertRaisesRegex(ValueError, "voice ID differs"):
+                review.review_voice_conversion(run_dir)
+
+        self.assertFalse((run_dir / "voice-review").exists())
 
 
 if __name__ == "__main__":
