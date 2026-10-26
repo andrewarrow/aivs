@@ -1,5 +1,9 @@
 # AIVS
 
+https://github.com/user-attachments/assets/4e372e6e-2cd9-4b2f-ac84-19e1252cea96
+
+![AIVS screenplay editor beside its character gallery](docs/images/aivs-codex-scene-heading.png)
+
 AIVS turns a human-readable screenplay into an AI-generated video with speech.
 Write a scene, cast its characters, and choose **Generate video**. The app uses
 **Codex through its app-server protocol to turn the screenplay into a shooting
