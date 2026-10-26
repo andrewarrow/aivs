@@ -5,9 +5,9 @@ https://github.com/user-attachments/assets/4e372e6e-2cd9-4b2f-ac84-19e1252cea96
 ![AIVS screenplay editor beside its character gallery](docs/images/aivs-codex-scene-heading.png)
 
 AIVS turns a human-readable screenplay into an AI-generated video with speech.
-Write a scene, cast its characters, and choose **Generate video**. The app uses
-**Codex through its app-server protocol to turn the screenplay into a shooting
-script**, then uses **LTX-2.5 to render each shot's video and audio locally** on
+Write a scene, cast its characters, select its heading, and choose **Generate
+video**. The app uses **Codex through its app-server protocol to turn the scene
+into a shooting script**, then uses **LTX-2.5 to render each shot's video and audio locally** on
 an Apple Silicon Mac.
 
 ```text
@@ -134,10 +134,12 @@ From this checkout:
    after adding a token, or **Retry setup** after fixing a setup error.
 4. If needed, choose **Codex → Sign in with ChatGPT** and finish in your browser.
    An existing Codex login is reused.
-5. Edit the screenplay and cast every role. Drag a gallery character onto a role,
-   or use its **Uncast / played by** control. For the sample, try **Ava as Sue**
+5. Edit the screenplay and cast each role in the scene. Drag a gallery character
+   onto a role, or use its **Uncast / played by** control. For the sample, try **Ava as Sue**
    and **Eli as Joe**. Casting keeps the script's role names and dialogue intact.
-6. Choose **Generate video**. **Activity** shows planning and rendering progress.
+6. Select a scene by its heading above **Generate video**, then choose
+   **Generate video**. Only that scene and its cast are sent for generation.
+   **Activity** shows planning and rendering progress.
    When complete, play the result in the app or choose **Show files**.
 
 **Stop** interrupts the render and its child processes; closing AIVS also stops
@@ -168,8 +170,8 @@ elements. Centered text and lyrics retain their text in action/dialogue elements
 simultaneous dialogue is imported in source order. Title-page metadata, outline
 sections, notes, omitted passages, page breaks, and emphasis formatting are omitted.
 The original Fountain file is preserved, and the imported screenplay autosaves to
-`screenplay.json`. Full-length scripts can be imported; video generation still
-requires a script within the existing 100,000-character limit.
+`screenplay.json`. Full-length scripts can be imported; video generation uses
+one selected scene at a time, within a 100,000-character limit per scene.
 
 - **Enter** creates the next screenplay element; **Shift+Enter** inserts a line break.
 - **Tab** in dialogue adds a parenthetical instruction. On an empty action, it

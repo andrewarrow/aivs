@@ -395,6 +395,7 @@ pub struct VideoWorkspace {
     root: PathBuf,
     setup: Setup,
     job: Option<Job>,
+    selected_scene: Option<u64>,
     rendering: bool,
     stopping: bool,
     status: String,
@@ -422,6 +423,7 @@ impl VideoWorkspace {
             root,
             setup: Setup::Checking,
             job: None,
+            selected_scene: None,
             rendering: false,
             stopping: false,
             status: "Checking local setup…".into(),
@@ -605,7 +607,14 @@ impl VideoWorkspace {
         });
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, request: &Result<String, String>) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, screenplay: &crate::screenplay::Screenplay) {
+        let scenes = screenplay.scenes();
+        if !scenes
+            .iter()
+            .any(|scene| Some(scene.id) == self.selected_scene)
+        {
+            self.selected_scene = scenes.first().map(|scene| scene.id);
+        }
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -616,6 +625,40 @@ impl VideoWorkspace {
                         .wrap(),
                 );
                 ui.add_space(16.0);
+                let scene_label = ui.label("Scene");
+                let selected_text = scenes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, scene)| Some(scene.id) == self.selected_scene)
+                    .map_or_else(
+                        || "No scenes".to_owned(),
+                        |(index, scene)| format!("{}. {}", index + 1, scene.heading),
+                    );
+                ui.add_enabled_ui(self.job.is_none() && !scenes.is_empty(), |ui| {
+                    ui.spacing_mut().interact_size.y = 44.0;
+                    egui::ComboBox::from_id_salt("render_scene")
+                        .selected_text(&selected_text)
+                        .width(ui.available_width())
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (index, scene) in scenes.iter().enumerate() {
+                                ui.selectable_value(
+                                    &mut self.selected_scene,
+                                    Some(scene.id),
+                                    format!("{}. {}", index + 1, scene.heading),
+                                )
+                                .on_hover_text(scene.heading);
+                            }
+                        })
+                        .response
+                        .labelled_by(scene_label.id)
+                        .on_hover_text(&selected_text);
+                });
+                ui.add_space(8.0);
+                let request = self
+                    .selected_scene
+                    .ok_or_else(|| "Add a scene heading before generating.".to_owned())
+                    .and_then(|scene_id| screenplay.render_request(scene_id));
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
@@ -623,7 +666,7 @@ impl VideoWorkspace {
                             egui::Button::new("Generate video").min_size(egui::vec2(128.0, 44.0)),
                         )
                         .clicked()
-                        && let Ok(request) = request
+                        && let Ok(request) = &request
                     {
                         self.start(Task::Render(request.clone()));
                     }
@@ -649,7 +692,7 @@ impl VideoWorkspace {
                         self.open(parent);
                     }
                 });
-                if let Err(message) = request {
+                if let Err(message) = &request {
                     ui.add(egui::Label::new(message).wrap());
                 }
                 ui.add_space(8.0);

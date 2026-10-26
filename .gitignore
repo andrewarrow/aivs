@@ -1,4 +1,5 @@
 /target/
+big.fountain
 .DS_Store
 .venv/
 .venv-voice/

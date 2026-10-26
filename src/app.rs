@@ -379,8 +379,7 @@ impl App {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         context.set_clip_rect(ui.clip_rect().intersect(bottom));
-        self.video
-            .ui(&mut context, &self.screenplay.render_request());
+        self.video.ui(&mut context, &self.screenplay);
 
         let visuals = ui.style().interact(&response);
         ui.painter().rect_filled(divider, 0.0, visuals.bg_fill);

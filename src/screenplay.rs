@@ -123,6 +123,11 @@ struct Snapshot {
     active: u64,
 }
 
+pub struct Scene<'a> {
+    pub id: u64,
+    pub heading: &'a str,
+}
+
 pub struct Screenplay {
     document: Document,
     active: u64,
@@ -337,15 +342,42 @@ impl Screenplay {
         }
     }
 
-    pub fn render_request(&self) -> Result<String, String> {
+    pub fn scenes(&self) -> Vec<Scene<'_>> {
+        self.document
+            .blocks
+            .iter()
+            .filter(|block| block.kind == Element::Heading && !block.text.trim().is_empty())
+            .map(|block| Scene {
+                id: block.id,
+                heading: block.text.trim(),
+            })
+            .collect()
+    }
+
+    pub fn render_request(&self, scene_id: u64) -> Result<String, String> {
         if self.load_failed {
             return Err("Reload the screenplay before generating.".into());
         }
+        let blocks = &self.document.blocks;
+        let start = blocks
+            .iter()
+            .position(|block| {
+                block.id == scene_id
+                    && block.kind == Element::Heading
+                    && !block.text.trim().is_empty()
+            })
+            .ok_or_else(|| "Select a scene before generating.".to_owned())?;
+        let end = blocks[start + 1..]
+            .iter()
+            .position(|block| block.kind == Element::Heading)
+            .map_or(blocks.len(), |offset| start + 1 + offset);
         let mut script = String::new();
         let mut speaker = String::new();
         let mut cue = String::new();
+        let mut roles = Vec::new();
         let mut has_content = false;
-        for (index, block) in self.document.blocks.iter().enumerate() {
+        for (offset, block) in blocks[start..end].iter().enumerate() {
+            let index = start + offset;
             let text = block.text.trim();
             match block.kind {
                 Element::Character => {
@@ -365,6 +397,9 @@ impl Screenplay {
                             "Use letters, numbers, spaces, periods, apostrophes or hyphens in character name at element {}.",
                             index + 1
                         ));
+                    }
+                    if !speaker.is_empty() && !roles.contains(&speaker) {
+                        roles.push(speaker.clone());
                     }
                 }
                 Element::Parenthetical => {
@@ -425,9 +460,8 @@ impl Screenplay {
             return Err("Add action or dialogue before generating.".into());
         }
         if script.contains('\0') || script.chars().count() > 100_000 {
-            return Err("Screenplay must contain no null characters and fit within 100,000 characters before generating.".into());
+            return Err("Selected scene must contain no null characters and fit within 100,000 characters before generating.".into());
         }
-        let roles = self.roles();
         let missing = roles
             .iter()
             .filter(|role| !self.document.cast.contains_key(*role))

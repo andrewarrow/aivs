@@ -152,8 +152,9 @@ AIVS_EVENT {"event":"activity_delta","id":"plan-1","delta":"to shots. \ud83e\udd
                     ..Default::default()
                 },
                 |ui| {
-                    egui::CentralPanel::default()
-                        .show(ui, |ui| workspace.ui(ui, &Ok("screenplay".into())));
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        workspace.ui(ui, &crate::screenplay::Screenplay::default())
+                    });
                     assert!(ui.min_rect().right() <= bounds.right() + 1.0);
                 },
             ));
@@ -230,8 +231,9 @@ fn completed_video_has_a_visible_player_at_supported_sizes() {
                     ..Default::default()
                 },
                 |ui| {
-                    egui::CentralPanel::default()
-                        .show(ui, |ui| workspace.ui(ui, &Ok("test prompt".into())));
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        workspace.ui(ui, &crate::screenplay::Screenplay::default())
+                    });
                     assert!(ui.min_rect().right() <= bounds.right() + 1.0);
                 },
             );
@@ -241,6 +243,117 @@ fn completed_video_has_a_visible_player_at_supported_sizes() {
         assert!(target.rect.intersects(target.clip_rect));
         assert!(target.rect.right() <= bounds.right());
         assert!(target.rect.height() >= 44.0);
+    }
+}
+
+#[test]
+fn scene_selector_lists_headings_selects_one_scene_and_fits_supported_sizes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("scenes.fountain");
+    let long_heading = format!("INT. {} - NIGHT", "A VERY LONG LOCATION NAME ".repeat(15));
+    std::fs::write(
+        &path,
+        format!(
+            "EXT. ROAD - DAY\n\nDust blows.\n\nINT. DINER - NIGHT\n\nRain falls.\n\n\
+             EXT. ROAD - DAY\n\nThe sun sets.\n\n{long_heading}\n\nA door opens.\n"
+        ),
+    )
+    .unwrap();
+    let replacement = root.path().join("replacement.fountain");
+    std::fs::write(&replacement, "INT. STATION - DAY\n\nA train arrives.\n").unwrap();
+    let headingless = root.path().join("headingless.fountain");
+    std::fs::write(&headingless, "A scene needs a heading.\n").unwrap();
+    for (width, height) in [
+        (390.0, 844.0),
+        (768.0, 1024.0),
+        (1280.0, 800.0),
+        (1440.0, 900.0),
+    ] {
+        let mut screenplay = crate::screenplay::Screenplay::load(root.path());
+        screenplay.import_fountain(&path).unwrap();
+        let scenes = screenplay.scenes();
+        let first_id = scenes[0].id;
+        let second_id = scenes[1].id;
+        let mut workspace = VideoWorkspace::ready_for_test(root.path().to_owned());
+        let ctx = egui::Context::default();
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+        let mut time = 0.0;
+        let mut frame =
+            |workspace: &mut VideoWorkspace, screenplay: &crate::screenplay::Screenplay, events| {
+                time += 0.05;
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(bounds),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| workspace.ui(ui, screenplay));
+                        assert!(ui.min_rect().right() <= bounds.right() + 1.0);
+                        assert!(ui.min_rect().bottom() <= bounds.bottom() + 1.0);
+                    },
+                )
+            };
+        let text_rect = |output: &egui::FullOutput, label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text)
+                        if text.galley.text() == label
+                            && text.visual_bounding_rect().intersects(shape.clip_rect) =>
+                    {
+                        Some(text.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label} should be visible at {width}×{height}"))
+        };
+        let pointer = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut workspace, &screenplay, vec![]);
+        let output = frame(&mut workspace, &screenplay, vec![]);
+        assert_eq!(workspace.selected_scene, Some(first_id));
+        let selected = text_rect(&output, "1. EXT. ROAD - DAY");
+        assert!(selected.bottom() < text_rect(&output, "Generate video").top());
+        let pos = selected.center();
+        frame(
+            &mut workspace,
+            &screenplay,
+            vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+        );
+        frame(&mut workspace, &screenplay, vec![pointer(pos, false)]);
+        let output = frame(&mut workspace, &screenplay, vec![]);
+        for label in ["2. INT. DINER - NIGHT", "3. EXT. ROAD - DAY"] {
+            assert!(bounds.contains_rect(text_rect(&output, label)));
+        }
+        let pos = text_rect(&output, "2. INT. DINER - NIGHT").center();
+        frame(
+            &mut workspace,
+            &screenplay,
+            vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+        );
+        frame(&mut workspace, &screenplay, vec![pointer(pos, false)]);
+        let output = frame(&mut workspace, &screenplay, vec![]);
+        assert_eq!(workspace.selected_scene, Some(second_id));
+        text_rect(&output, "2. INT. DINER - NIGHT");
+        let request: serde_json::Value =
+            serde_json::from_str(&screenplay.render_request(second_id).unwrap()).unwrap();
+        assert_eq!(request["script"], "INT. DINER - NIGHT\n\nRain falls.");
+
+        screenplay.import_fountain(&replacement).unwrap();
+        frame(&mut workspace, &screenplay, vec![]);
+        assert_eq!(workspace.selected_scene, Some(screenplay.scenes()[0].id));
+        screenplay.import_fountain(&headingless).unwrap();
+        let output = frame(&mut workspace, &screenplay, vec![]);
+        assert!(workspace.selected_scene.is_none());
+        text_rect(&output, "No scenes");
+        text_rect(&output, "Add a scene heading before generating.");
     }
 }
 
@@ -281,8 +394,9 @@ fn startup_modal_and_render_states_fit_supported_sizes() {
                     },
                     |ui| {
                         if workspace.is_ready() {
-                            egui::CentralPanel::default()
-                                .show(ui, |ui| workspace.ui(ui, &Ok("test prompt".into())));
+                            egui::CentralPanel::default().show(ui, |ui| {
+                                workspace.ui(ui, &crate::screenplay::Screenplay::default())
+                            });
                         } else {
                             workspace.setup_ui(ui);
                         }
@@ -380,6 +494,15 @@ raise SystemExit(video.main())
         cancel: Arc::default(),
     };
     let mut screenplay = crate::screenplay::Screenplay::default();
+    let path = root.path().join("scenes.fountain");
+    std::fs::write(
+        &path,
+        "EXT. GARDEN - DAY\n\nUNCAST\nWait here.\n\n\
+         EXT. ROAD - DUSK\n\nJoe turns toward the road.\n\nJOE\nReady?\n\nSUE\nReady.\n\n\
+         INT. DINER - NIGHT\n\nThe door closes.\n",
+    )
+    .unwrap();
+    screenplay.import_fountain(&path).unwrap();
     screenplay.assign(
         "SUE",
         crate::characters::CastCharacter {
@@ -394,8 +517,15 @@ raise SystemExit(video.main())
             name: "Eli".into(),
         },
     );
-    let request = screenplay.render_request().unwrap();
+    let request = screenplay
+        .render_request(screenplay.scenes()[1].id)
+        .unwrap();
     let request_value: serde_json::Value = serde_json::from_str(&request).unwrap();
+    assert_eq!(
+        request_value["script"],
+        "EXT. ROAD - DUSK\n\nJoe turns toward the road.\n\nJOE: \"Ready?\"\n\nSUE: \"Ready.\""
+    );
+    assert_eq!(request_value["cast"].as_array().unwrap().len(), 2);
     std::fs::write(
         root.path().join("expected-request.json"),
         serde_json::to_vec(&request_value).unwrap(),

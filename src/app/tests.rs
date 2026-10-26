@@ -325,7 +325,7 @@ fn gallery_selection_keeps_the_screenplay_and_hides_the_old_prompt() {
         assert!(labels.contains(&"Generate video"));
         assert!(!labels.contains(&"Prompt"));
         assert!(
-            app.screenplay.render_request().is_err(),
+            app.screenplay.render_request(0).is_err(),
             "browsing must not cast a role"
         );
     }
@@ -379,7 +379,7 @@ fn gallery_names_and_portraits_drag_onto_roles_and_recast_all_occurrences() {
         };
         let source = positions(name)[0] + egui::vec2(8.0, if portrait { 60.0 } else { 6.0 });
         let target_pos = positions(target)[occurrence] + egui::vec2(8.0, 6.0);
-        let previous = app.screenplay.render_request();
+        let previous = app.screenplay.render_request(0);
         frame(&mut app, vec![egui::Event::PointerMoved(source)]);
         frame(&mut app, vec![pointer(source, true)]);
         frame(
@@ -394,18 +394,18 @@ fn gallery_names_and_portraits_drag_onto_roles_and_recast_all_occurrences() {
         output = frame(&mut app, vec![]);
         if target == "SUE" && occurrence == 0 {
             assert_eq!(
-                app.screenplay.render_request().unwrap_err(),
+                app.screenplay.render_request(0).unwrap_err(),
                 "Assign characters to JOE before generating."
             );
         } else if target == "EXT. DESERT ROAD - DUSK" {
             assert_eq!(
-                app.screenplay.render_request(),
+                app.screenplay.render_request(0),
                 previous,
                 "dropping on action must not change the cast"
             );
         } else {
             let request: serde_json::Value =
-                serde_json::from_str(&app.screenplay.render_request().unwrap()).unwrap();
+                serde_json::from_str(&app.screenplay.render_request(0).unwrap()).unwrap();
             assert_eq!(request["cast"][0]["character"], "eli");
             if occurrence == 1 {
                 assert_eq!(request["cast"][1]["character"], "eli");

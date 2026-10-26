@@ -60,8 +60,9 @@ fn fountain_import_converts_elements_saves_and_undoes_the_screenplay_and_cast() 
     assert_eq!(screenplay.document, imported);
     screenplay.assign("JOSÉ", character("Eli"));
     screenplay.assign("McDUCK", character("Ava"));
+    let scene_id = screenplay.scenes()[0].id;
     let request: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(scene_id).unwrap()).unwrap();
     assert!(
         request["script"]
             .as_str()
@@ -228,17 +229,17 @@ fn casting_is_explicit_and_recasting_preserves_script_names_and_dialogue() {
     let mut screenplay = Screenplay::default();
     assert_eq!(screenplay.roles(), ["JOE", "SUE"]);
     assert_eq!(
-        screenplay.render_request().unwrap_err(),
+        screenplay.render_request(0).unwrap_err(),
         "Assign characters to JOE and SUE before generating."
     );
     screenplay.assign("SUE", character("Ava"));
     assert_eq!(
-        screenplay.render_request().unwrap_err(),
+        screenplay.render_request(0).unwrap_err(),
         "Assign characters to JOE before generating."
     );
     screenplay.assign("JOE", character("Eli"));
     let request: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(0).unwrap()).unwrap();
     assert_eq!(request["version"], 1);
     assert_eq!(
         request["cast"],
@@ -258,7 +259,7 @@ fn casting_is_explicit_and_recasting_preserves_script_names_and_dialogue() {
     screenplay.assign("SUE", character("Nora"));
     screenplay.assign("UNKNOWN", character("Maya"));
     let recast: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(0).unwrap()).unwrap();
     assert_eq!(recast["script"], request["script"]);
     assert_eq!(recast["cast"][0], request["cast"][0]);
     assert_eq!(recast["cast"][1]["character"], "nora");
@@ -656,6 +657,7 @@ fn renamed_roles_and_new_scenes_reach_the_generation_request() {
     screenplay.insert(Element::Heading);
     let index = screenplay.active_index();
     screenplay.document.blocks[index].text = "INT. DINER - NIGHT".into();
+    let scene_id = screenplay.active;
     screenplay.insert(Element::Action);
     let index = screenplay.active_index();
     screenplay.document.blocks[index].text = "Rain taps the glass.".into();
@@ -669,14 +671,16 @@ fn renamed_roles_and_new_scenes_reach_the_generation_request() {
     let index = screenplay.active_index();
     screenplay.document.blocks[index].text = "We made it.\nAt last.".into();
     let request: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(scene_id).unwrap()).unwrap();
     assert_eq!(
         request["cast"][0],
         serde_json::json!({"role":"SAM", "character":"eli"})
     );
-    assert!(request["script"].as_str().unwrap().contains(
+    assert_eq!(request["cast"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        request["script"].as_str().unwrap(),
         "INT. DINER - NIGHT\n\nRain taps the glass.\n\nSAM (quietly): \"We made it. At last.\""
-    ));
+    );
     // Verify the edited request against the actual Python screenplay parser.
     let mut child = std::process::Command::new("python3").args(["-c", "import json, sys; sys.path.insert(0, 'python'); from shooting_script import parse_request; request=json.load(sys.stdin); profiles=[{'id': c['character'], 'description': 'A performer.'} for c in request['cast']]; parsed=parse_request(request, profiles); assert parsed['beats'][-1]['text'] == 'We made it. At last.'; assert parsed['beats'][-1]['scene'] == 'INT. DINER - NIGHT'"])
         .current_dir(env!("CARGO_MANIFEST_DIR")).stdin(std::process::Stdio::piped()).spawn().unwrap();
@@ -691,6 +695,101 @@ fn renamed_roles_and_new_scenes_reach_the_generation_request() {
 }
 
 #[test]
+fn scene_requests_include_only_the_selected_scene_and_its_cast() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("scenes.fountain");
+    fs::write(
+        &path,
+        format!(
+            "FADE IN:\n\nEXT. ROAD - DAY\n\n{}\n\nJOE\nStill waiting.\n\n\
+             INT. DINER - NIGHT\n\nRain taps the glass.\n\nSAM\n(quietly)\nWe made it.\n\n\
+             INT. DINER - NIGHT\n\nThe diner is empty.\n\nFADE OUT.\n",
+            "Dust blows across the road. ".repeat(4000)
+        ),
+    )
+    .unwrap();
+    let mut screenplay = Screenplay::load(root.path());
+    screenplay.import_fountain(&path).unwrap();
+    screenplay.assign("SAM", character("Eli"));
+    let scenes = screenplay.scenes();
+    assert_eq!(
+        scenes.iter().map(|scene| scene.heading).collect::<Vec<_>>(),
+        [
+            "EXT. ROAD - DAY",
+            "INT. DINER - NIGHT",
+            "INT. DINER - NIGHT"
+        ]
+    );
+    assert_ne!(scenes[1].id, scenes[2].id);
+    let request: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request(scenes[1].id).unwrap()).unwrap();
+    assert_eq!(
+        request["script"],
+        "INT. DINER - NIGHT\n\nRain taps the glass.\n\nSAM (quietly): \"We made it.\""
+    );
+    assert_eq!(
+        request["cast"],
+        serde_json::json!([{"role": "SAM", "character": "eli"}])
+    );
+    let silent: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request(scenes[2].id).unwrap()).unwrap();
+    assert_eq!(
+        silent["script"],
+        "INT. DINER - NIGHT\n\nThe diner is empty.\n\nFADE OUT."
+    );
+    assert_eq!(silent["cast"], serde_json::json!([]));
+    assert!(
+        screenplay
+            .render_request(scenes[0].id)
+            .unwrap_err()
+            .contains("100,000")
+    );
+}
+
+#[test]
+fn invalid_and_empty_scene_selections_never_include_adjacent_scenes() {
+    let mut screenplay = Screenplay::default();
+    screenplay.document.blocks = [
+        (Element::Heading, "EXT. ROAD - DAY"),
+        (Element::Action, "Dust blows across the road."),
+        (Element::Heading, "   "),
+        (Element::Action, "This unfinished scene is excluded."),
+        (Element::Heading, "INT. DINER - NIGHT"),
+        (Element::Heading, "EXT. ROAD - NIGHT"),
+        (Element::Dialogue, "Missing a speaker."),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(id, (kind, text))| Block {
+        id: id as u64,
+        kind,
+        text: text.into(),
+    })
+    .collect();
+    assert_eq!(screenplay.scenes().len(), 3);
+    let request: serde_json::Value =
+        serde_json::from_str(&screenplay.render_request(0).unwrap()).unwrap();
+    assert_eq!(
+        request["script"],
+        "EXT. ROAD - DAY\n\nDust blows across the road."
+    );
+    for id in [1, 2, u64::MAX] {
+        assert_eq!(
+            screenplay.render_request(id).unwrap_err(),
+            "Select a scene before generating."
+        );
+    }
+    assert_eq!(
+        screenplay.render_request(4).unwrap_err(),
+        "Add action or dialogue before generating."
+    );
+    assert_eq!(
+        screenplay.render_request(5).unwrap_err(),
+        "Add a character before dialogue at element 7."
+    );
+}
+
+#[test]
 fn invalid_dialogue_is_blocked_and_removed_roles_do_not_require_casting() {
     let mut screenplay = Screenplay::default();
     screenplay
@@ -699,7 +798,7 @@ fn invalid_dialogue_is_blocked_and_removed_roles_do_not_require_casting() {
         .retain(|b| b.kind != Element::Character);
     assert!(
         screenplay
-            .render_request()
+            .render_request(0)
             .unwrap_err()
             .starts_with("Add a character before dialogue")
     );
@@ -708,10 +807,10 @@ fn invalid_dialogue_is_blocked_and_removed_roles_do_not_require_casting() {
         .blocks
         .retain(|b| !matches!(b.kind, Element::Dialogue | Element::Parenthetical));
     let request: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(0).unwrap()).unwrap();
     assert_eq!(request["cast"], serde_json::json!([]));
     screenplay.document.blocks.truncate(1);
-    assert!(screenplay.render_request().is_err());
+    assert!(screenplay.render_request(0).is_err());
     screenplay.delete();
     assert_eq!(screenplay.document.blocks.len(), 1);
     assert_eq!(screenplay.document.blocks[0].kind, Element::Action);
@@ -728,7 +827,7 @@ fn workspace_save_round_trips_and_a_corrupt_file_is_preserved() {
     assert!(screenplay.save_error.is_none());
     let restored = Screenplay::load(root.path());
     assert_eq!(screenplay.document, restored.document);
-    assert_eq!(screenplay.render_request(), restored.render_request());
+    assert_eq!(screenplay.render_request(0), restored.render_request(0));
     let path = root.path().join("screenplay.json");
     fs::write(&path, b"{broken").unwrap();
     let mut broken = Screenplay::load(root.path());
@@ -741,7 +840,7 @@ fn workspace_save_round_trips_and_a_corrupt_file_is_preserved() {
             .contains("Original file preserved")
     );
     broken.save();
-    assert!(broken.render_request().is_err());
+    assert!(broken.render_request(0).is_err());
     drop(broken);
     assert_eq!(fs::read(&path).unwrap(), b"{broken");
 }
@@ -817,7 +916,7 @@ fn tab_after_a_character_adds_instructions_and_enter_resumes_existing_dialogue()
     screenplay.assign("JOE", character("Eli"));
     screenplay.assign("SUE", character("Ava"));
     let request: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(0).unwrap()).unwrap();
     assert!(
         request["script"]
             .as_str()
@@ -853,7 +952,7 @@ fn tab_within_dialogue_preserves_speech_and_enter_continues_after_instructions()
     screenplay.assign("JOE", character("Eli"));
     screenplay.assign("SUE", character("Ava"));
     let request: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(0).unwrap()).unwrap();
     assert!(
         request["script"].as_str().unwrap().contains(
             "JOE: \"Good news.\"\n\nJOE (a beat): \"Actually, It's definitely the car.\""
@@ -901,7 +1000,7 @@ fn tab_opens_existing_instructions_and_consecutive_instructions_are_preserved() 
     screenplay.assign("JOE", character("Eli"));
     screenplay.assign("SUE", character("Ava"));
     let request: serde_json::Value =
-        serde_json::from_str(&screenplay.render_request().unwrap()).unwrap();
+        serde_json::from_str(&screenplay.render_request(0).unwrap()).unwrap();
     assert!(
         request["script"]
             .as_str()
