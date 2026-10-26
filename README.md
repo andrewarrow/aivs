@@ -53,6 +53,12 @@ play/pause, seeking, volume, and fullscreen, including the generated audio.
 **Show files** opens the output directory. Playback pauses when its preview is
 hidden, and previous results remain playable while another render runs.
 
+The left workspace starts with a 50/50 split: a one-page screenplay preview above
+the existing video context. Drag the horizontal divider to give the screenplay
+30–70% of the height, or double-click it to restore 50%. With the divider focused,
+use Up/Down to resize or Home to reset. The sample scene is a preview; video
+generation still uses the prompt below it.
+
 Character reference images appear in a scrollable gallery beside the workspace.
 Click a character's name or portrait to select them and update the prompt and
 spoken introduction. Like Hunter, Python resolves saved names and `@name` references

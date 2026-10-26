@@ -11,6 +11,7 @@ pub struct App {
     root: PathBuf,
     characters: crate::characters::CharacterGallery,
     video: crate::video::VideoWorkspace,
+    screenplay_fraction: f32,
     codex_started: bool,
     client: Option<CodexClient>,
     account: Option<ChatGptAccount>,
@@ -33,6 +34,7 @@ impl App {
     pub fn new(root: PathBuf) -> Self {
         Self {
             video: crate::video::VideoWorkspace::new(root.clone()),
+            screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(&root),
             codex_started: false,
             root,
@@ -261,11 +263,109 @@ impl App {
                     .max_size(ui.available_width() * 0.65)
                     .resizable(true)
                     .show(ui, |ui| self.chat_ui(ui));
-                egui::CentralPanel::default().show(ui, |ui| self.video.ui(ui));
+                egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
             }
         } else {
-            egui::CentralPanel::default().show(ui, |ui| self.video.ui(ui));
+            egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         }
+    }
+
+    fn workspace_ui(&mut self, ui: &mut egui::Ui) {
+        let bounds = ui.available_rect_before_wrap();
+        let divider_height = 12.0_f32.min(bounds.height());
+        let content_height = (bounds.height() - divider_height).max(1.0);
+        let divider_top = bounds.top() + content_height * self.screenplay_fraction;
+        let divider = egui::Rect::from_min_size(
+            egui::pos2(bounds.left(), divider_top),
+            egui::vec2(bounds.width(), divider_height),
+        );
+        let response = ui
+            .interact(
+                divider,
+                ui.id().with("workspace_divider"),
+                egui::Sense::click_and_drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+            .on_hover_text("Drag to resize (30–70%). Double-click to reset to 50%. Arrow keys resize; Home resets.");
+        if response.clicked() || response.drag_started() {
+            response.request_focus();
+        }
+        if response.dragged() {
+            self.screenplay_fraction += response.drag_delta().y / content_height;
+        }
+        if response.has_focus() {
+            ui.memory_mut(|memory| {
+                memory.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                );
+            });
+            ui.input_mut(|input| {
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                    self.screenplay_fraction -= 0.05;
+                }
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                    self.screenplay_fraction += 0.05;
+                }
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::Home) {
+                    self.screenplay_fraction = 0.5;
+                }
+            });
+        }
+        if response.double_clicked() {
+            self.screenplay_fraction = 0.5;
+        }
+        self.screenplay_fraction = self.screenplay_fraction.clamp(0.3, 0.7);
+        response.widget_info(|| {
+            egui::WidgetInfo::slider(
+                true,
+                f64::from(self.screenplay_fraction * 100.0),
+                "Screenplay height (%)",
+            )
+        });
+
+        // Use the updated fraction immediately, and clip each independently scrolling pane.
+        let split = bounds.top() + content_height * self.screenplay_fraction;
+        let divider = egui::Rect::from_min_size(
+            egui::pos2(bounds.left(), split),
+            egui::vec2(bounds.width(), divider_height),
+        );
+        let top = egui::Rect::from_min_max(bounds.min, egui::pos2(bounds.right(), split));
+        let bottom = egui::Rect::from_min_max(divider.left_bottom(), bounds.max);
+        let mut screenplay = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("screenplay")
+                .max_rect(top)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        screenplay.set_clip_rect(ui.clip_rect().intersect(top));
+        crate::screenplay::ui(&mut screenplay);
+        let mut context = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("video_context")
+                .max_rect(bottom)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        context.set_clip_rect(ui.clip_rect().intersect(bottom));
+        self.video.ui(&mut context);
+
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect_filled(divider, 0.0, visuals.bg_fill);
+        ui.painter().line_segment(
+            [
+                divider.center() - egui::vec2(20.0, 0.0),
+                divider.center() + egui::vec2(20.0, 0.0),
+            ],
+            visuals.fg_stroke,
+        );
+        if response.has_focus() {
+            ui.painter()
+                .rect_stroke(divider, 0.0, visuals.fg_stroke, egui::StrokeKind::Inside);
+        }
+        ui.allocate_rect(bounds, egui::Sense::hover());
     }
 
     pub fn playback_target(&self) -> Option<&crate::playback::PlaybackTarget> {

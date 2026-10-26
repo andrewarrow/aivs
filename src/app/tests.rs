@@ -7,6 +7,7 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
     (
         App {
             video: crate::video::VideoWorkspace::ready_for_test(PathBuf::from("/workspace")),
+            screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(Path::new("/workspace")),
             codex_started: true,
             root: PathBuf::from("/workspace"),
@@ -118,8 +119,9 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
             });
             let ctx = egui::Context::default();
             let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-            // Run two frames to let panel sizing settle.
-            for _ in 0..2 {
+            // Exercise the split extremes as well as the default, letting sizing settle.
+            for fraction in [0.3, 0.5, 0.7, 0.7] {
+                app.screenplay_fraction = fraction;
                 let _ = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(bounds),
@@ -147,6 +149,117 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
             );
         }
     }
+}
+
+#[test]
+fn sample_screenplay_fits_one_letter_page_at_supported_scales() {
+    for width in [230.0, 612.0, 900.0] {
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 1000.0),
+                )),
+                ..Default::default()
+            },
+            crate::screenplay::ui,
+        );
+        let page = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Rect(rect) if rect.fill == egui::Color32::WHITE => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("screenplay needs a white paper surface");
+        assert!((page.width() / page.height() - 612.0 / 792.0).abs() < 0.001);
+        for text in ["EXT. DESERT ROAD - DUSK", "AVA", "ELI", "FADE OUT."] {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(shape) if shape.galley.text() == text => Some(shape),
+                    _ => None,
+                })
+                .expect("scene heading, characters, and ending must be present");
+            let text_rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+            assert!(page.contains_rect(text_rect), "script must fit on one page");
+        }
+    }
+}
+
+#[test]
+fn screenplay_divider_drags_to_limits_and_resets_with_mouse_and_keyboard() {
+    let (mut app, _commands) = app();
+    let ctx = egui::Context::default();
+    let mut time = 0.0;
+    let mut frame = |app: &mut App, events| {
+        time += 0.05;
+        let mut bounds = egui::Rect::NOTHING;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                bounds = ui.available_rect_before_wrap();
+                app.workspace_ui(ui);
+            },
+        );
+        bounds
+    };
+    let pointer = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let bounds = frame(&mut app, vec![]);
+    frame(&mut app, vec![]);
+    assert_eq!(app.screenplay_fraction, 0.5);
+    for (target_y, expected) in [(bounds.bottom() + 100.0, 0.7), (-100.0, 0.3)] {
+        let start = egui::pos2(
+            bounds.center().x,
+            bounds.top() + (bounds.height() - 12.0) * app.screenplay_fraction + 6.0,
+        );
+        frame(&mut app, vec![egui::Event::PointerMoved(start)]);
+        frame(&mut app, vec![pointer(start, true)]);
+        let end = egui::pos2(start.x, target_y);
+        frame(&mut app, vec![egui::Event::PointerMoved(end)]);
+        frame(&mut app, vec![pointer(end, false)]);
+        assert_eq!(app.screenplay_fraction, expected);
+    }
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(&mut app, vec![key(egui::Key::ArrowDown)]);
+    assert!((app.screenplay_fraction - 0.35).abs() < 0.001);
+    frame(&mut app, vec![key(egui::Key::Home)]);
+    assert_eq!(app.screenplay_fraction, 0.5);
+
+    app.screenplay_fraction = 0.7;
+    let pos = egui::pos2(
+        bounds.center().x,
+        bounds.top() + (bounds.height() - 12.0) * 0.7 + 6.0,
+    );
+    frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+    for _ in 0..2 {
+        frame(&mut app, vec![pointer(pos, true)]);
+        frame(&mut app, vec![pointer(pos, false)]);
+    }
+    assert_eq!(app.screenplay_fraction, 0.5);
 }
 
 #[test]
