@@ -101,8 +101,13 @@ Each turn starts a fresh read-only thread. Revisions receive the original source
 and previous compiled plan; final approval cannot silently rewrite the plan it
 reviews. Python checks ordered beat coverage, exact dialogue, duration and token
 limits after each draft. Each malformed response gets one correction attempt.
-A completed rejection stops before video inference and saves its findings; it is
-not retried merely to obtain approval.
+A completed rejection sends the draft and findings back to Codex for repair,
+then an independent reviewer checks the rebuilt prompts. The renderer starts
+automatically once the revised plan is approved. Unchanged repairs are rejected.
+Each planning invocation permits up to three repair/review rounds; unresolved
+findings then stop video inference with progress saved. Resume continues from
+that latest draft and review, with another repair allowance. Each Codex pass has
+its own one-hour timeout rather than sharing the initial stages' elapsed budget.
 
 New plans separate stable performer appearance and voice from costume, wetness,
 body reveals, expression, and emotional delivery. Appearance is appended only
@@ -207,10 +212,17 @@ not appear. Focus settings and system sound volume still apply.
 Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
 directory to continue that run in place. Resume uses its saved screenplay, cast,
 seed, render format, and shooting script; Codex runs only if planning never finished.
+Unfinished planning resumes after its last completed stage, repair, or review.
+A rejected review resumes with its repair; an already repaired draft resumes at
+review; a saved approval can publish the plan without another Codex call.
+Older four-stage runs are recovered from their saved drafts and matching final
+review request/response, so a rejection does not discard the completed planning.
+Checkpoints are saved atomically and existing Codex logs are preserved. An
+interrupted, incomplete Codex turn is restarted, while completed stages are reused.
 Current settings do not change a resumed run, including older 1280×704 runs. Existing
 shots and compatible archived takes are checked under the current speech policy;
 acceptable takes are reused without video inference. Resume does not grant a new
-retry budget: an unresolved speech mismatch stops for review with the saved footage
+video-retake budget: an unresolved speech mismatch stops for review with the saved footage
 intact. Missing shots are rendered only after checking saved candidates. Invalid
 saved footage stops for review when no usable saved alternative is available.
 Continuation shots are reused only when their
@@ -312,7 +324,9 @@ Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
 | `screenplay.txt`, `screenplay-request.json` | Original script and cast bindings. |
 | `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |
 | `shooting-script-draft-*` | Compiled draft, intent revision, and physical rehearsal revision; these are not approved render inputs. |
-| `shooting-script-review.json` | Final approval or rejection, source-beat evidence, shot timelines, and unresolved issues. |
+| `shooting-script-progress.json` | Atomic checkpoint of completed stages, latest compiled draft, repair count, and matching review. |
+| `shooting-script-draft-repair-*`, `shooting-script-review-*.json` | Repair drafts and review history, preserved across Resume. |
+| `shooting-script-review.json` | Latest approval or rejection, source-beat evidence, shot timelines, and unresolved issues. |
 | `shooting-script-request-*`, `shooting-script-response-*` | What the planner sent to Codex and received back. |
 | `shooting-script-events-*.jsonl`, `shooting-script-errors-*.txt` | Live protocol events and diagnostics, including failed or stopped planning. |
 | `shots/001/`, `shots/002/`, … | Individual takes and their reports. |
@@ -331,7 +345,8 @@ checkout using its default workspace:
   --plan-only
 ```
 
-This still runs all four Codex passes and uses the cached tokenizer. It generates a new plan,
+This runs the four initial Codex passes, any required repair/review rounds, and
+uses the cached tokenizer. It generates a new plan,
 which may differ from the saved example. Remove `--plan-only` to render as well.
 Add `--render-format portrait` for 1080×1920; `--script-file` defaults to landscape.
 `--shooting-script /path/to/shooting-script.json` reuses a plan after revalidating

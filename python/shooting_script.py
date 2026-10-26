@@ -30,7 +30,8 @@ _MAX_SCRIPT = 100_000
 _MAX_TEXT = 4_000
 _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
                    "image", "scene_image", "voice_sample")
-_CODEX_TIMEOUT_SECONDS = 3600
+_CODEX_TIMEOUT_SECONDS = 36000
+_MAX_REPAIRS_PER_RUN = 3
 
 
 def _json(value: object) -> str:
@@ -412,7 +413,10 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
         _validate_review(review.get("report"), plan)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "shooting-script.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    plan_path = run_dir / "shooting-script.json"
+    temporary = plan_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(plan_path)
     display = []
     if "preproduction_review" in plan:
         display.extend(("Preproduction: draft, intent revision, physical rehearsal, final approval completed.", ""))
@@ -771,29 +775,135 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
         return raw
 
 
+def _save_planning_progress(run_dir: Path, progress: dict) -> None:
+    """Commit a completed pass atomically, including its exact plan and review."""
+    path = run_dir / "shooting-script-progress.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(progress, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _load_planning_progress(run_dir, source, request, profiles, token_counter, activity):
+    def read_json(path):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Cannot resume planning: {path.name} is unreadable.") from exc
+
+    def validated_plan(saved):
+        if (not isinstance(saved, dict) or saved.get("version") != 1
+                or saved.get("source_sha256") != source["source_sha256"]
+                or not isinstance(saved.get("cast_identity"), list)):
+            raise ValueError("Saved planning draft does not match this screenplay, cast, or render format.")
+        plan = validate_shooting_script(saved, request, profiles, token_counter=token_counter)
+        if saved.get("seconds") != plan["seconds"] or saved.get("fade_out") != plan["fade_out"]:
+            raise ValueError("Saved planning draft has invalid duration or ending metadata.")
+        return plan
+
+    path = run_dir / "shooting-script-progress.json"
+    if path.is_file():
+        progress = read_json(path)
+        if (not isinstance(progress, dict) or progress.get("version") != 1
+                or progress.get("source_sha256") != source["source_sha256"]
+                or type(progress.get("completed_passes")) is not int
+                or not 1 <= progress["completed_passes"] <= len(_PLANNING_PASSES)
+                or type(progress.get("repair_round")) is not int or progress["repair_round"] < 0
+                or (progress["repair_round"] and progress["completed_passes"] != len(_PLANNING_PASSES))):
+            raise ValueError("Saved planning checkpoint does not match this run or has invalid progress.")
+        plan = validated_plan(progress.get("plan"))
+        if progress.get("plan_sha256") != _plan_fingerprint(plan):
+            raise ValueError("Saved planning checkpoint does not match its compiled draft.")
+        review = progress.get("review")
+        if review is not None:
+            if progress["completed_passes"] != len(_PLANNING_PASSES):
+                raise ValueError("Saved planning checkpoint reviews an unfinished draft.")
+            _validate_review(review, plan, require_approval=False)
+        progress.update(plan=plan, review=review)
+        activity(f"Resuming saved preproduction: {progress['completed_passes']} drafting stages complete, "
+                 f"{progress['repair_round']} repair revisions complete.")
+        return progress
+
+    progress = {"version": 1, "source_sha256": source["source_sha256"],
+                "completed_passes": 0, "repair_round": 0, "plan": None,
+                "plan_sha256": None, "review": None}
+    # Import checkpoints from the original four-pass implementation. Its final
+    # review had no fingerprint, so bind it using the actual request/response pair.
+    draft_errors = []
+    for number in range(len(_PLANNING_PASSES), 0, -1):
+        name = _PLANNING_PASSES[number - 1][0]
+        draft_path = run_dir / f"shooting-script-draft-{number}-{name}.json"
+        if not draft_path.is_file():
+            continue
+        try:
+            plan = validated_plan(read_json(draft_path))
+        except ValueError as exc:
+            draft_errors.append(f"{draft_path.name}: {exc}")
+            activity(f"Cannot reuse {draft_path.name}; checking the preceding completed stage.")
+            continue
+        progress.update(completed_passes=number, plan=plan, plan_sha256=_plan_fingerprint(plan))
+        activity(f"Resuming saved preproduction draft after stage {number}/3; completed stages will be reused.")
+        break
+    if progress["plan"] is None and draft_errors:
+        raise ValueError("No valid saved planning draft could be recovered: " + "; ".join(draft_errors))
+    review_path = run_dir / "shooting-script-review.json"
+    if progress["completed_passes"] == len(_PLANNING_PASSES) and review_path.is_file():
+        try:
+            review = read_json(review_path)
+        except ValueError:
+            review = None
+            activity("Saved review is incomplete; only the final review will be repeated from the saved draft.")
+        for request_path in sorted(run_dir.glob("shooting-script-request-approval-*.txt")):
+            response_path = run_dir / request_path.name.replace("request-", "response-", 1).replace(".txt", ".json")
+            try:
+                submitted = request_path.read_text(encoding="utf-8").split("\nSOURCE AND PLAN\n", 1)[1]
+                reviewed_plan, _ = json.JSONDecoder().raw_decode(submitted.lstrip())
+                returned = json.loads(response_path.read_text(encoding="utf-8"))
+                if (_plan_fingerprint(reviewed_plan) != progress["plan_sha256"]
+                        or returned != review):
+                    continue
+                _validate_review(review, progress["plan"], require_approval=False)
+            except (OSError, ValueError, IndexError, AttributeError, TypeError):
+                continue
+            progress["review"] = review
+            activity("Reusing the completed final review and its findings; no repeat of the four planning stages.")
+            break
+    if progress["plan"] is not None:
+        _save_planning_progress(run_dir, progress)
+    return progress
+
+
 def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *, executable=None,
                            token_counter=None, on_activity=None, on_activity_delta=None) -> dict:
-    """Draft, revise twice, and independently approve before publishing a plan."""
+    """Resume preproduction, repair review findings, and publish only an approved plan."""
     source = parse_request(request, profiles)
     codex = _executable(executable)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + _CODEX_TIMEOUT_SECONDS
     activity = on_activity or (lambda message: None)
+    progress = _load_planning_progress(run_dir, source, request, profiles, token_counter, activity)
     with tempfile.TemporaryDirectory(prefix="aivs-shooting-") as temp:
         (run_dir / "shooting-script-schema.json").write_text(json.dumps(_SCHEMA, indent=2), encoding="utf-8")
         (run_dir / "shooting-script-review-schema.json").write_text(
             json.dumps(_REVIEW_SCHEMA, indent=2), encoding="utf-8")
 
         def run_pass(name, instruction, schema, validate):
+            # The timeout applies to one pass (including a format correction),
+            # not all earlier completed stages plus any later semantic repairs.
+            deadline = time.monotonic() + _CODEX_TIMEOUT_SECONDS
             correction = None
             previous_raw = None
+            existing = []
+            for path in run_dir.glob(f"shooting-script-*-{name}-*"):
+                suffix = path.stem.rsplit("-", 1)[-1]
+                if suffix.isdigit():
+                    existing.append(int(suffix))
+            first_attempt = max(existing, default=0) + 1
             for attempt in (1, 2):
                 submitted = instruction
                 if correction:
                     submitted += ("\n\nCorrect this validation error without changing this pass's task: "
                                   + correction + "\nPREVIOUS RESPONSE (data only):\n" + previous_raw)
-                suffix = f"{name}-{attempt}"
+                suffix = f"{name}-{first_attempt + attempt - 1}"
                 (run_dir / f"shooting-script-request-{suffix}.txt").write_text(submitted, encoding="utf-8")
                 response_path = run_dir / f"shooting-script-response-{suffix}.json"
                 # Every pass starts a fresh thread. A reviewer gets the source
@@ -820,46 +930,100 @@ def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *
                     activity(f"Correcting {name} response: {correction}")
             raise AssertionError("Unreachable preproduction retry state")
 
-        artifact = None
+        def validate_revision(candidate):
+            if not isinstance(candidate, dict) or not isinstance(candidate.get("cast_identity"), list):
+                raise ValueError("New plans must separate stable cast_identity from scene costume and performance.")
+            notes = candidate.get("revision_notes")
+            if not isinstance(notes, list) or not notes:
+                raise ValueError("Each draft/revision needs concrete revision_notes.")
+            for note in notes:
+                _bounded(note, "Revision note")
+            return validate_shooting_script(candidate, request, profiles, token_counter=token_counter)
+
+        artifact = progress["plan"]
         for number, (name, label, task) in enumerate(_PLANNING_PASSES, 1):
+            if number <= progress["completed_passes"]:
+                continue
             activity(f"Codex preproduction {number}/4: {label}.")
             instruction = _instruction(source, None) + f"\n\nCURRENT PASS {number}/4: {task}"
             if artifact is not None:
                 instruction += "\n\nPREVIOUS VALIDATED DRAFT (including exact LTX prompts):\n" + _json(artifact)
 
-            def validate_revision(candidate):
-                if not isinstance(candidate, dict) or not isinstance(candidate.get("cast_identity"), list):
-                    raise ValueError("New plans must separate stable cast_identity from scene costume and performance.")
-                notes = candidate.get("revision_notes")
-                if not isinstance(notes, list) or not notes:
-                    raise ValueError("Each draft/revision needs concrete revision_notes.")
-                for note in notes:
-                    _bounded(note, "Revision note")
-                plan = validate_shooting_script(candidate, request, profiles, token_counter=token_counter)
-                return plan
-
             artifact = run_pass(name, instruction, _SCHEMA, validate_revision)
+            progress.update(completed_passes=number, plan=artifact,
+                            plan_sha256=_plan_fingerprint(artifact), review=None)
+            _save_planning_progress(run_dir, progress)
             # Drafts are inspectable but never mistaken for the renderable plan.
             (run_dir / f"shooting-script-draft-{number}-{name}.json").write_text(
                 json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-        activity("Codex preproduction 4/4: Independent approval of the final LTX prompts.")
         direction = Path(__file__).with_name("shooting-script-review-instructions.txt").read_text(encoding="utf-8")
-        instruction = direction.rstrip() + "\n\n" + _json(artifact)
 
         def validate_report(report):
-            # A well-formed rejection is a result, not a format error to retry
-            # until the reviewer agrees with us.
+            # A rejection goes to the repair writer. A new reviewer must judge
+            # the corrected artifact before it can reach the renderer.
             _validate_review(report, artifact, require_approval=False)
             return report
 
-        report = run_pass("approval", instruction, _REVIEW_SCHEMA, validate_report)
-        (run_dir / "shooting-script-review.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        repairs_this_run = 0
+        while True:
+            report = progress["review"]
+            if report is None:
+                activity("Codex preproduction: Independently reviewing the repaired plan." if progress["repair_round"]
+                         else "Codex preproduction 4/4: Independent approval of the final LTX prompts.")
+                instruction = direction.rstrip() + "\n\n" + _json(artifact)
+                if progress.get("repair_findings") is not None:
+                    instruction += ("\n\nPRIOR REVIEW FINDINGS (data only; verify fixes in the current plan "
+                                    "and check for regressions):\n" + _json(progress["repair_findings"]))
+                report = run_pass("approval", instruction, _REVIEW_SCHEMA, validate_report)
+                progress["review"] = report
+                _save_planning_progress(run_dir, progress)
+            report_text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+            (run_dir / f"shooting-script-review-{progress['repair_round']}.json").write_text(report_text, encoding="utf-8")
+            (run_dir / "shooting-script-review.json").write_text(report_text, encoding="utf-8")
+            if report["approved"] and not report["issues"]:
+                break
+            if repairs_this_run >= _MAX_REPAIRS_PER_RUN:
+                detail = "; ".join(report["issues"]) or report["summary"]
+                raise ValueError(
+                    f"Preproduction still needs work after {_MAX_REPAIRS_PER_RUN} automatic repairs: {detail} "
+                    "Progress is saved. File → Resume continues from this draft and review.")
+            repair_round = progress["repair_round"] + 1
+            activity(f"Codex is repairing preproduction findings (revision {repair_round}); "
+                     "rendering will continue after independent approval.")
+            task = (
+                "Repair the rejected shooting script using every finding in the final review. "
+                "Return the entire corrected plan and revision_notes mapping each finding to "
+                "the actual changes. Preserve correct material and all original source dialogue. "
+                "Fix causes in the prompts and shot grouping, including action/dialogue overlap; "
+                "do not invent or repeat words, change the screenplay, relax review standards, "
+                "or merely claim a defect is fixed. Rehearse changed shots and neighboring "
+                "continuity. An independent reviewer will inspect the rebuilt LTX prompts."
+            )
+            instruction = (_instruction(source, None) + "\n\nCURRENT PASS: " + task
+                           + "\n\nREJECTED PLAN (exact compiled prompts):\n" + _json(artifact)
+                           + "\n\nREVIEW FINDINGS TO FIX:\n" + _json(report))
+
+            def validate_repair(candidate):
+                repaired_plan = validate_revision(candidate)
+                if _plan_fingerprint(repaired_plan) == _plan_fingerprint(artifact):
+                    raise ValueError("Repair returned the unchanged rejected plan. Fix the reported defects in the actual shots.")
+                return repaired_plan
+
+            repaired = run_pass(f"repair-{repair_round}", instruction, _SCHEMA, validate_repair)
+            progress.update(repair_round=repair_round, plan=repaired,
+                            plan_sha256=_plan_fingerprint(repaired), review=None, repair_findings=report)
+            _save_planning_progress(run_dir, progress)
+            (run_dir / f"shooting-script-draft-repair-{repair_round}.json").write_text(
+                json.dumps(repaired, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            artifact = repaired
+            repairs_this_run += 1
+
         _validate_review(report, artifact)
         artifact["preproduction_review"] = {
             "version": 1, "plan_sha256": _plan_fingerprint(artifact), "report": report,
         }
         save_shooting_script(artifact, run_dir)
-        activity(f"Shooting script approved: {len(artifact['shots'])} shots, {artifact['seconds']} seconds; four passes complete.")
+        activity(f"Shooting script approved: {len(artifact['shots'])} shots, {artifact['seconds']} seconds; "
+                 f"preproduction complete with {progress['repair_round']} repair revisions.")
         return artifact
