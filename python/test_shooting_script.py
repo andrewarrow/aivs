@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import os
 from pathlib import Path
 import stat
@@ -123,6 +124,16 @@ The door closes.
 
 
 class ValidationTests(unittest.TestCase):
+    def test_reference_asset_changes_invalidate_cached_plans_without_changing_description(self):
+        profiles = copy.deepcopy(PROFILES)
+        for field in ("image", "scene_image", "voice_sample"):
+            with self.subTest(field=field):
+                profiles[0][field] = {"file": f"{field}.bin", "sha256": "a" * 64}
+                saved = validate_shooting_script(candidate(), REQUEST, profiles)
+                profiles[0][field]["sha256"] = "b" * 64
+                with self.assertRaisesRegex(ValueError, "different screenplay or cast"):
+                    validate_shooting_script(saved, REQUEST, profiles)
+
     def test_filled_prompts_and_source_metadata(self):
         artifact = validate_shooting_script(candidate(), REQUEST, PROFILES, token_counter=lambda s: len(s.split()))
         self.assertEqual(artifact["seconds"], 18)
@@ -191,17 +202,27 @@ class CodexTests(unittest.TestCase):
         path.write_text("""#!/usr/bin/env python3
 import json, os, pathlib, sys, time
 args = sys.argv
-assert args[1] == 'exec'
-assert '--output-schema' in args and '--ephemeral' in args and '--json' in args
-assert '--sandbox' in args and args[args.index('--sandbox')+1] == 'read-only'
-assert 'approval_policy=never' in args
-prompt = sys.stdin.read()
+assert args[1:] == ['app-server']
+for raw in sys.stdin:
+    request = json.loads(raw)
+    method = request.get('method')
+    if method == 'initialize':
+        print(json.dumps({'id': request['id'], 'result': {}}), flush=True)
+    elif method == 'thread/start':
+        assert request['params']['approvalPolicy'] == 'never'
+        assert request['params']['sandbox'] == 'read-only'
+        assert request['params']['ephemeral'] is True
+        print(json.dumps({'id': request['id'], 'result': {'thread': {'id': 'fake-thread'}}}), flush=True)
+    elif method == 'turn/start':
+        assert request['params']['sandboxPolicy'] == {'type': 'readOnly'}
+        assert request['params']['outputSchema']['type'] == 'object'
+        prompt = request['params']['input'][0]['text']
+        break
 assert 'Create a shooting plan' in prompt
 if os.environ.get('FAKE_CODEX_PID'):
     pathlib.Path(os.environ['FAKE_CODEX_PID']).write_text(str(os.getpid()))
-print(json.dumps({'type': 'turn.started'}), flush=True)
-print(json.dumps({'type': 'item.completed', 'item': {
-    'type': 'reasoning', 'text': 'Mapping dialogue to shots.'}}), flush=True)
+print(json.dumps({'method': 'item/reasoning/summaryTextDelta', 'params': {
+    'itemId': 'reasoning-1', 'summaryIndex': 0, 'delta': 'Mapping dialogue to shots.'}}), flush=True)
 sys.stderr.write('Checking shot continuity.\\n' + 'diagnostic ' * 10000)
 sys.stderr.flush()
 if os.environ.get('FAKE_CODEX_GATE'):
@@ -214,14 +235,18 @@ time.sleep(float(os.environ.get('FAKE_CODEX_PAUSE', '0')))
 if os.environ.get('FAKE_CODEX_FAIL') == '1':
     print('login required', file=sys.stderr)
     sys.exit(7)
-output = pathlib.Path(args[args.index('--output-last-message')+1])
 response = json.loads(pathlib.Path(os.environ['FAKE_CODEX_RESPONSE']).read_text())
 if os.environ.get('FAKE_CODEX_BAD_FIRST') == '1' and 'Correct this validation error:' not in prompt:
     response['shots'][0]['beat_ids'] = [2]
-output.write_text(json.dumps(response))
-print(json.dumps({'type': 'item.completed', 'item': {
-    'type': 'agent_message', 'text': json.dumps(response)}}), flush=True)
-print(json.dumps({'type': 'turn.completed'}))
+text = json.dumps(response)
+print(json.dumps({'method': 'item/started', 'params': {'item': {
+    'id': 'answer-1', 'type': 'agentMessage', 'phase': 'final_answer'}}}), flush=True)
+for delta in [text[:len(text)//2], text[len(text)//2:]]:
+    print(json.dumps({'method': 'item/agentMessage/delta', 'params': {
+        'itemId': 'answer-1', 'delta': delta}}), flush=True)
+print(json.dumps({'method': 'item/completed', 'params': {'item': {
+    'id': 'answer-1', 'type': 'agentMessage', 'phase': 'final_answer', 'text': text}}}), flush=True)
+print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'status': 'completed', 'items': []}}}), flush=True)
 """, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
@@ -271,17 +296,22 @@ print(json.dumps({'type': 'turn.completed'}))
             self.assertIn("Shooting script ready: 3 shots, 18 seconds.", messages)
             self.assertEqual((run / "shooting-script-errors-1.txt").read_text().count("diagnostic "), 10000)
 
-    def test_quiet_codex_emits_activity(self):
+    def test_codex_streams_reasoning_and_answer_deltas_before_completion(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             response = base / "response.json"
             response.write_text(json.dumps(candidate()), encoding="utf-8")
             fake = self._fake(base)
-            messages = []
-            with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_PAUSE": "0.6"}), \
-                    patch.object(shooting_script, "_CODEX_ACTIVITY_INTERVAL", 0.05):
-                create_shooting_script(REQUEST, PROFILES, base / "run", executable=fake, on_activity=messages.append)
-            self.assertTrue(any("still preparing" in message and "elapsed" in message for message in messages))
+            deltas = []
+            run = base / "run"
+            def delta(stream_id, text):
+                self.assertFalse((run / "shooting-script-response-1.json").exists())
+                deltas.append((stream_id, text))
+            with patch.dict(os.environ, {"FAKE_CODEX_RESPONSE": str(response), "FAKE_CODEX_PAUSE": "0.1"}):
+                create_shooting_script(REQUEST, PROFILES, run, executable=fake, on_activity_delta=delta)
+            self.assertIn(("reasoning-1:summary:0", "Mapping dialogue to shots."), deltas)
+            self.assertEqual("".join(text for stream_id, text in deltas if stream_id == "answer-1"),
+                             json.dumps(candidate()))
 
     def test_timeout_and_interruption_reap_codex_and_keep_partial_logs(self):
         for interrupt in (False, True):

@@ -27,7 +27,8 @@ _PLACEHOLDER = re.compile(r"\{\{line_(\d+)\}\}")
 _WORDS = re.compile(r"\b[\w]+(?:['’][\w]+)*\b", re.UNICODE)
 _MAX_SCRIPT = 100_000
 _MAX_TEXT = 4_000
-_PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id")
+_PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
+                   "image", "scene_image", "voice_sample")
 _CODEX_TIMEOUT_SECONDS = 360
 
 

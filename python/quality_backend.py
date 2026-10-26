@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+import wave
 
 ROOT = Path(os.environ.get("AIVS_WORKSPACE", Path(__file__).resolve().parents[1])).resolve()
 CACHE = ROOT / ".cache" / "huggingface"
@@ -126,14 +127,19 @@ def doctor():
         raise RuntimeError("The MLX Apple GPU calculation failed.")
 
 
-def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False):
+def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
+           audio_file=None, width=WIDTH, height=HEIGHT):
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
     from render_estimate import RenderEstimate
     from validation import validate_video
 
     output = Path(output)
+    if (type(frames) is not int or frames < 1
+            or any(type(value) is not int or value < 64 or value % 64 for value in (width, height))):
+        raise ValueError("Render frames must be positive and dimensions must be positive multiples of 64.")
     image = prepare_source_image(image_file) if image_file is not None else None
+    audio = prepare_source_audio(audio_file, frames / FPS) if audio_file is not None else None
     if image is not None and hold_image_framing:
         image["conditioning"] = "whole-first-and-last-frame"
         image["anchor_frames"] = [0] if frames <= 1 else [0, frames - 1]
@@ -141,58 +147,97 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
     partial = output.with_name("video.partial.mp4")
     inference_frames = math.ceil((frames - 1) / 8) * 8 + 1
     started = time.monotonic()
-    estimate = RenderEstimate.from_history(output.parent.parent, frames, WIDTH, HEIGHT,
+    estimate = RenderEstimate.from_history(output.parent.parent, frames, width, height,
                                           RUNTIME_REVISION, on_progress)
     with RenderProgress(verbose=3, estimate=estimate) as progress:
         with progress.phase("Loading MLX renderer", "runtime"):
             import mlx.core as mx
             from ltx_pipelines_mlx.distilled import DistilledPipeline
+            if audio is not None:
+                from ltx_pipelines_mlx.a2vid_distilled import A2VidDistilledPipeline
         with progress.phase("Checking cached model files", "cache"):
             snapshot = model_path()
         mx.reset_peak_memory()
         with progress.phase("Preparing disk-streamed pipeline", "pipeline"):
-            pipeline = DistilledPipeline(model_dir=str(snapshot), low_memory=True, low_ram_streaming=True)
-        pipeline.generate_audio = True
+            pipeline_type = A2VidDistilledPipeline if audio is not None else DistilledPipeline
+            pipeline = pipeline_type(model_dir=str(snapshot), low_memory=True, low_ram_streaming=True)
+        pipeline.generate_audio = audio is None
         generation_options = _image_generation_options(
             image["source_file"] if image is not None else None,
             frames,
             hold_image_framing,
         )
+        if audio is not None:
+            # The causal video grid needs up to eight extra inference frames.
+            # Pad its conditioning track; final muxing uses the original audio.
+            conditioning_audio = output.with_name("audio.conditioning.wav")
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                "-i", audio["source_file"], "-af", f"apad,atrim=duration={inference_frames / FPS}",
+                "-c:a", "pcm_s16le", str(conditioning_audio),
+            ], check=True, capture_output=True, text=True)
+            generation_options["audio_path"] = str(conditioning_audio)
         with pipeline_activity(pipeline, progress):
             pipeline.generate_and_save(
-                prompt=prompt, output_path=str(native), width=WIDTH, height=HEIGHT,
+                prompt=prompt, output_path=str(native), width=width, height=height,
                 num_frames=inference_frames, frame_rate=FPS, seed=seed,
                 **generation_options,
             )
         decode_peak = mx.get_peak_memory() / 1024**3
         duration = frames / FPS
+        audio_inputs = ["-i", audio["source_file"]] if audio is not None else []
+        audio_map = "1:a:0" if audio is not None else "0:a:0"
         with progress.phase(f"Trimming and encoding {frames} frames with FFmpeg", "encode"):
             with ffmpeg_output([
                 "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostdin", "-n",
-                "-i", str(native), "-map", "0:v:0", "-frames:v", str(frames),
-                "-map", "0:a:0", "-af", f"apad,atrim=duration={duration},asetpts=PTS-STARTPTS",
+                "-i", str(native), *audio_inputs, "-map", "0:v:0", "-frames:v", str(frames),
+                "-map", audio_map, "-af", f"apad,atrim=duration={duration},asetpts=PTS-STARTPTS",
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-t", str(duration),
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart", str(partial),
             ], progress, stdin=subprocess.DEVNULL):
                 pass
         with progress.phase("Validating decoded frames and audio/video timing", "validate"):
-            info = validate_video(partial, frames, WIDTH, HEIGHT, expect_audio=True)
+            info = validate_video(partial, frames, width, height, expect_audio=True)
         partial.replace(output)
         native.unlink()
     return {
         "backend": "mlx", "model": MODEL_REPO, "model_revision": MODEL_REVISION,
-        "runtime_revision": RUNTIME_REVISION, "pipeline": "distilled-two-stage",
-        "stage1_steps": 8, "stage2_steps": 3, "quantization": "int8", "audio": "generated",
+        "runtime_revision": RUNTIME_REVISION,
+        "pipeline": "audio-driven-distilled-two-stage" if audio is not None else "distilled-two-stage",
+        "stage1_steps": 8, "stage2_steps": 3, "quantization": "int8",
+        "audio": "supplied" if audio is not None else "generated",
         "inference_frames": inference_frames, "output_frames": frames,
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()},
         "source_image": image,
+        "source_audio": audio,
         "peak_decode_mlx_memory_gib": round(decode_peak, 2), "video": info,
         "software": {name: version(name) for name in (
             "mlx", "mlx-metal", "mlx-arsenal", "ltx-core-mlx", "ltx-pipelines-mlx", "transformers",
         )},
     }
+
+
+def prepare_source_audio(source, minimum_duration):
+    """Validate fixed PCM audio before loading any GPU model weights."""
+    import hashlib
+
+    source = Path(source).expanduser().resolve()
+    try:
+        with wave.open(str(source), "rb") as stream:
+            rate, count = stream.getframerate(), stream.getnframes()
+            if stream.getcomptype() != "NONE" or stream.getsampwidth() != 2 or stream.getnchannels() not in (1, 2):
+                raise ValueError("Fixed audio must be mono or stereo 16-bit PCM WAV.")
+            duration = count / rate
+            if duration + 1 / rate < minimum_duration:
+                raise ValueError("Fixed audio is shorter than the requested video. Pad the shot track with silence.")
+            if len(stream.readframes(count)) != count * stream.getnchannels() * 2:
+                raise ValueError("Fixed audio is truncated.")
+    except (OSError, wave.Error, EOFError) as exc:
+        raise ValueError(f"Cannot read fixed audio: {source}") from exc
+    return {"source_file": str(source), "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "sample_rate": rate, "duration_seconds": duration, "conditioning": "frozen-audio"}
 
 
 def prepare_source_image(source):

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "generator": "image_gen",
+  "model_revision": null,
+  "note": "Built-in reference-aware image generation; exact model revision is not exposed. Starting-frame likeness still requires review.",
+  "images": [
+    {
+      "file": "references/desert-lena.png",
+      "prompt": "Create one photorealistic cinematic landscape 16:9 video starting frame, a medium close-up of SUE played by the exact woman in reference image 1 (Lena), beside a quiet red-rock desert road at dusk. Reference image 2 is her scene partner JOE (Owen), who is off camera to the right; do not put his face in this shot. Preserve Lena's precise facial identity, facial proportions, skin texture, age, black bob and navy crewneck from the original portrait. She occupies the left-center of the frame, from mid-chest upward, looking slightly screen right toward her off-camera partner; head turned only 10 degrees so both eyes and her entire mouth are clearly visible, lips gently closed, calm attentive expression. Empty two-lane desert road and a softly out-of-focus old station wagon with closed hood in background at right; soft natural dusk lighting. Eye-level locked camera, natural 50mm lens, no excessive bokeh obscuring face, no text, no labels, no watermark, one continuous scene rather than panels or a contact sheet. This is a grounded identity reference for image-to-video: preserve the exact woman, do not redesign her face.",
+      "reference_images": [
+        "characters/lena/reference.png",
+        "characters/owen/reference.png"
+      ]
+    },
+    {
+      "file": "references/desert-owen.png",
+      "prompt": "Create one photorealistic cinematic landscape 16:9 starting frame for a reverse dialogue shot beside a red-rock desert road at dusk. JOE is the exact man in reference image 2 (Owen); reference image 1 is Lena, his off-camera conversation partner. Medium close-up of Owen from mid-chest upward, occupying right-center, looking slightly screen left toward Lena. Preserve his precise facial identity, weathered skin, blue eyes, short salt-and-pepper hair and full short beard from his portrait, his denim overshirt and gray crewneck. Turn his head only 10 degrees so both eyes and full mouth remain visible; relaxed lips closed. Desert rock, a quiet road and a softly out-of-focus old station wagon with closed hood at left background; natural warm sunset light, matching a quiet desert conversation. Lena's face must not be visible. Locked eye-level 50mm camera, realistic skin, no text, no watermarks, one scene, no panels or contact sheet. Preserve the exact man, do not redesign his face.",
+      "reference_images": [
+        "characters/lena/reference.png",
+        "characters/owen/reference.png"
+      ]
+    },
+    {
+      "file": "references/cafe-lena.png",
+      "prompt": "Create one photorealistic cinematic landscape 16:9 video starting frame in a small quiet cafe in daylight. SUE is played by the exact woman in reference image 1 (Lena); reference image 2 is her off-camera conversation partner Owen. Preserve Lena's precise facial identity from the original portrait: facial proportions, natural skin, black bob, navy crewneck. Camera is a closer three-quarter medium close-up from upper chest upward, 20 degrees around her left side, showing both eyes and entire mouth clearly. She sits left-center at a wooden table, gazing slightly screen right toward her off-camera partner, lips gently closed. Natural soft window light from left, simple out-of-focus cafe window and neutral timber furnishings in background, a plain ceramic cup visible low in frame, no visible writing or logos. One continuous image, no panels or sheet. Owen's face must not appear. Do not transplant the desert setting; this is a completely new indoor location with the exact same performer. No text, no watermarks; no facial redesign.",
+      "reference_images": [
+        "characters/lena/reference.png",
+        "characters/owen/reference.png"
+      ]
+    },
+    {
+      "file": "references/cafe-owen.png",
+      "prompt": "Create one photorealistic cinematic landscape 16:9 video starting frame for the reverse of a quiet daytime cafe conversation. JOE is played by the exact man in reference image 2 (Owen); reference image 1 is Lena, his off-camera conversation partner. Preserve Owen's exact facial identity, face shape, blue eyes, weathered skin, short salt-and-pepper hair and close beard from his original portrait. He wears the same faded denim overshirt and gray crewneck. Closer three-quarter medium close-up from upper chest upward, camera 20 degrees around his right side, both eyes and full mouth clearly visible, occupying right-center, looking slightly screen left toward Lena; relaxed lips gently closed. He sits at a wooden cafe table with a plain ceramic cup low in frame. Natural soft window daylight from right, out-of-focus cafe window and neutral wood furnishings; consistent realistic light. Lena may appear only as an out-of-focus shoulder at extreme left; her face must not be visible. This is an indoor cafe with the same performer as the reference, no desert. No writing, logos, watermark, panels or sheet; one continuous shot. Do not redesign or beautify the actor.",
+      "reference_images": [
+        "characters/lena/reference.png",
+        "characters/owen/reference.png"
+      ]
+    }
+  ]
+}
+

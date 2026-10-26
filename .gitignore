@@ -1,6 +1,7 @@
 /target/
 .DS_Store
 .venv/
+.venv-voice/
 .env
 .cache/
 outputs/

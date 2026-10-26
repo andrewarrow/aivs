@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "cast": [
+    {
+      "role": "SUE",
+      "character": "lena"
+    },
+    {
+      "role": "JOE",
+      "character": "owen"
+    }
+  ],
+  "lines": [
+    {
+      "id": "sue-line",
+      "role": "SUE",
+      "text": "We still have some time."
+    },
+    {
+      "id": "joe-line",
+      "role": "JOE",
+      "text": "Then let's keep going."
+    }
+  ],
+  "reference_provenance": {
+    "file": "reference-provenance.json",
+    "sha256": "f97e6fb305ac4e9c1b16942412cda01e22007b73e6b8965f4d7104b53e2b582b"
+  },
+  "shots": [
+    {
+      "scene": "Desert road at dusk",
+      "line": "sue-line",
+      "image": {
+        "file": "references/desert-lena.png",
+        "sha256": "4a63111ab8764240e5600a4bdab68d0727d16c71f884d3ee49013dedb552ddae",
+        "source_images": {
+          "lena": "774875555657107e07a4e9a544ef4e78693df71436d5cd44f8ec9f70365d0ae8",
+          "owen": "9ccd8acb916c1a4e8bbed42707772bfac7ac69c750fed1fab66b44d8881e15c5"
+        }
+      },
+      "prompt": "A natural live-action medium close-up of the woman in the reference image, in the same setting: desert road at dusk. She looks toward an off-camera conversation partner to the right. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition."
+    },
+    {
+      "scene": "Desert road at dusk",
+      "line": "joe-line",
+      "image": {
+        "file": "references/desert-owen.png",
+        "sha256": "48f59a0ec47a9f2d324063246b90c5d274bef43c23b46d3d8290b3356e2a4a22",
+        "source_images": {
+          "lena": "774875555657107e07a4e9a544ef4e78693df71436d5cd44f8ec9f70365d0ae8",
+          "owen": "9ccd8acb916c1a4e8bbed42707772bfac7ac69c750fed1fab66b44d8881e15c5"
+        }
+      },
+      "prompt": "A natural live-action medium close-up of the man in the reference image, in the same setting: desert road at dusk. He looks toward an off-camera conversation partner to the left. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition."
+    },
+    {
+      "scene": "Cafe in daylight",
+      "line": "sue-line",
+      "image": {
+        "file": "references/cafe-lena.png",
+        "sha256": "f206cbf5c4eea30025487078da14514dedda36831efb4e56c6479a8bc7f07c4e",
+        "source_images": {
+          "lena": "774875555657107e07a4e9a544ef4e78693df71436d5cd44f8ec9f70365d0ae8",
+          "owen": "9ccd8acb916c1a4e8bbed42707772bfac7ac69c750fed1fab66b44d8881e15c5"
+        }
+      },
+      "prompt": "A natural live-action medium close-up of the woman in the reference image, in the same setting: cafe in daylight. She looks toward an off-camera conversation partner to the right. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition."
+    },
+    {
+      "scene": "Cafe in daylight",
+      "line": "joe-line",
+      "image": {
+        "file": "references/cafe-owen.png",
+        "sha256": "56abbc12de21a67499b389c483aef3483ed1f156c19e085286fba0b8c2bcbc5b",
+        "source_images": {
+          "lena": "774875555657107e07a4e9a544ef4e78693df71436d5cd44f8ec9f70365d0ae8",
+          "owen": "9ccd8acb916c1a4e8bbed42707772bfac7ac69c750fed1fab66b44d8881e15c5"
+        }
+      },
+      "prompt": "A natural live-action medium close-up of the man in the reference image, in the same setting: cafe in daylight. He looks toward an off-camera conversation partner to the left. Keep the camera still, preserve the face and hairstyle from the image, and retain its composition."
+    }
+  ]
+}
