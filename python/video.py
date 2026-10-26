@@ -220,7 +220,7 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
             emit("progress", label=f"Filming {len(plan['shots'])} shots ({plan['seconds']} seconds)")
 
             def shot_update(index, shot):
-                report["shots"][index].update(shot)
+                report["shots"][index] = dict(plan["shots"][index], **shot)
                 save()
 
             report["runtime"] = render_shooting_script(
@@ -308,7 +308,7 @@ def resume_screenplay(directory):
             emit("progress", label=f"Resuming {len(plan['shots'])} shots; reusing saved takes")
 
             def shot_update(index, shot):
-                report["shots"][index].update(shot)
+                report["shots"][index] = dict(plan["shots"][index], **shot)
                 save()
 
             report["runtime"] = render_shooting_script(

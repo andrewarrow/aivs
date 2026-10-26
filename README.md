@@ -107,6 +107,11 @@ with the source dialogue. FFmpeg assembles the shots and applies the final fade
 when requested. The assembled result must pass speech, decoded-frame, and
 audio/video timing checks before it is published as `video.mp4`.
 
+A shot with mismatched dialogue gets up to two retakes with new seeds. Rejected
+takes and their transcripts are preserved in `takes/<shot>/<take>/`. Recognizer
+or file errors stop the run immediately. If the retakes also fail, the error
+shows the differing words and keeps the latest take available for review.
+
 Speech matching ignores case and punctuation and folds Latin diacritics (so
 “Allô” and “Allo” compare equally); it still checks word order, repetition, and
 lexical changes. Standalone repeated “ha” syllables are ignored only when an
@@ -155,9 +160,12 @@ active work. Partial outputs remain available for inspection.
 Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
 directory to continue that run in place. Resume uses its saved screenplay, cast,
 seed, and shooting script; Codex runs only if planning never finished. Existing
-shots are checked and reused without video inference, including takes that were
-saved before speech verification failed. Missing or invalid shots are rendered,
-then the result is assembled. A speech mismatch still stops the run for review.
+shots are checked and accepted takes are reused without video inference. A take
+saved before speech verification failed is rechecked, then retaken if its words
+still mismatch. Each explicit Resume allows up to two further retakes per shot;
+take numbers and seeds continue from the saved history. Missing or invalid shots
+are rendered before assembly. Continuation shots are reused only when their
+recorded input matches the preceding take, including across interruptions.
 
 By default, the current directory is the workspace. To keep scripts, caches,
 and outputs elsewhere, pass an existing directory:
@@ -254,6 +262,7 @@ Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
 | `shooting-script-request-*`, `shooting-script-response-*` | What the planner sent to Codex and received back. |
 | `shooting-script-events-*.jsonl`, `shooting-script-errors-*.txt` | Live protocol events and diagnostics, including failed or stopped planning. |
 | `shots/001/`, `shots/002/`, … | Individual takes and their reports. |
+| `takes/<shot>/<take>/` | Archived takes, seeds, and diagnostics from replacements. |
 | `speech-recognition.json`, `speech-transcript.txt`, `speech-validation.json` | Speech evidence for individual shots and the final assembly. |
 | `render.json` | Seed, status, prompts, timing, runtime details, and errors. |
 | `video.mp4` | Final validated assembly, present after a successful render. |
@@ -304,8 +313,10 @@ cargo test live_app_server_streams_a_complete_reply -- --ignored
 Timing is estimated, and generated actions, faces, voices, and lip sync still
 need human review. Frame continuity helps within a scene but does not lock
 identity across new locations. Whisper can mishear dialogue; a matching transcript
-does not prove the correct speaker or a convincing performance. Speech mismatches
-stop the run and leave completed takes available for review.
+does not prove the correct speaker or a convincing performance. Persistent speech
+mismatches stop the run after bounded retakes and leave every take available for
+review. An assembled-video speech mismatch stops for review without automatically
+regenerating accepted shots.
 
 The editor has no print pagination or Final Draft import/export. Other renderers
 and separate speech synthesis are outside the main workflow. An opt-in

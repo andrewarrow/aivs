@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -16,6 +17,8 @@ FPS = quality_backend.FPS
 WIDTH = quality_backend.WIDTH
 HEIGHT = quality_backend.HEIGHT
 _SEED_MODULUS = 2**31
+_RETAKE_SEED_STRIDE = 1_000_003
+_MAX_SPEECH_RETRIES = 2
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -142,6 +145,102 @@ def _extract_last_frame(clip: Path, frame_index: int, image: Path) -> None:
         raise RuntimeError(f"FFmpeg did not extract the last frame from {clip}.")
 
 
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _take_seed(base_seed: int, take: int) -> int:
+    return (base_seed + (take - 1) * _RETAKE_SEED_STRIDE) % _SEED_MODULUS
+
+
+def _saved_report(shot_dir: Path) -> dict | None:
+    try:
+        report = json.loads((shot_dir / "render.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _last_archived_take(archive_dir: Path) -> int:
+    if not archive_dir.is_dir():
+        return 0
+    return max((int(entry.name) for entry in archive_dir.iterdir()
+                if entry.is_dir() and entry.name.isdecimal()), default=0)
+
+
+def _archive_take(shot_dir: Path, archive_dir: Path, take: int) -> int:
+    """Move a whole take atomically before assigning a new seed to its path.
+
+    Archives live outside the active shot directory, so a stop between the
+    rename and the next checkpoint cannot mistake old media for the new take.
+    """
+    take = max(take, _last_archived_take(archive_dir) + 1)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    destination = archive_dir / f"{take:03d}"
+    _atomic_json(shot_dir / "archive.json", {
+        "original_directory": str(shot_dir),
+        "directory": str(destination),
+        "clip": str(destination / "video.mp4"),
+    })
+    shot_dir.rename(destination)
+    # Reports must open the rejected clip after its old path becomes a new take.
+    # The manifest also locates assets referenced by historical runtime paths.
+    for filename in ("speech-validation.json", "render.json"):
+        try:
+            data = json.loads((destination / filename).read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        speech = data.get("speech_validation") if filename == "render.json" else data
+        if isinstance(speech, dict) and "clip" in speech:
+            speech["original_clip"] = speech["clip"]
+            speech["clip"] = str(destination / "video.mp4")
+            _atomic_json(destination / filename, data)
+    shot_dir.mkdir()
+    return take
+
+
+def _matches_saved_take(saved: dict, report: dict, clip: Path,
+                        previous_clip: Path | None) -> bool:
+    take = saved.get("take", 1)
+    if type(take) is not int or take < 1:
+        return False
+    if (saved.get("base_seed", report["base_seed"]) != report["base_seed"]
+            or saved.get("seed") != _take_seed(report["base_seed"], take)
+            or any(saved.get(key) != report[key]
+                   for key in ("prompt", "seconds", "beat_ids", "scene_id"))):
+        return False
+    continuity = saved.get("continuity")
+    if not isinstance(continuity, dict) or any(
+        continuity.get(key) != report["continuity"][key]
+        for key in ("conditioning", "source_shot", "source_frame")
+    ):
+        return False
+    if previous_clip is not None:
+        recorded_hash = continuity.get("source_clip_sha256")
+        if recorded_hash is not None:
+            if recorded_hash != report["continuity"]["source_clip_sha256"]:
+                return False
+        else:
+            # Older runs recorded the input frame hash in the renderer runtime.
+            # Compare it with today's predecessor instead of trusting paths or
+            # an invocation-local "reused" flag across repeated resumes.
+            runtime = saved.get("runtime")
+            reference = runtime.get("source_image") if isinstance(runtime, dict) else None
+            if not isinstance(reference, dict) or not reference.get("source_sha256"):
+                return False
+            with tempfile.TemporaryDirectory(prefix=".resume-frame-", dir=clip.parent) as temporary:
+                frame = Path(temporary) / "frame.png"
+                _extract_last_frame(previous_clip, report["continuity"]["source_frame"], frame)
+                if _file_sha256(frame) != reference["source_sha256"]:
+                    return False
+    if saved.get("sha256") is not None and saved["sha256"] != _file_sha256(clip):
+        return False
+    return True
+
+
 def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *,
               width=None, height=None, verify_audio=None) -> dict:
     width = WIDTH if width is None else width
@@ -198,7 +297,8 @@ def render_shooting_script(
     ``render_fn`` follows ``quality_backend.render``. Completed shot files and
     their atomic reports remain available if a later shot or assembly fails.
     With ``resume``, matching saved takes are checked and reused before any new
-    video inference; a failed speech check keeps the take available for review.
+    video inference. Speech mismatches receive at most two fresh-seed retakes
+    per invocation. Rejected takes and their diagnostics remain available.
     """
     shots, seconds, fade_out = _validate_plan(plan)
     dialogue = _expected_dialogue(plan, shots)
@@ -220,7 +320,6 @@ def render_shooting_script(
     completed_seconds = 0
     summaries = []
     clips = []
-    previous_shot_reused = False
 
     def emit_progress(fraction, label, remaining_seconds=None):
         nonlocal last_fraction
@@ -242,8 +341,11 @@ def render_shooting_script(
             shot_dir.mkdir(parents=True, exist_ok=True)
             clip = shot_dir / "video.mp4"
             frames = shot["seconds"] * FPS
-            shot_seed = (seed + index) % _SEED_MODULUS
+            base_seed = (seed + index) % _SEED_MODULUS
+            archive_dir = output.parent / "takes" / f"{index + 1:03d}"
+            take = _last_archived_take(archive_dir) + 1
             use_previous_frame = _uses_previous_frame(shots, index)
+            previous_clip = clips[-1] if use_previous_frame else None
             image_file = shot_dir / "start-frame.png" if use_previous_frame else None
             source_frame = shots[index - 1]["seconds"] * FPS - 1 if use_previous_frame else None
             continuity = {
@@ -251,10 +353,13 @@ def render_shooting_script(
                 "source_shot": index if use_previous_frame else None,
                 "source_frame": source_frame,
                 "source_image": str(image_file) if image_file is not None else None,
+                "source_clip_sha256": summaries[-1]["sha256"] if use_previous_frame else None,
             }
             report = {
                 "prompt": shot["prompt"],
-                "seed": shot_seed,
+                "base_seed": base_seed,
+                "seed": _take_seed(base_seed, take),
+                "take": take,
                 "seconds": shot["seconds"],
                 "status": "running",
                 "runtime": None,
@@ -266,29 +371,26 @@ def render_shooting_script(
             }
 
             reused = False
-            if resume and clip.is_file() and (not use_previous_frame or previous_shot_reused):
-                saved_report_path = shot_dir / "render.json"
+            saved = _saved_report(shot_dir)
+            if resume and clip.is_file() and saved is not None:
                 try:
-                    saved_report = json.loads(saved_report_path.read_text(encoding="utf-8"))
-                    saved_continuity = saved_report.get("continuity")
-                    matches = (
-                        saved_report.get("prompt") == shot["prompt"]
-                        and saved_report.get("seed") == shot_seed
-                        and saved_report.get("seconds") == shot["seconds"]
-                        and saved_report.get("beat_ids") == shot["beat_ids"]
-                        and isinstance(saved_continuity, dict)
-                        and all(saved_continuity.get(key) == continuity[key]
-                                for key in ("conditioning", "source_shot", "source_frame"))
-                        and ("scene_id" not in shot or saved_report.get("scene_id") == shot["scene_id"])
-                    )
-                    if matches:
+                    if _matches_saved_take(saved, report, clip, previous_clip):
+                        emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved video")
                         validate_video(clip, frames, WIDTH, HEIGHT, expect_audio=True)
-                        report["runtime"] = saved_report.get("runtime")
+                        take = saved.get("take", 1)
+                        report.update(take=take, seed=saved["seed"], runtime=saved.get("runtime"))
                         report["reused"] = True
                         reused = True
-                except Exception:
-                    # A stale, malformed, or invalid saved take follows the normal render path.
+                except (ValueError, KeyError, RuntimeError, subprocess.CalledProcessError):
+                    # Invalid media can be replaced; missing tools and filesystem
+                    # errors propagate instead of triggering expensive inference.
                     reused = False
+            if not reused and any(shot_dir.iterdir()):
+                saved_take = saved.get("take", 1) if saved is not None else 1
+                if type(saved_take) is not int or saved_take < 1:
+                    saved_take = 1
+                take = _archive_take(shot_dir, archive_dir, saved_take) + 1
+                report.update(take=take, seed=_take_seed(base_seed, take))
             save_shot(index, report)
 
             shot_started = time.monotonic()
@@ -307,45 +409,83 @@ def render_shooting_script(
                     remaining = max(0.0, float(remaining)) + future_duration * observed_rate
                 emit_progress(
                     min(0.97, 0.97 * by_duration),
-                    f"Shot {index + 1}/{total_shots}: {data.get('label', 'Rendering')}",
+                    f"Shot {index + 1}/{total_shots}, take {report['take']}: {data.get('label', 'Rendering')}",
                     remaining,
                 )
 
             try:
-                if reused:
-                    runtime = report["runtime"]
-                    emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved shot")
-                else:
-                    if use_previous_frame:
-                        _extract_last_frame(clips[-1], source_frame, image_file)
-                    runtime = renderer(
-                        shot["prompt"], shot_seed, frames, clip,
-                        on_progress=shot_progress,
-                        image_file=image_file,
-                        hold_image_framing=False,
-                    )
-                    report["runtime"] = runtime
-                    emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
-                speech = speech_validation.validate_shot_audio(
-                    clip, dialogue[index], shot_dir, root=quality_backend.ROOT,
-                    scripted_laughter_intervals=shot_laughter_intervals[index],
-                )
+                retries = 0
+                while True:
+                    if reused:
+                        runtime = report["runtime"]
+                        emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved speech")
+                    else:
+                        shot_started = time.monotonic()
+                        if use_previous_frame:
+                            _extract_last_frame(previous_clip, source_frame, image_file)
+                        runtime = renderer(
+                            shot["prompt"], report["seed"], frames, clip,
+                            on_progress=shot_progress,
+                            image_file=image_file,
+                            hold_image_framing=False,
+                        )
+                        report["runtime"] = runtime
+                        emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking spoken words")
+                    report["sha256"] = _file_sha256(clip)
+                    # Persist the generated take before the recognizer runs so a
+                    # stop or tool failure can resume verification, not inference.
+                    report["status"] = "verifying"
+                    save_shot(index, report)
+                    try:
+                        speech = speech_validation.validate_shot_audio(
+                            clip, dialogue[index], shot_dir, root=quality_backend.ROOT,
+                            scripted_laughter_intervals=shot_laughter_intervals[index],
+                        )
+                        break
+                    except speech_validation.SpeechValidationError as exc:
+                        report.update(status="failed", error=str(exc), speech_validation=exc.report)
+                        save_shot(index, report)
+                        if exc.report.get("status") != "mismatch":
+                            raise
+                        detail = speech_validation.mismatch_summary(exc.report)
+                        if retries >= _MAX_SPEECH_RETRIES:
+                            raise speech_validation.SpeechValidationError(
+                                f"Shot {index + 1}: speech still differs after {retries} retakes. "
+                                f"{detail} Review shots/{index + 1:03d}/video.mp4 and its speech report. "
+                                "Resume will try fresh takes while keeping accepted shots.",
+                                exc.report,
+                            ) from exc
+                        retries += 1
+                        emit_progress(
+                            last_fraction,
+                            f"Shot {index + 1}/{total_shots}: {detail} Retaking ({retries}/{_MAX_SPEECH_RETRIES})",
+                        )
+                        take = _archive_take(shot_dir, archive_dir, report["take"]) + 1
+                        report.update(take=take, seed=_take_seed(base_seed, take),
+                                      status="running", runtime=None)
+                        for key in ("error", "speech_validation", "sha256", "reused"):
+                            report.pop(key, None)
+                        reused = False
+                        save_shot(index, report)
+                report.pop("error", None)
                 report.update(status="complete", speech_validation=speech)
                 clips.append(clip)
                 summaries.append({
                     "index": index,
                     "prompt": shot["prompt"],
-                    "seed": shot_seed,
+                    "base_seed": base_seed,
+                    "seed": report["seed"],
+                    "take": report["take"],
                     "seconds": shot["seconds"],
                     "status": "complete",
                     "runtime": runtime,
                     "continuity": continuity,
                     "speech_validation": speech,
+                    "sha256": report["sha256"],
                     **({"reused": True} if reused else {}),
                 })
                 completed_seconds += shot["seconds"]
                 save_shot(index, report)
-                previous_shot_reused = reused
                 emit_progress(
                     min(0.97, 0.97 * completed_seconds / seconds),
                     f"Shot {index + 1}/{total_shots} {'reused' if reused else 'complete'}",

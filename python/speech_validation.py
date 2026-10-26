@@ -224,6 +224,38 @@ def compare_transcript(expected_text: str, transcript: str) -> dict:
             "differences": differences}
 
 
+def mismatch_summary(report: dict) -> str:
+    """Describe the first few transcript differences in plain language."""
+    differences = report.get("differences") if isinstance(report, dict) else None
+    if not isinstance(differences, list):
+        return "The recognized transcript differs from the screenplay."
+
+    descriptions = []
+    for difference in differences[:3]:
+        if not isinstance(difference, dict):
+            continue
+        expected = difference.get("expected")
+        recognized = difference.get("recognized")
+        if not isinstance(expected, list) or not isinstance(recognized, list):
+            continue
+        expected_text = " ".join(str(word) for word in expected).strip()
+        recognized_text = " ".join(str(word) for word in recognized).strip()
+        if difference.get("operation") == "insert" and recognized_text:
+            descriptions.append(f"Recognized extra words: “{recognized_text}”.")
+        elif difference.get("operation") == "delete" and expected_text:
+            descriptions.append(f"Missing expected words: “{expected_text}”.")
+        elif difference.get("operation") == "replace" and expected_text and recognized_text:
+            descriptions.append(
+                f"Recognized “{recognized_text}” instead of “{expected_text}”.")
+
+    if not descriptions:
+        return "The recognized transcript differs from the screenplay."
+    summary = " ".join(descriptions)
+    if len(summary) > 180:
+        summary = summary[:177].rsplit(" ", 1)[0] + "…"
+    return summary
+
+
 def _read_transcript(raw: dict, duration: float) -> tuple[str, list[dict]]:
     if not isinstance(raw, dict) or not isinstance(raw.get("transcription"), list):
         raise ValueError("Recognizer output has no transcription list.")
@@ -325,7 +357,9 @@ def validate_shot_audio(clip: Path, expected_text: str, report_dir: Path | None 
         if report["last_speech_end_seconds"] is not None:
             report["trailing_seconds_estimate"] = round(duration - report["last_speech_end_seconds"], 3)
         if report["status"] != "passed":
-            report["error"] = "Generated speech does not match the screenplay. Review speech-validation.json and the shot audio."
+            detail = mismatch_summary(report)
+            report["error"] = (f"Generated speech does not match the screenplay: {detail} "
+                               "Review speech-validation.json and the shot audio.")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, wave.Error) as exc:
         report.update(status="failed", error=f"Could not verify generated speech: {exc}")
         if isinstance(exc, subprocess.CalledProcessError):
