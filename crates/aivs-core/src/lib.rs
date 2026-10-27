@@ -1,6 +1,9 @@
 //! Production rules and Codex sessions without a desktop, GPU, or Python runtime.
+pub mod artifacts;
+pub mod characters;
 pub mod codex;
 pub mod continuity;
+pub mod dialogue;
 pub mod media;
 pub mod motion;
 pub mod preproduction;
@@ -8,6 +11,8 @@ pub mod prop_reference;
 pub mod render_formats;
 pub mod shooting_script;
 pub mod shot_renderer;
+pub mod storyboard_backend;
+pub mod storyboard_images;
 pub mod visual_review;
 
 use serde_json::{Value, json};
@@ -21,7 +26,7 @@ use std::sync::{
 pub const PROTOCOL_VERSION: u64 = 1;
 
 /// One request and response per line. Domain failures never terminate the worker.
-/// Python currently serializes artifacts and computes their JSON digests.
+/// Legacy screenplay fingerprints remain Python-owned; image artifacts are Rust-owned.
 pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> std::io::Result<()> {
     let cancelled = Arc::new(AtomicBool::new(false));
     let parent_closed = cancelled.clone();
@@ -43,6 +48,16 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                     if request["operation"] == "implementation" {
                         Ok(json!({
                             "crates/aivs-core/src/lib.rs": include_str!("lib.rs"),
+                            "crates/aivs-core/src/artifacts.rs": include_str!("artifacts.rs"),
+                            "crates/aivs-core/src/characters.rs": include_str!("characters.rs"),
+                            "crates/aivs-core/src/characters/prompt.rs": include_str!("characters/prompt.rs"),
+                            "crates/aivs-core/src/dialogue.rs": include_str!("dialogue.rs"),
+                            "crates/aivs-core/src/media/audio.rs": include_str!("media/audio.rs"),
+                            "crates/aivs-core/src/media/review.rs": include_str!("media/review.rs"),
+                            "crates/aivs-core/src/storyboard_backend.rs": include_str!("storyboard_backend.rs"),
+                            "crates/aivs-core/src/storyboard_backend/preflight.rs": include_str!("storyboard_backend/preflight.rs"),
+                            "crates/aivs-core/src/storyboard_backend/session.rs": include_str!("storyboard_backend/session.rs"),
+                            "crates/aivs-core/src/storyboard_images.rs": include_str!("storyboard_images.rs"),
                             "crates/aivs-core/src/continuity.rs": include_str!("continuity.rs"),
                             "crates/aivs-core/src/continuity/acceptance.rs": include_str!("continuity/acceptance.rs"),
                             "crates/aivs-core/src/continuity/artifacts.rs": include_str!("continuity/artifacts.rs"),
@@ -71,6 +86,44 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/shooting_script/unicode.rs": include_str!("shooting_script/unicode.rs"),
                             "crates/aivs-core/src/visual_review.rs": include_str!("visual_review.rs"),
                         }))
+                    } else if request["operation"]
+                        .as_str()
+                        .is_some_and(|op| op.starts_with("character_"))
+                    {
+                        characters::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                        )
+                    } else if request["operation"] == "duration_estimate" {
+                        request["args"]["prompt"]
+                            .as_str()
+                            .ok_or_else(|| "Duration estimate needs prompt text.".into())
+                            .and_then(dialogue::estimate)
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some(
+                            "imagegen_configuration"
+                                | "imagegen_check_local"
+                                | "imagegen_check"
+                                | "imagegen_generate"
+                                | "prepare_image_references"
+                        )
+                    ) {
+                        error_kind = "imagegen";
+                        storyboard_backend::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                            cancelled.clone(),
+                            |event| {
+                                let envelope = json!({"version": PROTOCOL_VERSION, "id": request["id"], "event": event});
+                                serde_json::to_writer(&mut writer, &envelope)
+                                    .map_err(|e| e.to_string())?;
+                                writer
+                                    .write_all(b"\n")
+                                    .and_then(|_| writer.flush())
+                                    .map_err(|e| e.to_string())
+                            },
+                        )
                     } else if matches!(
                         request["operation"].as_str(),
                         Some(
@@ -91,7 +144,13 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         )
                     } else if matches!(
                         request["operation"].as_str(),
-                        Some("extract_last_frame" | "assemble_shots" | "validate_video")
+                        Some(
+                            "extract_last_frame"
+                                | "assemble_shots"
+                                | "validate_video"
+                                | "validate_supplied_audio"
+                                | "visual_review_sheets"
+                        )
                     ) {
                         error_kind = "media";
                         media::dispatch(

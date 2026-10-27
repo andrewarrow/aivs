@@ -10,20 +10,15 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import math
 from pathlib import Path
-import subprocess
 import tempfile
 import time
 
 import rust_engine
 import shooting_script
-from rust_engine import resolve_format
 
 POLICY_VERSION = "visual-continuity-v2"
 _TIMEOUT_SECONDS = 120
-_FPS = 24
-_SAMPLE_STRIDE = 6
 _RESPONSE_LIMIT = 64_000
 
 
@@ -167,65 +162,9 @@ def _contract(shot):
 
 
 def _sheets(clip, directory, seconds, shot_number, render_format=None):
-    from PIL import Image, ImageDraw, ImageFont
-
-    directory = Path(directory)
-    frames_dir = directory / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    for old_frame in frames_dir.glob("[0-9][0-9][0-9].png"):
-        old_frame.unlink()
-    total = int(seconds * _FPS)
-    spec = resolve_format(render_format) if render_format is not None else None
-    indices = sorted(set([*range(0, total, _SAMPLE_STRIDE), total - 1]))
-    # Select decoded frame numbers rather than fps resampling, which can move
-    # the first selected image away from the timestamp written on its caption.
-    selector = f"lt(n\\,{total})*(not(mod(n\\,{_SAMPLE_STRIDE}))+eq(n\\,{total - 1}))"
-    crop = f"crop={spec['width']}:{spec['height']}," if spec else ""
-    subprocess.run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", str(clip), "-vf",
-        f"select={selector},{crop}scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2",
-        "-fps_mode", "vfr", str(frames_dir / "%03d.png"),
-    ], check=True, capture_output=True, timeout=30)
-    files = [frames_dir / f"{number:03d}.png" for number in range(1, len(indices) + 1)]
-    if not all(path.is_file() for path in files):
-        raise ValueError("Visual sampling did not produce the expected frame sequence.")
-    full_final = directory / "full-final-frame.png"
-    subprocess.run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", str(clip), "-vf", f"select=eq(n\\,{total - 1})",
-        "-frames:v", "1", "-fps_mode", "passthrough", str(full_final),
-    ], check=True, capture_output=True, timeout=30)
-    if not full_final.is_file():
-        raise ValueError("The inherited final frame could not be extracted.")
-    font = ImageFont.load_default(size=17)
-    with Image.open(files[0]) as opening:
-        width, height = opening.size
-    sheets = []
-    for page, start in enumerate(range(0, len(files), 12), 1):
-        subset = files[start:start + 12]
-        rows = math.ceil(len(subset) / 3)
-        sheet = Image.new("RGB", (3 * (width + 4) + 4, rows * (height + 32) + 4), "#111111")
-        draw = ImageDraw.Draw(sheet)
-        for local, path in enumerate(subset):
-            x = 4 + (local % 3) * (width + 4)
-            y = 4 + (local // 3) * (height + 32)
-            frame = indices[start + local]
-            draw.text((x + 5, y + 3), f"Shot {shot_number} | {frame / _FPS:.3f}s | frame {frame}",
-                      fill="white", font=font)
-            with Image.open(path) as frame_image:
-                sheet.paste(frame_image.convert("RGB"), (x, y + 28))
-        target = directory / f"contact-{page:02d}.jpg"
-        sheet.save(target, quality=92)
-        sheets.append(str(target.resolve()))
-    evidence = {"sample_fps": _FPS / _SAMPLE_STRIDE, "contact_sheets": sheets,
-                "final_frame": str(files[-1].resolve()),
-                "full_final_frame": str(full_final.resolve()),
-                "delivery_crop": {"width": spec["width"], "height": spec["height"]} if spec else None,
-                "frames": [{"frame": frame, "seconds": frame / _FPS, "file": str(path.resolve())}
-                           for frame, path in zip(indices, files)]}
-    _save(directory / "frames.json", evidence)
-    return evidence
+    return rust_engine.call("visual_review_sheets", clip=str(Path(clip).resolve()),
+                            directory=str(Path(directory).resolve()), seconds=seconds,
+                            shot_number=shot_number, render_format=render_format)
 
 
 def _validate_shot(value, shot):

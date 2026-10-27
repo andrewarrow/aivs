@@ -1,5 +1,7 @@
 //! Local FFmpeg execution, decoded-media validation and shot assembly.
 //! The caller publishes the assembled partial only after validation succeeds.
+mod audio;
+mod review;
 use crate::continuity::Result;
 use serde_json::{Value, json};
 use std::{
@@ -9,7 +11,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const FPS: u64 = 24;
@@ -31,7 +33,16 @@ fn drain(mut stream: impl Read + Send + 'static) -> thread::JoinHandle<std::io::
     })
 }
 
-fn run(command: &mut Command, cancelled: &AtomicBool) -> Result<Vec<u8>> {
+pub(crate) fn run(command: &mut Command, cancelled: &AtomicBool) -> Result<Vec<u8>> {
+    run_timeout(command, cancelled, None)
+}
+
+pub(crate) fn run_timeout(
+    command: &mut Command,
+    cancelled: &AtomicBool,
+    timeout: Option<Duration>,
+) -> Result<Vec<u8>> {
+    let started = Instant::now();
     let program = command.get_program().to_string_lossy().into_owned();
     let mut process = Process(
         command
@@ -46,6 +57,9 @@ fn run(command: &mut Command, cancelled: &AtomicBool) -> Result<Vec<u8>> {
     let status = loop {
         if cancelled.load(Ordering::Relaxed) {
             return Err(format!("{program} cancelled because its parent closed."));
+        }
+        if timeout.is_some_and(|timeout| started.elapsed() >= timeout) {
+            return Err(format!("{program} timed out."));
         }
         if let Some(status) = process.0.try_wait().map_err(|error| error.to_string())? {
             break status;
@@ -311,6 +325,8 @@ pub fn dispatch(operation: &str, args: &Value, cancelled: &AtomicBool) -> Result
         "extract_last_frame" => extract(args, cancelled),
         "assemble_shots" => assemble(args, cancelled),
         "validate_video" => validate(args, cancelled),
+        "validate_supplied_audio" => audio::validate(args, cancelled),
+        "visual_review_sheets" => review::sheets(args, cancelled),
         _ => Err("Unknown media operation.".into()),
     }
 }

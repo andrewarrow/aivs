@@ -142,9 +142,9 @@ Completed image-tool checkpoints survive interruption and can be reused on Resum
 Codex image generation has no controllable random seed; the saved seed identifies
 the request and retry, rather than guaranteeing identical new pixels. Changed references
 or prompt inputs regenerate dependent frames, preserving superseded images and
-their provenance. The Codex image turn finishes before LTX loads. Python validates
-source coverage, exact dialogue, timing,
-and prompt limits. The final shooting script and storyboard checksums are bound
+their provenance. The Codex image turn finishes before LTX loads. Rust validates
+source coverage, exact dialogue and timing; Python supplies model token limits.
+The final shooting script and storyboard checksums are bound
 together with an accepted `storyboard-review.json`. The renderer and Resume
 reject missing, failed, incompatible or stale acceptance, even when image files
 exist. A concrete defect uses the existing two automatic repair rounds, including
@@ -483,12 +483,16 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [crates/aivs-core/src/media.rs](crates/aivs-core/src/media.rs) | FFmpeg frame extraction, shot assembly, FFprobe checks and full media decoding, with child cleanup on cancellation. |
 | [crates/aivs-core/src/continuity](crates/aivs-core/src/continuity) | Continuity schemas, state rules, sequence review, snapshot comparisons, and acceptance bindings. |
 | [crates/aivs-core/src/render_formats.rs](crates/aivs-core/src/render_formats.rs) | Delivery dimensions, aligned model canvases, and framing guidance. |
+| [crates/aivs-core/src/characters.rs](crates/aivs-core/src/characters.rs) | Performer lookup, quote-aware references, profile/asset validation and run snapshots. |
+| [crates/aivs-core/src/dialogue.rs](crates/aivs-core/src/dialogue.rs) | Dialogue and screenplay action duration estimates. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
 | [python/storyboard.py](python/storyboard.py) | Generates and validates shot-bound storyboard images and their provenance. |
-| [python/storyboard_backend.py](python/storyboard_backend.py) | Generates reference-aware images through the signed-in Codex app-server. |
+| [crates/aivs-core/src/storyboard_backend.rs](crates/aivs-core/src/storyboard_backend.rs) | Codex ImageGen preflight, generation/edit sessions, input verification and checkpoint recovery. |
+| [crates/aivs-core/src/storyboard_images.rs](crates/aivs-core/src/storyboard_images.rs) | Reference sheets, EXIF orientation, Lanczos fitting and opaque PNG output. |
+| [python/storyboard_backend.py](python/storyboard_backend.py) | Compatibility adapter to Rust ImageGen and optional Python MFLUX inference. |
 | [python/shot_renderer.py](python/shot_renderer.py) | Reuses saved takes, renders missing shots from storyboard frames, and assembles the result. |
 | [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
-| [python/validation.py](python/validation.py) | Decoded-frame, stream, and audio/video timing checks. |
+| [python/validation.py](python/validation.py) | Compatibility adapter to Rust video and supplied-audio validation. |
 | [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration using the shared Rust transport. |
 | [src/main.rs](src/main.rs), [src/playback.rs](src/playback.rs) | Native egui/winit/wgpu window and macOS AVKit playback. |
 
@@ -507,8 +511,9 @@ bound to them. Both consume the same saved planning allowance.
 Image generation and visual inspection use the same Rust production-session
 implementation, including local-image attachments, streamed activity, raw logs,
 partial final responses, and deadlines. Image generation uses its own writable
-workspace. The Python adapter forwards callbacks and retains existing image
-checkpoint handling; it no longer implements the app-server protocol. The
+workspace. Rust owns ImageGen checkpoints, preflight, reference preparation,
+input verification and output normalization; the Python adapter forwards activity
+and routes optional local MFLUX inference. The
 protocol follows the [official app-server documentation](https://learn.chatgpt.com/docs/app-server).
 
 The client in `src/codex.rs` handles login and optional chat in a separate session,
@@ -526,7 +531,9 @@ Change story direction in the director instructions. Continuity rules belong in
 Deterministic continuity, canonical prop acceptance, motion keyframe timing and
 hand-object constraints, visual review validation, storyboard repair policy,
 shot execution rules and saved-take matching, screenplay parsing and compilation,
-source-fidelity approval rules, FFmpeg assembly and video validation, and production Codex sessions run
+source-fidelity approval rules, saved character lookup and snapshots, dialogue
+duration estimates, Codex ImageGen orchestration, visual evidence sampling,
+FFmpeg assembly, video/audio validation, and production Codex sessions run
 in Rust. `aivs-core` has no desktop or model dependencies. The desktop launches
 itself with `--engine` before initializing the UI and passes that path to Python
 as `AIVS_ENGINE_PATH`.
@@ -555,7 +562,9 @@ the same request ID. A persistent worker serves the Python pipeline. Each Codex
 request creates its own app-server process and ephemeral thread; parent EOF or a
 deadline ends the session and reaps the child.
 
-Python currently serializes artifacts and computes their JSON digests. Cache and
+Python still serializes screenplay artifacts and computes their JSON digests. Rust
+owns ImageGen artifacts and preserves the old sorted ASCII JSON fingerprint codec,
+including whitespace and Unicode escapes. Cache and
 review identities include the current Python source, bridge, and compiled Rust
 sources. There is no compatibility mapping for older implementations: changing
 these sources invalidates earlier identities. Rebuild the engine after changing
@@ -574,7 +583,28 @@ existing Python JSON codec; cast lookups retain full Unicode case folding.
 metadata, frame counts, dimensions, frame rate, audio alignment and full decoding.
 Media children are killed and reaped if the parent closes the engine connection.
 Assembly returns a partial file; the Python adapter validates it before replacing
-the published video. Supplied-PCM waveform comparison still runs in Python.
+the published video. Rust also compares supplied PCM waveforms after AAC decoding,
+including sample counts, correlation, gain and expected silence. Visual review
+sampling uses exact decoded frame numbers at 4fps, timestamped contact sheets,
+and both a sampled and full-resolution final frame.
+
+`characters` in Rust resolves explicit casting and saved names outside quoted
+dialogue, expands appearance/voice descriptions, validates profile and asset hashes,
+and stages run snapshots before publishing them. Snapshot copies are hash-checked
+before publication. Scene references still take precedence over portraits.
+`dialogue` retains the quoted-speech estimate and action-paragraph timing rules.
+The existing Python functions remain adapters for production and experiment callers;
+the file-hash helper remains usable inside inference-only Python environments.
+
+`storyboard_backend` in Rust performs the real generation/edit preflight under a
+cancellable file lock, binds receipts to Codex configuration and image hashes,
+and resumes completed image-tool checkpoints. Reference paths and hashes must
+match the tool's reported inputs exactly. Existing verified reference sheets are
+reused byte for byte; new sheets and normalized images use Rust image codecs.
+New PNG encoding and resampling can produce different bytes from Pillow, so these
+outputs are newly hashed rather than assigned an older image's identity. A
+preflight edit must change decoded pixels, even across an encoder change. No
+existing output image is overwritten by generation.
 
 Continuity and motion contracts come from Rust through the lazy `schema` engine
 operation; importing Python modules does not launch the engine. Rust also builds
@@ -606,8 +636,8 @@ source-preservation evidence, and reconciles scene status with shot reports.
 Fresh and cached scene reports use the same rules: recorded defects cannot be
 reported as a pass, and unavailable shot evidence prevents an overall pass.
 Review and adaptation cache keys include the Python, bridge, and compiled Rust
-implementation identity. Python retains review instructions, schemas, frame
-sampling, Codex calls, prompt compilation, and artifact storage. Visual reports
+implementation identity. Python retains review instructions, schemas,
+Codex calls, prompt compilation, and report storage. Visual reports
 remain advisory and never request another video render.
 
 `preproduction` in Rust owns the two-round storyboard repair allowance, journal
@@ -630,8 +660,8 @@ identity checks until voice conversion completes. Existing render report fields
 and JSON fingerprint serialization are unchanged. Advisory visual reviews map to
 production status in Rust and never authorize another video inference.
 
-Preproduction scheduling, repair execution, artifact I/O, take archival/restoration,
-visual review orchestration, and FFmpeg assembly remain in Python. Moving that
+Preproduction scheduling, repair execution, screenplay artifact I/O, take
+archival/restoration, and visual review orchestration remain in Python. Moving that
 state machine and narrowing Python to isolated inference workers are the next
 migration phases. LTX/MLX, Seed-VC, and optional MFLUX remain Python inference code.
 
