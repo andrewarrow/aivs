@@ -201,11 +201,6 @@ pub(super) fn compile(
             "No spoken words. Only the staged environmental sounds and source nonverbal vocal actions are audible. "
         }
     };
-    let lip_sync = if required.is_empty() {
-        ""
-    } else {
-        "For every visible speaker, lip articulation and audible dialogue begin together on the first word and stay synchronized syllable by syllable through the last word. During the lead-in and pauses between lines, lips rest except for source-required mouth actions. "
-    };
     let framing = request
         .get("render_format")
         .map(crate::render_formats::framing)
@@ -226,7 +221,7 @@ pub(super) fn compile(
         ""
     };
     Ok(format!(
-        "{image}{action} {}{cast}{speech}{lip_sync}{voice}No subtitles, captions, or text overlays.",
+        "{image}{action} {}{cast}{speech}{voice}No subtitles, captions, or text overlays.",
         framing.as_str().unwrap_or_default()
     ))
 }

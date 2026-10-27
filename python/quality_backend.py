@@ -49,7 +49,9 @@ def profile_config(profile="distilled"):
         "stage1_steps": 15 if profile == "hq" else 8, "stage2_steps": 3,
         "quantization": "int8", "low_memory": True, "low_ram_streaming": True,
         **({"sampler": "res_2s", "cfg_scale": 3.0, "stg_scale": 0.0,
-            "enable_teacache": False} if profile == "hq" else {}),
+            "enable_teacache": False,
+            "negative_prompt_suffix": "subtitles, captions, text overlays, on-screen text"}
+           if profile == "hq" else {}),
     }
 
 
@@ -192,8 +194,11 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
             anchors,
         )
         if profile == "hq":
+            from ltx_pipelines_mlx.utils.constants import DEFAULT_NEGATIVE_PROMPT
+            # Extend the pinned runtime's quality exclusions instead of replacing them.
             generation_options.update(stage1_steps=15, stage2_steps=3, cfg_scale=3.0,
-                                      stg_scale=0.0, enable_teacache=False)
+                                      stg_scale=0.0, enable_teacache=False,
+                                      negative_prompt=f"{DEFAULT_NEGATIVE_PROMPT} {config['negative_prompt_suffix']}")
         if audio is not None:
             generation_options["audio_path"] = prepared["conditioning_audio"]
         with pipeline_activity(pipeline, progress, profile=profile):

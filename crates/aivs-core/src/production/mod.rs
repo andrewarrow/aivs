@@ -98,7 +98,8 @@ pub fn model_config(profile: &str) -> Result<Value> {
     if profile == "hq" {
         merge(
             &mut value,
-            &json!({"sampler":"res_2s", "cfg_scale":3.0, "stg_scale":0.0, "enable_teacache":false}),
+            &json!({"sampler":"res_2s", "cfg_scale":3.0, "stg_scale":0.0, "enable_teacache":false,
+                "negative_prompt_suffix":"subtitles, captions, text overlays, on-screen text"}),
         )?;
     }
     Ok(value)
