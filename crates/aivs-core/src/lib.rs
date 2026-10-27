@@ -1,10 +1,12 @@
 //! Production rules and Codex sessions without a desktop, GPU, or Python runtime.
 pub mod codex;
 pub mod continuity;
+pub mod media;
 pub mod motion;
 pub mod preproduction;
 pub mod prop_reference;
 pub mod render_formats;
+pub mod shooting_script;
 pub mod shot_renderer;
 pub mod visual_review;
 
@@ -53,14 +55,50 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/continuity/world.rs": include_str!("continuity/world.rs"),
                             "crates/aivs-core/src/codex.rs": include_str!("codex.rs"),
                             "crates/aivs-core/src/motion.rs": include_str!("motion.rs"),
+                            "crates/aivs-core/src/media.rs": include_str!("media.rs"),
                             "crates/aivs-core/src/motion/planning.rs": include_str!("motion/planning.rs"),
                             "crates/aivs-core/src/motion/review.rs": include_str!("motion/review.rs"),
                             "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
                             "crates/aivs-core/src/render_formats.rs": include_str!("render_formats.rs"),
                             "crates/aivs-core/src/preproduction.rs": include_str!("preproduction.rs"),
                             "crates/aivs-core/src/shot_renderer.rs": include_str!("shot_renderer.rs"),
+                            "crates/aivs-core/src/shooting_script.rs": include_str!("shooting_script.rs"),
+                            "crates/aivs-core/src/shooting_script/compile.rs": include_str!("shooting_script/compile.rs"),
+                            "crates/aivs-core/src/shooting_script/prompt.rs": include_str!("shooting_script/prompt.rs"),
+                            "crates/aivs-core/src/shooting_script/approval.rs": include_str!("shooting_script/approval.rs"),
+                            "crates/aivs-core/src/shooting_script/schemas.rs": include_str!("shooting_script/schemas.rs"),
+                            "crates/aivs-core/src/shooting_script/source.rs": include_str!("shooting_script/source.rs"),
+                            "crates/aivs-core/src/shooting_script/unicode.rs": include_str!("shooting_script/unicode.rs"),
                             "crates/aivs-core/src/visual_review.rs": include_str!("visual_review.rs"),
                         }))
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some(
+                            "parse_shooting_request"
+                                | "shooting_schema"
+                                | "compile_shooting_script"
+                                | "shooting_fingerprint_content"
+                                | "shooting_fidelity_requirements"
+                                | "validate_shooting_fidelity"
+                                | "validate_shooting_review"
+                                | "shooting_script_display"
+                                | "shooting_instruction_context"
+                        )
+                    ) {
+                        shooting_script::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                        )
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some("extract_last_frame" | "assemble_shots" | "validate_video")
+                    ) {
+                        error_kind = "media";
+                        media::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                            &cancelled,
+                        )
                     } else if request["operation"] == "resolve_format" {
                         render_formats::resolve(&request["args"]["name"])
                     } else if request["operation"] == "framing_prompt" {

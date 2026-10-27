@@ -1,7 +1,7 @@
 """Translate an arbitrary screenplay into validated, bounded video shots.
 
-Codex proposes staging and camera direction. This module owns the source of truth:
-speaker names, spoken words, beat order, cast identity, and artifact freshness.
+Codex proposes staging and camera direction. Rust compiles and validates shots;
+this adapter retains legacy JSON digests, model tokenization and planning I/O.
 """
 
 from __future__ import annotations
@@ -11,25 +11,13 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import rust_engine
 import shutil
 import subprocess
 import tempfile
 import time
 
-from rust_engine import framing_prompt, resolve_format
-
-_HEADING = re.compile(r"^(?:INT\.?\s*/\s*EXT\.?|EXT\.?\s*/\s*INT\.?|I\s*/\s*E\.?|INT\.?|EXT\.?|EST\.?)\s+", re.I)
-_TRANSITION = re.compile(r"^(?:FADE\s+(?:IN|OUT)\.?|CUT TO:|DISSOLVE TO:|SMASH CUT TO:|THE END\.?|[A-Z][A-Z\s]+ TO:)\s*$", re.I)
-_INLINE = re.compile(r"^(?P<role>[\w][\w .'-]*?)(?:\s*\((?P<cue>[^\n()]*)\))?\s*:\s*[\"“](?P<speech>.*?)[\"”]\s*$")
-_ROLE = re.compile(r"^[\w][\w .'-]*(?:\s*\([^\n()]*\))?$")
-_PLACEHOLDER = re.compile(r"\{\{line_(\d+)\}\}")
-_WORDS = re.compile(r"\b[\w]+(?:['’][\w]+)*\b", re.UNICODE)
-_MAX_SCRIPT = 100_000
 _MAX_TEXT = 4_000
-_PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
-                   "image", "scene_image", "voice_sample")
 DEFAULT_PLANNING_BUDGET_SECONDS = 600
 PLANNER_VERSION = "storyboard-two-pass-v2"
 _PLANNING_POLICY = "single-render-v1"
@@ -45,43 +33,6 @@ class StoryboardRepairRequired(RuntimeError):
             f"shot {item['shot']}: {item['issue']}" for item in issues))
 
 
-_CHARACTER_ASSET_CAPABILITIES = {
-    "new_scene_opening": (
-        "When exactly one saved performer is visible, the actual first frame is their canonical portrait, "
-        "provided as an image input. Preserve that face. Explicitly cut after this opening to the "
-        "scripted location, costume, and framing before source action begins; budget the cut. "
-        "A multi-person opening has no portrait conditioning."
-    ),
-    "voice": (
-        "A segment with exactly one saved speaking performer has its native soundtrack converted "
-        "to their saved voice sample after generation. Picture is unchanged. Multiple speakers "
-        "retain generated voices. Do not split source-required overlap just to enable conversion. "
-        "Whole-track conversion may affect ambience; prefer clean dialogue when source permits."
-    ),
-    "limits": "Portrait anchoring and voice conversion do not guarantee identity or lip sync.",
-    "portrait_inputs": "Attached portraits follow the unique source character order, omitting characters without portraits.",
-}
-
-
-def _asset_capabilities(source: dict) -> dict:
-    capabilities = dict(_CHARACTER_ASSET_CAPABILITIES)
-    if source.get("storyboard_policy") == STORYBOARD_POLICY:
-        capabilities.update(new_scene_opening=(
-            "Every segment starts on its own locally generated storyboard image, including reverse angles "
-            "and later segments in the same scene. Saved portraits guide actor identity during still-image "
-            "generation; they are not themselves video opening frames. The storyboard_prompt establishes "
-            "the intended opening composition, costumes, prop ownership and story state. Animate that "
-            "composition directly; do not begin on a portrait or inherit the prior video's final frame."
-        ), limits="Generated storyboards and voice conversion do not guarantee identity, continuity or lip sync.")
-    if source.get("voice_mode", "saved") == "native":
-        capabilities.update(voice=(
-            "Keep the model's native generated soundtrack for every shot. No saved-voice conversion runs. "
-            "Use the saved performers' voice descriptions as prompt guidance; voice samples will not condition audio. "
-            "Do not split source dialogue or overlap to accommodate a voice converter."
-        ), limits="Portraits, generated storyboards and native voice descriptions do not guarantee identity, continuity or lip sync.")
-    return capabilities
-
-
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -92,437 +43,28 @@ def _bounded(value: object, label: str, limit: int = _MAX_TEXT) -> str:
     return value.strip()
 
 
-def _profile_map(profiles: list[dict]) -> dict[str, dict]:
-    if not isinstance(profiles, list):
-        raise ValueError("Character profiles must be a list.")
-    result = {}
-    for profile in profiles:
-        if not isinstance(profile, dict):
-            raise ValueError("Invalid character profile.")
-        char_id = _bounded(profile.get("id"), "Character id", 128)
-        if char_id in result:
-            raise ValueError(f"Duplicate character profile: {char_id}.")
-        _bounded(profile.get("description"), f"Appearance for {char_id}")
-        voice = profile.get("voice_description", "")
-        if not isinstance(voice, str):
-            raise ValueError(f"Voice description for {char_id} must be text.")
-        result[char_id] = profile
-    return result
-
-
-def _split_role_cue(label: str) -> tuple[str, str | None]:
-    match = re.fullmatch(r"(?P<role>.+?)(?:\s*\((?P<cue>[^()]*)\))?", label.strip())
-    if not match:
-        raise ValueError(f"Invalid dialogue speaker: {label!r}.")
-    role = match.group("role").strip()
-    cue = match.group("cue")
-    return role, cue.strip() if cue and cue.strip() else None
-
-
 def parse_request(request: dict, profiles: list[dict]) -> dict:
-    """Validate input and parse ordered action/dialogue beats from human script."""
-    if not isinstance(request, dict) or request.get("version") != 1:
-        raise ValueError("Shooting-script request version must be 1.")
-    render_format = resolve_format(request["render_format"]) if "render_format" in request else None
-    conditioning = request.get("character_conditioning")
-    if conditioning not in (None, "saved-character-assets-v1"):
-        raise ValueError("Unrecognized saved character conditioning policy.")
-    storyboard_policy = request.get("storyboard_policy")
-    if storyboard_policy not in (None, STORYBOARD_POLICY):
-        raise ValueError("Unrecognized storyboard planning policy.")
-    voice_mode = request.get("voice_mode", "saved")
-    if voice_mode not in ("saved", "native"):
-        raise ValueError("Voice mode must be saved or native.")
-    script = request.get("script")
-    if not isinstance(script, str) or not script.strip() or len(script) > _MAX_SCRIPT or "\x00" in script:
-        raise ValueError(f"Screenplay must be nonempty text of at most {_MAX_SCRIPT} characters.")
-    cast = request.get("cast")
-    if not isinstance(cast, list):
-        raise ValueError("Cast must be a list of role and character bindings.")
-    known = _profile_map(profiles)
-    bindings: list[dict] = []
-    roles: dict[str, str] = {}
-    for item in cast:
-        if not isinstance(item, dict) or set(item) != {"role", "character"}:
-            raise ValueError("Each cast binding needs role and character only.")
-        role = _bounded(item["role"], "Cast role", 128)
-        char_id = _bounded(item["character"], "Cast character", 128)
-        if role.casefold() in roles:
-            raise ValueError(f"Duplicate cast role: {role}.")
-        if char_id not in known:
-            raise ValueError(f"Unknown cast character: {char_id}.")
-        roles[role.casefold()] = role
-        bindings.append({"role": role, "character": char_id})
-
-    beats: list[dict] = []
-    action: list[str] = []
-    scene: str | None = None
-    scene_id = 0
-    transition: str | None = None
-    fade_out = False
-    lines = script.splitlines()
-
-    def add_action() -> None:
-        nonlocal transition
-        if action:
-            text = " ".join(part.strip() for part in action).strip()
-            if text:
-                beats.append({"id": len(beats) + 1, "kind": "action", "text": text,
-                              "scene": scene, "scene_id": scene_id, "transition": transition})
-                transition = None
-            action.clear()
-
-    def add_dialogue(role: str, cue: str | None, speech: str) -> None:
-        nonlocal transition
-        canonical = roles.get(role.casefold())
-        if canonical is None:
-            raise ValueError(f"Dialogue speaker {role!r} has no cast binding.")
-        speech = _bounded(speech, f"Dialogue for {canonical}")
-        beats.append({"id": len(beats) + 1, "kind": "dialogue", "speaker": canonical,
-                      "cue": cue, "text": speech, "scene": scene, "scene_id": scene_id,
-                      "transition": transition})
-        transition = None
-
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        i += 1
-        if not line:
-            add_action()
-            continue
-        if _HEADING.match(line):
-            add_action()
-            scene = line
-            scene_id += 1
-            transition = None
-            continue
-        if _TRANSITION.fullmatch(line):
-            add_action()
-            if re.fullmatch(r"FADE\s+OUT\.?", line, re.I):
-                fade_out = True
-            else:
-                transition = line
-                if not re.fullmatch(r"FADE\s+IN\.?", line, re.I):
-                    scene_id += 1
-            continue
-        inline = _INLINE.fullmatch(line)
-        if inline:
-            add_action()
-            add_dialogue(inline.group("role").strip(), inline.group("cue"), inline.group("speech"))
-            continue
-        # Fountain-style cue: uppercase cast role, optional parenthetical on cue
-        # or following line, followed by unquoted dialogue until a blank line.
-        role, cue = _split_role_cue(line) if _ROLE.fullmatch(line) else ("", None)
-        if role and role.upper() == role and len(role) <= 48 and len(role.split()) <= 3:
-            next_i = i
-            if next_i < len(lines) and re.fullmatch(r"\([^()]*\)", lines[next_i].strip()):
-                cue = lines[next_i].strip()[1:-1].strip() or cue
-                next_i += 1
-            spoken = []
-            while next_i < len(lines) and lines[next_i].strip():
-                spoken.append(lines[next_i].strip())
-                next_i += 1
-            if spoken:
-                if role.casefold() not in roles and not re.match(r"^(?:A|AN|THE)\b", role):
-                    raise ValueError(f"Dialogue speaker {role!r} has no cast binding.")
-                if role.casefold() not in roles:
-                    action.append(line)
-                    continue
-                add_action()
-                speech = " ".join(spoken)
-                if len(speech) >= 2 and speech[0] in '\"“' and speech[-1] in '\"”':
-                    speech = speech[1:-1]
-                add_dialogue(role, cue, speech)
-                i = next_i
-                continue
-        action.append(line)
-    add_action()
-    if not beats:
-        raise ValueError("Screenplay has no action or dialogue beats.")
-    relevant = [{key: known[item["character"]].get(key) for key in _PROFILE_FIELDS}
-                for item in bindings]
-    identity = {"script": script, "cast": bindings, "profiles": relevant}
-    if render_format is not None:
-        identity["render_format"] = render_format
-    if conditioning is not None:
-        identity["character_conditioning"] = conditioning
-    if storyboard_policy is not None:
-        identity["storyboard_policy"] = storyboard_policy
-    # Saved voices are the historical default; explicit selection preserves
-    # existing source hashes. Native voices are a different production input.
-    if voice_mode == "native":
-        identity["voice_mode"] = voice_mode
-    digest = hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
-    return {"version": 1, "script": script, "cast": bindings, "characters": relevant,
-            **({"character_conditioning": conditioning} if conditioning is not None else {}),
-            **({"storyboard_policy": storyboard_policy} if storyboard_policy is not None else {}),
-            **({"voice_mode": voice_mode} if voice_mode == "native" else {}),
-            **({"render_format": render_format} if render_format is not None else {}),
-            "beats": beats, "fade_out": fade_out, "source_sha256": digest}
-
-
-def _line_text(beat: dict) -> str:
-    cue = f" ({beat['cue']})" if beat["cue"] else ""
-    return f'{beat["speaker"]}{cue} says, "{beat["text"]}".'
-
-
-def _cast_context(source: dict, cast_identity: list[dict] | None = None, *,
-                  visible_roles: list[str] | None = None, speaking_roles: set[str] | None = None) -> str:
-    by_id = {profile["id"]: profile for profile in source["characters"]}
-    identities = {item["role"]: item for item in cast_identity or []}
-
-    def phrase(value: str) -> str:
-        value = value.strip().rstrip(".")
-        value = value[:1].lower() + value[1:]
-        if not re.match(r"^(?:a|an|the)\s", value, re.I):
-            value = ("an " if value[:1] in "aeiou" else "a ") + value
-        return value
-
-    parts = []
-    for binding in source["cast"]:
-        profile = by_id[binding["character"]]
-        role = binding["role"]
-        # New plans separate performer identity from costume, expression and
-        # story state. Keep the old expansion only for legacy saved plans.
-        identity = identities.get(role, profile)
-        if visible_roles is None or role in visible_roles:
-            parts.append(f"{role} looks like {phrase(identity['description'])}")
-        voice = (identity.get("voice_description") or "").strip()
-        if voice and (speaking_roles is None or role in speaking_roles):
-            parts.append(f"{role} speaks with {phrase(voice)}")
-    return ". ".join(parts).rstrip(". ") + ". " if parts else ""
-
-
-def _token_count(prompt: str, token_counter) -> int:
-    if token_counter is None:
-        # The injected Gemma counter supplies the hard model-specific bound. This
-        # conservative fallback also keeps offline validation useful.
-        return max(len(_WORDS.findall(prompt)) * 2, math.ceil(len(prompt) / 3))
-    count = token_counter(prompt)
-    if not isinstance(count, int) or count < 0:
-        raise ValueError("Token counter must return a nonnegative integer.")
-    return count
-
-
-def _timing_estimate(beats: list[dict]) -> dict:
-    """Expose the same conservative speech/action floor to planner and validator.
-
-    Source actions and delivery cues can require more time; this is deliberately
-    not an upper bound inferred from paragraph count. A fade adds no idle time.
-    """
-    words = sum(len(_WORDS.findall(beat["text"])) for beat in beats
-                if beat["kind"] == "dialogue")
-    actions = sum(beat["kind"] == "action" for beat in beats)
-    speech_seconds = words * 60 / 160
-    return {"spoken_words": words, "speech_seconds_at_160_wpm": speech_seconds,
-            "action_beats": actions,
-            "minimum_seconds": max(4, math.ceil(speech_seconds + actions + 0.5))}
+    """Rust parses source beats; preserve the existing JSON fingerprint codec."""
+    parsed = rust_engine.call("parse_shooting_request", request=request, profiles=profiles)
+    source = parsed["source"]
+    source["source_sha256"] = rust_engine.digest(parsed["identity"])
+    return source
 
 
 def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict], *, token_counter=None) -> dict:
-    """Reject invented/reordered content and fill dialogue from the source of truth."""
-    source = parse_request(request, profiles)
-    storyboard_enabled = source.get("storyboard_policy") == STORYBOARD_POLICY
-    if not isinstance(candidate, dict) or not isinstance(candidate.get("shots"), list):
-        raise ValueError("Codex response must contain a shots list.")
-    if candidate.get("source_sha256", source["source_sha256"]) != source["source_sha256"]:
-        raise ValueError("Shooting script was made for a different screenplay or cast profile, or render format.")
-    if candidate.get("render_format") != request.get("render_format") and "source_sha256" in candidate:
-        raise ValueError("Saved shooting script has a different render format; generate a new plan.")
-    if candidate.get("storyboard_policy") != source.get("storyboard_policy"):
-        raise ValueError("Shooting script has a different storyboard policy; generate a new plan.")
-    if candidate.get("planner_version") not in (None, PLANNER_VERSION):
-        raise ValueError("Shooting script uses a different planner version.")
-    if candidate.get("planning_stage") not in (None, "storyboard", "final"):
-        raise ValueError("Shooting script has an invalid planning stage.")
-    proposed = candidate["shots"]
-    planning_policy = candidate.get("planning_policy")
-    if planning_policy is not None and planning_policy != _PLANNING_POLICY:
-        raise ValueError("Unrecognized shooting-script planning policy.")
-    if storyboard_enabled and planning_policy != _PLANNING_POLICY:
-        raise ValueError("Storyboard planning requires the first-render production contract.")
-    cast_identity = candidate.get("cast_identity")
-    if planning_policy == _PLANNING_POLICY and not isinstance(cast_identity, list):
-        raise ValueError("First-render planning requires stable cast_identity.")
-    if cast_identity is not None:
-        if not isinstance(cast_identity, list) or len(cast_identity) != len(source["cast"]):
-            raise ValueError("Cast identity must describe every bound role exactly once.")
-        for binding, identity in zip(source["cast"], cast_identity):
-            if (not isinstance(identity, dict) or set(identity) != {"role", "description", "voice_description"}
-                    or identity["role"] != binding["role"]):
-                raise ValueError("Cast identity must use source roles in cast order.")
-            _bounded(identity["description"], f"Stable identity for {binding['role']}", 800)
-            voice = identity["voice_description"]
-            if not isinstance(voice, str) or len(voice) > 800 or "\x00" in voice:
-                raise ValueError(f"Stable voice for {binding['role']} must be text of at most 800 characters.")
-    if not 1 <= len(proposed) <= 64:
-        raise ValueError("Shooting script needs 1 to 64 shots.")
-    source_beats = source["beats"]
-    by_id = {beat["id"]: beat for beat in source_beats}
-    expected = 1
-    shots = []
-    action_parts = {}
-    for index, item in enumerate(proposed, 1):
-        if not isinstance(item, dict):
-            raise ValueError(f"Shot {index} must be an object.")
-        seconds = item.get("seconds")
-        if type(seconds) is not int or not 4 <= seconds <= 12:
-            raise ValueError(f"Shot {index} must last 4 to 12 whole seconds.")
-        ids = item.get("beat_ids")
-        if not isinstance(ids, list) or not ids or any(type(n) is not int for n in ids):
-            raise ValueError(f"Shot {index} needs beat_ids.")
-        if ids != sorted(set(ids)) or any(n not in by_id for n in ids):
-            raise ValueError(f"Shot {index} needs unique source beat IDs in order.")
-        for beat_id in ids:
-            if beat_id == expected:
-                expected += 1
-            elif not (planning_policy == _PLANNING_POLICY and beat_id == expected - 1
-                      and by_id[beat_id]["kind"] == "action"):
-                raise ValueError(f"Shot {index} skips, duplicates, or reorders source beats.")
-        scene_markers = [by_id[n]["scene"] for n in ids]
-        scene_ids = [by_id[n]["scene_id"] for n in ids]
-        if len(set(scene_ids)) > 1:
-            raise ValueError(f"Shot {index} crosses a scene boundary.")
-        continue_previous = item.get("continue_previous")
-        if type(continue_previous) is not bool:
-            raise ValueError(f"Shot {index} continue_previous must be true or false.")
-        if storyboard_enabled and continue_previous:
-            raise ValueError(f"Shot {index} must use its own storyboard first frame, with continue_previous false.")
-        if index == 1 and continue_previous:
-            raise ValueError("The first shot cannot continue a previous shot.")
-        if index > 1 and scene_ids[0] != shots[-1]["scene_id"] and continue_previous:
-            raise ValueError(f"Shot {index} cannot continue across scenes.")
-        if not storyboard_enabled and index > 1 and scene_ids[0] == shots[-1]["scene_id"] and not continue_previous:
-            raise ValueError(
-                f"Shot {index} must continue the previous shot within the same scene: "
-                "use continue_previous true and preserve its ending composition in the opening frame."
-            )
-        visible_roles = item.get("visible_roles")
-        if cast_identity is not None:
-            known_roles = {binding["role"] for binding in source["cast"]}
-            if (not isinstance(visible_roles, list)
-                    or any(not isinstance(role, str) or role not in known_roles for role in visible_roles)
-                    or len(set(visible_roles)) != len(visible_roles)):
-                raise ValueError(f"Shot {index} visible_roles must list its visible source roles exactly once.")
-        template = _bounded(item.get("prompt_template"), f"Shot {index} prompt template")
-        start = _bounded(item.get("start_state"), f"Shot {index} start state", 1200)
-        end = _bounded(item.get("end_state"), f"Shot {index} end state", 1200)
-        storyboard_prompt = (_bounded(item.get("storyboard_prompt"), f"Shot {index} storyboard prompt", 1200)
-                             if storyboard_enabled else None)
-        if storyboard_prompt is not None and ("{{" in storyboard_prompt or "}}" in storyboard_prompt):
-            raise ValueError(f"Shot {index} storyboard must describe a still image without dialogue placeholders.")
-        production = {}
-        if planning_policy == _PLANNING_POLICY:
-            coverage = item.get("coverage")
-            if coverage not in ("continuous", "edited"):
-                raise ValueError(f"Shot {index} coverage must be continuous or edited.")
-            purpose = _bounded(item.get("dramatic_purpose"), f"Shot {index} dramatic purpose", 800)
-            contract = item.get("visual_contract")
-            if not isinstance(contract, list) or not 1 <= len(contract) <= 8:
-                raise ValueError(f"Shot {index} needs 1-8 observable visual contract requirements.")
-            contract = [_bounded(value, f"Shot {index} visual requirement", 800) for value in contract]
-            parts = item.get("action_coverage")
-            action_ids = [n for n in ids if by_id[n]["kind"] == "action"]
-            if (not isinstance(parts, list) or len(parts) != len(action_ids)
-                    or any(not isinstance(part, dict) for part in parts)):
-                raise ValueError(f"Shot {index} must describe its part of every assigned action beat.")
-            for beat_id, part in zip(action_ids, parts):
-                if (set(part) != {"beat_id", "part", "parts", "action"}
-                        or type(part.get("beat_id")) is not int or part["beat_id"] != beat_id
-                        or type(part.get("part")) is not int or type(part.get("parts")) is not int
-                        or not 1 <= part["part"] <= part["parts"] <= 64):
-                    raise ValueError(f"Shot {index} has invalid or reordered action coverage.")
-                _bounded(part.get("action"), f"Shot {index} action coverage", 1200)
-                action_parts.setdefault(beat_id, []).append(part)
-            production = {"coverage": coverage, "dramatic_purpose": purpose,
-                          "visual_contract": contract, "action_coverage": parts}
-        if any(mark in template for mark in ('"', '“', '”')):
-            raise ValueError(f"Shot {index} template contains quoted text outside source dialogue placeholders.")
-        if re.search(r"\b(?:fade\s+(?:in|out)|subtitles?|captions?|title\s+card)\b", template, re.I):
-            raise ValueError(f"Shot {index} includes text or a fade that the final assembly owns.")
-        placeholder_ids = [int(n) for n in _PLACEHOLDER.findall(template)]
-        required = [n for n in ids if by_id[n]["kind"] == "dialogue"]
-        if placeholder_ids != required:
-            raise ValueError(f"Shot {index} dialogue placeholders must match source lines exactly and in order.")
-        if "{{" in _PLACEHOLDER.sub("", template) or "}}" in _PLACEHOLDER.sub("", template):
-            raise ValueError(f"Shot {index} has an invalid placeholder.")
-        for beat in source_beats:
-            if (beat["kind"] == "dialogue" and
-                    re.search(r"(?<!\w)" + re.escape(beat["text"]) + r"(?!\w)", template, re.I)):
-                raise ValueError(f"Shot {index} contains raw dialogue; use placeholders.")
-        if re.search(r"\b(?:says|speaks|talks|whispers|shouts|mutters|asks|replies|exclaims)\b", template, re.I):
-            raise ValueError(f"Shot {index} contains unsourced speech direction; use dialogue placeholders.")
-        action_prompt = _PLACEHOLDER.sub(lambda m: _line_text(by_id[int(m.group(1))]), template)
-        action_prompt = action_prompt.rstrip()
-        if action_prompt[-1] not in ".!?":
-            action_prompt += "."
-        speech_direction = (
-            "The only spoken words are the quoted dialogue, delivered exactly once in order. "
-            "No added words, repetitions, or unscripted vocalizations. Only the current speaker moves their mouth. "
-            "After the final word, mouths rest unless the source action requires otherwise. "
-            if required else "There is no spoken dialogue in this shot. "
-        )
-        if cast_identity is not None:
-            speech_direction = (
-                "Deliver the quoted dialogue exactly once in order. During each line, listeners' lips rest. "
-                "After the final line, mouths rest except for explicitly staged source actions. "
-                "Nonverbal vocal sounds occur only at their specified source moments. "
-                if required else "No spoken words. Only the staged environmental sounds and source nonverbal vocal actions are audible. "
-            )
-        framing = framing_prompt(request["render_format"]) if "render_format" in request else ""
-        cast = _cast_context(source, cast_identity,
-                             visible_roles=[] if storyboard_enabled else visible_roles if cast_identity is not None else None,
-                             speaking_roles={by_id[n]["speaker"] for n in required} if cast_identity is not None else None)
-        image_direction = ("Animate the supplied storyboard first frame, preserving its cast, composition, "
-                           "costumes and prop state as the action begins. " if storyboard_enabled else "")
-        prompt = (image_direction + action_prompt + " " + framing + cast + speech_direction
-                  + ("Keep each speaker's described voice consistent throughout this shot. "
-                     if source.get("voice_mode") == "native" and required else "")
-                  + "No subtitles, captions, or text overlays.")
-        if _token_count(prompt, token_counter) > 1024:
-            raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
-        timing = _timing_estimate([by_id[n] for n in ids])
-        if planning_policy == _PLANNING_POLICY:
-            # A source paragraph can span segments. Charge only this segment's
-            # share of the structural floor; directing still has to leave time
-            # for the actual sub-actions and meaningful pauses.
-            action_weight = sum(1 / part["parts"] for part in production["action_coverage"])
-            minimum = max(4, math.ceil(timing["speech_seconds_at_160_wpm"] + action_weight + 0.5))
-        else:
-            minimum = timing["minimum_seconds"]
-        if seconds < minimum:
-            raise ValueError(f"Shot {index} needs at least {minimum} seconds for its dialogue and action.")
-        shots.append({"seconds": seconds, "beat_ids": ids, "prompt_template": template,
-                      "prompt": prompt, "start_state": start, "end_state": end,
-                      **({"storyboard_prompt": storyboard_prompt,
-                          "opening_visible_roles": item.get("opening_visible_roles"),
-                          "continuity": item.get("continuity")} if storyboard_enabled else {}),
-                      **({"visible_roles": visible_roles} if cast_identity is not None else {}),
-                      **production,
-                      "continue_previous": continue_previous, "scene": scene_markers[0],
-                      "scene_id": scene_ids[0]})
-    if expected != len(source_beats) + 1:
-        raise ValueError("Shooting script omits source beats.")
-    if storyboard_enabled:
-        rust_engine.call("validate_plan", plan={"source": source, "shots": shots, "world": candidate.get("world")})
-    for beat_id, parts in action_parts.items():
-        if any(part["part"] != index or part["parts"] != len(parts)
-               for index, part in enumerate(parts, 1)):
-            raise ValueError(f"Action beat {beat_id} must cover consecutive parts 1 through its actual part count.")
-    if isinstance(candidate.get("shots"), list):
-        for proposed_shot, filled in zip(candidate["shots"], shots):
-            if "prompt" in proposed_shot and proposed_shot["prompt"] != filled["prompt"]:
-                raise ValueError("Saved shot prompt does not match the source dialogue.")
-    return {"version": 1, "source_sha256": source["source_sha256"],
-            **({"planning_policy": planning_policy} if planning_policy is not None else {}),
-            **({"storyboard_policy": STORYBOARD_POLICY} if storyboard_enabled else {}),
-            **({"world": candidate["world"]} if storyboard_enabled else {}),
-            **({"planner_version": candidate["planner_version"]} if "planner_version" in candidate else {}),
-            **({"planning_stage": candidate["planning_stage"]} if "planning_stage" in candidate else {}),
-            **({"cast_identity": cast_identity} if cast_identity is not None else {}),
-            **({"render_format": request["render_format"]} if "render_format" in request else {}),
-            "seconds": sum(shot["seconds"] for shot in shots), "fade_out": source["fade_out"],
-            "source": source, "shots": shots}
+    """Rust compiles source contracts; Python supplies the model-specific tokenizer."""
+    plan = rust_engine.call(
+        "compile_shooting_script", candidate=candidate, source=parse_request(request, profiles),
+        request=request, model_tokenizer=token_counter is not None,
+    )
+    if token_counter is not None:
+        for number, shot in enumerate(plan["shots"], 1):
+            count = token_counter(shot["prompt"])
+            if not isinstance(count, int) or count < 0:
+                raise ValueError("Token counter must return a nonnegative integer.")
+            if count > 1024:
+                raise ValueError(f"Shot {number} prompt exceeds 1024 Gemma tokens.")
+    return plan
 
 
 def load_shooting_script(path: Path, request: dict, profiles: list[dict], *, token_counter=None) -> dict:
@@ -578,170 +120,30 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
     temporary = plan_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(plan_path)
-    display = []
-    if plan.get("planner_version") == PLANNER_VERSION:
-        display.extend(("Planning: storyboard direction, image-based motion direction and source-fidelity check completed.", ""))
-    if "preproduction_review" in plan:
-        stages = ("draft, intent revision, physical rehearsal, render feasibility, final approval"
-                  if plan.get("planning_policy") == _PLANNING_POLICY
-                  else "draft, intent revision, physical rehearsal, final approval")
-        display.extend((f"Preproduction: {stages} completed.", ""))
-    if "render_format" in plan:
-        spec = resolve_format(plan["render_format"])
-        display.extend((f"Render: {spec['width']} × {spec['height']} | {spec['aspect_ratio']} | {spec['name']}", ""))
-    for index, shot in enumerate(plan["shots"], 1):
-        display.append(f"SHOT {index} | {shot['seconds']}s | beats {', '.join(map(str, shot['beat_ids']))}")
-        if "storyboard_prompt" in shot:
-            display.append(f"Storyboard: {shot['storyboard_prompt']}")
-        if "dramatic_purpose" in shot:
-            display.extend((f"Purpose: {shot['dramatic_purpose']}", f"Coverage: {shot['coverage']}"))
-            display.extend(f"Must show: {requirement}" for requirement in shot["visual_contract"])
-            display.extend(f"Action beat {part['beat_id']}, part {part['part']}/{part['parts']}: {part['action']}"
-                           for part in shot["action_coverage"])
-        display.extend((f"Start: {shot['start_state']}", shot["prompt"], f"End: {shot['end_state']}", ""))
-    if plan.get("fade_out"):
-        display.append("Fade out at the end of the final shot.")
-    (run_dir / "shooting-script.txt").write_text("\n".join(display).rstrip() + "\n", encoding="utf-8")
-
-
-def _object_schema(properties: dict) -> dict:
-    return {"type": "object", "additionalProperties": False,
-            "required": list(properties), "properties": properties}
-
-
-_SCHEMA = _object_schema({
-    "planning_policy": {"type": "string", "enum": [_PLANNING_POLICY]},
-    "cast_identity": {"type": "array", "items": _object_schema({
-        "role": {"type": "string"}, "description": {"type": "string"},
-        "voice_description": {"type": "string"},
-    })},
-    "revision_notes": {"type": "array", "items": {"type": "string"}},
-    "shots": {"type": "array", "items": _object_schema({
-        "seconds": {"type": "integer"},
-        "beat_ids": {"type": "array", "items": {"type": "integer"}},
-        "visible_roles": {"type": "array", "items": {"type": "string"}},
-        "prompt_template": {"type": "string"}, "start_state": {"type": "string"},
-        "end_state": {"type": "string"}, "continue_previous": {"type": "boolean"},
-        "coverage": {"type": "string", "enum": ["continuous", "edited"]},
-        "dramatic_purpose": {"type": "string"},
-        "visual_contract": {"type": "array", "items": {"type": "string"}},
-        "action_coverage": {"type": "array", "items": _object_schema({
-            "beat_id": {"type": "integer"}, "part": {"type": "integer"},
-            "parts": {"type": "integer"}, "action": {"type": "string"},
-        })},
-    })},
-})
-
-
-_MOTION_SCHEMA = _object_schema({
-    "shots": {"type": "array", "items": _object_schema({
-        "shot": {"type": "integer"},
-        "prompt_template": {"type": "string"},
-        "image_observations": {"type": "string"},
-        "blocking_issue": {"type": "string"},
-        "storyboard_prompt": {"type": "string"},
-    })},
-})
-
-_FIDELITY_SCHEMA = _object_schema({
-    "checks": {"type": "array", "items": _object_schema({
-        "id": {"type": "string"}, "preserved": {"type": "boolean"},
-        "evidence": {"type": "array", "items": _object_schema({
-            "shot": {"type": "integer"}, "quote": {"type": "string"},
-        })},
-        "reason": {"type": "string"},
-    })},
-})
-
-_FIDELITY_REPAIR_SCHEMA = _object_schema({
-    "shots": {"type": "array", "items": _object_schema({
-        "shot": {"type": "integer"}, "prompt_template": {"type": "string"},
-    })},
-})
+    display = rust_engine.call("shooting_script_display", plan=plan)
+    (run_dir / "shooting-script.txt").write_text(display, encoding="utf-8")
 
 
 def _director_schema() -> dict:
-    schema = json.loads(json.dumps(_SCHEMA))
-    schema["properties"]["storyboard_policy"] = {"type": "string", "enum": [STORYBOARD_POLICY]}
-    schema["required"].append("storyboard_policy")
-    schema["properties"]["world"] = rust_engine.schema("continuity.world")
-    schema["required"].append("world")
-    shot = schema["properties"]["shots"]["items"]
-    shot["properties"]["storyboard_prompt"] = {"type": "string"}
-    shot["required"].append("storyboard_prompt")
-    shot["properties"]["opening_visible_roles"] = {"type": "array", "items": {"type": "string"}}
-    shot["properties"]["continuity"] = rust_engine.schema("continuity.contract")
-    shot["required"].extend(["opening_visible_roles", "continuity"])
-    return schema
+    return rust_engine.call("shooting_schema", name="director")
 
 
-def _motion_schema():
-    schema = json.loads(json.dumps(_MOTION_SCHEMA))
-    shot = schema["properties"]["shots"]["items"]
-    shot["properties"].update({
-        "continuity_review": rust_engine.schema("continuity.review"),
-        "world_repair": {"type": "array", "maxItems": 1, "items": rust_engine.schema("continuity.world")},
-        "plan_repair": {"type": "array", "maxItems": 1,
-                        "items": _director_schema()["properties"]["shots"]["items"]},
-    })
-    shot["required"].extend(["continuity_review", "plan_repair", "world_repair"])
-    return schema
+def _motion_schema() -> dict:
+    return rust_engine.call("shooting_schema", name="motion")
 
 
 def _plan_fingerprint(plan: dict) -> str:
-    # Approval belongs to these exact compiled prompts, durations and continuity
-    # states, not merely to the unchanged screenplay.
-    content = {key: plan.get(key) for key in ("source_sha256", "cast_identity", "shots", "fade_out")}
-    if "world" in plan:
-        content["world"] = plan["world"]
-    for key in ("planning_policy", "storyboard_policy", "planner_version"):
-        if key in plan:
-            content[key] = plan[key]
-    return hashlib.sha256(_json(content).encode("utf-8")).hexdigest()
+    content = rust_engine.call("shooting_fingerprint_content", plan=plan)
+    return rust_engine.digest(content)
 
 
 def _fidelity_requirements(plan):
-    """Give the independent reader a complete, deterministic checklist."""
-    requirements = [
-        {"id": f"source:{beat['id']}", "source_beat": beat,
-         "shot_numbers": [number for number, shot in enumerate(plan["shots"], 1)
-                          if beat["id"] in shot["beat_ids"]]}
-        for beat in plan["source"]["beats"]
-    ]
-    for number, shot in enumerate(plan["shots"], 1):
-        requirements.extend({"id": f"action:{number}:{index}", "action": part,
-                             "shot_numbers": [number]}
-                            for index, part in enumerate(shot["action_coverage"], 1))
-        requirements.extend({"id": f"contract:{number}:{index}", "requirement": requirement,
-                             "shot_numbers": [number]}
-                            for index, requirement in enumerate(shot["visual_contract"], 1))
-    return requirements
+    return rust_engine.call("shooting_fidelity_requirements", plan=plan)
 
 
 def _validate_fidelity_report(report, plan, *, require_pass=False):
-    checks = report.get("checks") if isinstance(report, dict) else None
-    requirements = _fidelity_requirements(plan)
-    if not isinstance(checks, list) or len(checks) != len(requirements):
-        raise ValueError("Source fidelity must check every source beat, action part and visual requirement.")
-    for requirement, check in zip(requirements, checks):
-        if (not isinstance(check, dict) or check.get("id") != requirement["id"]
-                or type(check.get("preserved")) is not bool):
-            raise ValueError("Source fidelity checks must identify each requirement exactly once, in order.")
-        _bounded(check.get("reason"), f"Fidelity reason for {requirement['id']}", 1200)
-        evidence = check.get("evidence")
-        if not isinstance(evidence, list) or len(evidence) > 64 or (check["preserved"] and not evidence):
-            raise ValueError(f"Fidelity check {requirement['id']} needs concrete final-prompt evidence.")
-        for item in evidence:
-            if (not isinstance(item, dict) or type(item.get("shot")) is not int
-                    or item["shot"] not in requirement["shot_numbers"]):
-                raise ValueError("Fidelity evidence must belong to a shot assigned to that source requirement.")
-            quote = _bounded(item.get("quote"), "Fidelity prompt quote")
-            if quote not in plan["shots"][item["shot"] - 1]["prompt"]:
-                raise ValueError("Fidelity evidence must quote the actual final prompt verbatim.")
-    if require_pass and any(not check["preserved"] for check in checks):
-        failures = "; ".join(f"{check['id']}: {check['reason']}" for check in checks if not check["preserved"])
-        raise ValueError("Final motion prompts omit or contradict essential source material: " + failures)
-    return report
+    return rust_engine.call("validate_shooting_fidelity", report=report, plan=plan,
+                            require_pass=require_pass)
 
 
 def _validate_fidelity_receipt(receipt, plan):
@@ -843,7 +245,7 @@ def _ensure_source_fidelity(plan, *, run_dir, token_counter, **options):
                          "shots": [{"shot": n, "prompt": shot["prompt"]}
                                    for n, shot in enumerate(plan["shots"], 1)]})
             )
-            report = _planning_call("source-fidelity", instruction, _FIDELITY_SCHEMA,
+            report = _planning_call("source-fidelity", instruction, rust_engine.call("shooting_schema", name="fidelity"),
                                     lambda value: _validate_fidelity_report(value, plan),
                                     source_sha256=source["source_sha256"], run_dir=run_dir,
                                     image_paths=[], **options)
@@ -877,7 +279,7 @@ def _ensure_source_fidelity(plan, *, run_dir, token_counter, **options):
         _atomic_json(repair_path, {"context_sha256": context_sha256, "status": "started",
                                  "attempts": repair_attempts, "shot_numbers": numbers,
                                  "first_response": max(previous_calls, default=0) + 1})
-        revised = _planning_call("source-fidelity-repair", instruction, _FIDELITY_REPAIR_SCHEMA,
+        revised = _planning_call("source-fidelity-repair", instruction, rust_engine.call("shooting_schema", name="fidelity_repair"),
                                  lambda value: replace_templates(value, numbers),
                                  source_sha256=source["source_sha256"], run_dir=run_dir,
                                  image_paths=[], **options)
@@ -886,96 +288,12 @@ def _ensure_source_fidelity(plan, *, run_dir, token_counter, **options):
 
 
 def _validate_review(report: dict, plan: dict, *, require_approval: bool = True) -> None:
-    if not isinstance(report, dict) or type(report.get("approved")) is not bool:
-        raise ValueError("Preproduction review needs an explicit approval decision.")
-    _bounded(report.get("summary"), "Review summary")
-    beat_reviews = report.get("beat_reviews")
-    beats = plan["source"]["beats"]
-    if not isinstance(beat_reviews, list) or len(beat_reviews) != len(beats):
-        raise ValueError("Preproduction review must account for every source beat.")
-    modern = plan.get("planning_policy") == _PLANNING_POLICY
-    shots_for_beat = {beat["id"]: [number for number, shot in enumerate(plan["shots"], 1)
-                                  if beat["id"] in shot["beat_ids"]] for beat in beats}
-    for beat, review in zip(beats, beat_reviews):
-        if (not isinstance(review, dict) or type(review.get("beat_id")) is not int
-                or review["beat_id"] != beat["id"]):
-            raise ValueError("Beat reviews must map every source beat in order.")
-        if modern:
-            numbers = review.get("shot_numbers")
-            if (not isinstance(numbers, list) or any(type(n) is not int for n in numbers)
-                    or numbers != shots_for_beat[beat["id"]]):
-                raise ValueError("Beat reviews must identify every segment covering the source beat.")
-        elif (type(review.get("shot_number")) is not int
-              or review["shot_number"] != shots_for_beat[beat["id"]][0]):
-            raise ValueError("Beat reviews must map every source beat to its actual shot, in order.")
-        _bounded(review.get("intent"), f"Intent of beat {beat['id']}")
-        _bounded(review.get("evidence"), f"Prompt evidence for beat {beat['id']}")
-    shot_reviews = report.get("shot_reviews")
-    if not isinstance(shot_reviews, list) or len(shot_reviews) != len(plan["shots"]):
-        raise ValueError("Preproduction review must rehearse every shot.")
-    for number, (shot, review) in enumerate(zip(plan["shots"], shot_reviews), 1):
-        if (not isinstance(review, dict) or type(review.get("shot_number")) is not int
-                or review["shot_number"] != number):
-            raise ValueError("Shot reviews must be in shot order.")
-        _bounded(review.get("staging"), f"Shot {number} staging review")
-        _bounded(review.get("identity_and_state"), f"Shot {number} identity/state review")
-        if modern:
-            if review.get("render_risk") not in ("low", "medium", "high"):
-                raise ValueError(f"Shot {number} needs an explicit residual render-risk decision.")
-            factors = review.get("risk_factors")
-            if not isinstance(factors, list):
-                raise ValueError(f"Shot {number} needs a render-risk factor list.")
-            for factor in factors:
-                _bounded(factor, f"Shot {number} render-risk factor", 1200)
-            _bounded(review.get("risk_mitigation"), f"Shot {number} concrete risk mitigation")
-            evidence = review.get("contract_evidence")
-            if not isinstance(evidence, list) or len(evidence) != len(shot["visual_contract"]):
-                raise ValueError(f"Shot {number} review must cite prompt evidence for every visual requirement.")
-            for item in evidence:
-                _bounded(item, f"Shot {number} visual contract evidence")
-            if require_approval and report["approved"] and review["render_risk"] == "high":
-                raise ValueError(f"Shot {number} still has high render risk; reject it for automatic planning repair.")
-        timeline = review.get("timeline")
-        if not isinstance(timeline, list) or not timeline:
-            raise ValueError(f"Shot {number} needs a timed physical rehearsal.")
-        cursor = 0
-        for interval in timeline:
-            if not isinstance(interval, dict):
-                raise ValueError(f"Shot {number} has an invalid rehearsal interval.")
-            start, end = interval.get("start_seconds"), interval.get("end_seconds")
-            if (type(start) not in (int, float) or type(end) not in (int, float)
-                    or not math.isfinite(start) or not math.isfinite(end)
-                    or abs(start - cursor) > 0.01 or not 0 <= start < end <= shot["seconds"]):
-                raise ValueError(f"Shot {number} rehearsal must continuously cover its actual duration.")
-            _bounded(interval.get("action"), f"Shot {number} rehearsal action")
-            cursor = end
-        if abs(cursor - shot["seconds"]) > 0.01:
-            raise ValueError(f"Shot {number} rehearsal does not cover its full duration.")
-    issues = report.get("issues")
-    if not isinstance(issues, list):
-        raise ValueError("Preproduction review needs an issues list.")
-    for issue in issues:
-        _bounded(issue, "Unresolved review issue")
-    if require_approval and (not report["approved"] or issues):
-        detail = "; ".join(issues) or report["summary"]
-        raise ValueError(f"Preproduction review blocked rendering: {detail}")
+    rust_engine.call("validate_shooting_review", report=report, plan=plan,
+                     require_approval=require_approval)
 
 
 def _instruction(source: dict, correction: str | None = None) -> str:
-    body = {
-        "script": source["script"], "cast": source["cast"], "characters": source["characters"],
-        "storyboard_policy": STORYBOARD_POLICY,
-        **({"render_format": source["render_format"]} if "render_format" in source else {}),
-        "beats": source["beats"], "fade_out_at_end": source["fade_out"],
-        "generation_capabilities": {
-            "planning_policy": _PLANNING_POLICY,
-            "independent_storyboard_first_frame_per_shot": True,
-            "joint_picture_and_audio": True,
-            "audio_moves_between_generations": False,
-            "saved_character_assets": _asset_capabilities(source),
-        },
-        "timing_guidance": {"words_per_minute": 160, "settling_seconds": 0.5},
-    }
+    body = rust_engine.call("shooting_instruction_context", source=source)
     direction = Path(__file__).with_name("shooting-script-instructions.txt").read_text(encoding="utf-8")
     return direction.rstrip() + "\n\n" + _json(body) + (
         "\n\nCorrect only this validation failure: " + correction if correction else "")
@@ -1014,7 +332,7 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
         cwd=str(Path(cwd).resolve()), bootstrap_cwd=str(Path(bootstrap_cwd or cwd).resolve()),
         timeout_seconds=max(0.0, deadline - time.monotonic()),
         events_path=str(Path(events_path).resolve()), errors_path=str(Path(errors_path).resolve()),
-        response_path=str(Path(response_path).resolve()), output_schema=output_schema or _SCHEMA,
+        response_path=str(Path(response_path).resolve()), output_schema=output_schema or rust_engine.call("shooting_schema", name="plan"),
         image_paths=[str(Path(path).resolve()) for path in image_paths], image_generation=image_generation,
     )
 

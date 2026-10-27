@@ -83,6 +83,7 @@ dependencies = [
 name = "aivs-core"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
 ]

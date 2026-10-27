@@ -24,7 +24,8 @@ LTX-2.5 HQ → automatic visual review + media checks
 FFmpeg assembly → video.mp4
 ```
 
-The desktop app is Rust; the video pipeline is Python using MLX on Apple's GPU.
+The desktop app and core production rules are Rust. Python currently coordinates
+pipeline I/O and runs model inference using MLX on Apple's GPU.
 Codex planning and automatic visual review use your configured Codex service and
 login. Planning sends saved cast portraits and storyboard images to Codex;
 visual review sends sampled rendered frames. Storyboard image generation also uses
@@ -473,11 +474,13 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [src/app.rs](src/app.rs) | Desktop workspace, setup gate, and optional chat UI. |
 | [src/screenplay.rs](src/screenplay.rs) | Screenplay editor, casting, and document persistence. |
 | [src/video.rs](src/video.rs) | Starts setup/render workers, handles cancellation, and reads Python progress events. |
-| [crates/aivs-core](crates/aivs-core) | Headless Rust continuity, prop acceptance, motion state validation, repair dependencies, and shared Codex sessions. |
+| [crates/aivs-core](crates/aivs-core) | Headless Rust screenplay compilation, continuity, approval rules, media validation, FFmpeg assembly, and shared Codex sessions. |
 | [python/rust_engine.py](python/rust_engine.py) | Versioned JSON transport to the Rust engine and current-source cache fingerprints. |
 | [python/video.py](python/video.py) | Pipeline entry point; `generate_screenplay()` coordinates planning and rendering. |
 | [python/preproduction.py](python/preproduction.py) | Coordinates both planning passes, storyboard generation, and shared preproduction reuse. |
-| [python/shooting_script.py](python/shooting_script.py) | Parses story beats, requests Codex work through Rust, validates screenplay coverage, and saves shooting scripts. |
+| [python/shooting_script.py](python/shooting_script.py) | Planning calls, model tokenization, legacy JSON fingerprints, checkpoint I/O, and calls to Rust compilation and approval rules. |
+| [crates/aivs-core/src/shooting_script](crates/aivs-core/src/shooting_script) | Screenplay parsing, cast binding, source coverage, exact dialogue expansion, timing floors, planning schemas, and fidelity/approval validation. |
+| [crates/aivs-core/src/media.rs](crates/aivs-core/src/media.rs) | FFmpeg frame extraction, shot assembly, FFprobe checks and full media decoding, with child cleanup on cancellation. |
 | [crates/aivs-core/src/continuity](crates/aivs-core/src/continuity) | Continuity schemas, state rules, sequence review, snapshot comparisons, and acceptance bindings. |
 | [crates/aivs-core/src/render_formats.rs](crates/aivs-core/src/render_formats.rs) | Delivery dimensions, aligned model canvases, and framing guidance. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
@@ -522,7 +525,8 @@ Change story direction in the director instructions. Continuity rules belong in
 
 Deterministic continuity, canonical prop acceptance, motion keyframe timing and
 hand-object constraints, visual review validation, storyboard repair policy,
-shot execution rules and saved-take matching, and production Codex sessions run
+shot execution rules and saved-take matching, screenplay parsing and compilation,
+source-fidelity approval rules, FFmpeg assembly and video validation, and production Codex sessions run
 in Rust. `aivs-core` has no desktop or model dependencies. The desktop launches
 itself with `--engine` before initializing the UI and passes that path to Python
 as `AIVS_ENGINE_PATH`.
@@ -556,6 +560,21 @@ review identities include the current Python source, bridge, and compiled Rust
 sources. There is no compatibility mapping for older implementations: changing
 these sources invalidates earlier identities. Rebuild the engine after changing
 Rust code.
+
+`shooting_script` in Rust parses ordered action/dialogue beats, checks cast
+bindings, compiles prompts with exact source dialogue, enforces scene boundaries,
+action-part coverage and duration floors, and validates fidelity evidence and
+preproduction rehearsals. It also supplies planning schemas, capability context,
+readable script formatting and the fields used for approval fingerprints.
+Python still runs planning calls and checkpoint recovery and supplies the actual
+model tokenizer. Source identities and approval content are hashed with the
+existing Python JSON codec; cast lookups retain full Unicode case folding.
+
+`media` in Rust executes FFmpeg frame extraction and assembly and checks FFprobe
+metadata, frame counts, dimensions, frame rate, audio alignment and full decoding.
+Media children are killed and reaped if the parent closes the engine connection.
+Assembly returns a partial file; the Python adapter validates it before replacing
+the published video. Supplied-PCM waveform comparison still runs in Python.
 
 Continuity and motion contracts come from Rust through the lazy `schema` engine
 operation; importing Python modules does not launch the engine. Rust also builds

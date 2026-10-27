@@ -114,7 +114,7 @@ def _exchange(operation, args, on_event=None):
     if "error" in response:
         if response.get("error_kind") == "timeout":
             raise subprocess.TimeoutExpired(args.get("command", []), args.get("timeout_seconds", 0))
-        if response.get("error_kind") in ("codex", "cancelled"):
+        if response.get("error_kind") in ("codex", "cancelled", "media"):
             raise RuntimeError(response["error"])
         raise ValueError(response["error"])
     return response["result"]
