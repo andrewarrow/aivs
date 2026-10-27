@@ -168,8 +168,8 @@ pub(crate) fn decode_image(path: &Path) -> Result<egui::ColorImage, String> {
         .map_err(|_| "could not open image")?
         .decode()
         .map_err(|_| "could not decode image")?
+        .thumbnail(768, 768)
         .to_rgba8();
-    let image = image::imageops::thumbnail(&image, 768, 768);
     let size = [image.width() as usize, image.height() as usize];
     Ok(egui::ColorImage::from_rgba_unmultiplied(
         size,
