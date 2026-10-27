@@ -28,8 +28,8 @@ winit = "0.30"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSView", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication", "NSDockTile", "NSGraphics"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL", "NSGeometry", "NSError"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSView", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication", "NSDockTile", "NSGraphics", "NSMenu", "NSMenuItem"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL", "NSGeometry", "NSError", "NSObject"] }
 
 [profile.release]
 opt-level = "s"

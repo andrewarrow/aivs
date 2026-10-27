@@ -7,6 +7,8 @@ mod app;
 mod attention;
 mod characters;
 mod codex;
+#[cfg(target_os = "macos")]
+mod macos;
 mod screenplay;
 mod sets;
 mod settings;
@@ -24,6 +26,12 @@ use winit::{
     window::{Window, WindowId},
 };
 
+enum DesktopEvent {
+    Repaint(Instant),
+    #[cfg(target_os = "macos")]
+    MenuCommand(app::AppCommand),
+}
+
 // The native input/render loop is adapted from DeployerCoaster Studio.
 struct DesktopWindow {
     context: egui::Context,
@@ -36,12 +44,12 @@ struct DesktopWindow {
 impl DesktopWindow {
     fn new(
         event_loop: &ActiveEventLoop,
-        proxy: EventLoopProxy<Instant>,
+        proxy: EventLoopProxy<DesktopEvent>,
     ) -> Result<Self, Box<dyn Error>> {
         let context = egui::Context::default();
         context.set_request_repaint_callback(move |request| {
             if let Some(deadline) = Instant::now().checked_add(request.delay) {
-                let _ = proxy.send_event(deadline);
+                let _ = proxy.send_event(DesktopEvent::Repaint(deadline));
             }
         });
         let window = Arc::new(
@@ -143,8 +151,10 @@ struct Desktop {
     window: Option<DesktopWindow>,
     next_repaint: Option<Instant>,
     startup_error: Option<Box<dyn Error>>,
-    proxy: EventLoopProxy<Instant>,
+    proxy: EventLoopProxy<DesktopEvent>,
     alerts: attention::GenerationAlerts,
+    #[cfg(target_os = "macos")]
+    native_menu: Option<macos::NativeMenu>,
 }
 
 impl Desktop {
@@ -156,9 +166,13 @@ impl Desktop {
     }
 }
 
-impl ApplicationHandler<Instant> for Desktop {
+impl ApplicationHandler<DesktopEvent> for Desktop {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
+            #[cfg(target_os = "macos")]
+            if self.native_menu.is_none() {
+                self.native_menu = macos::NativeMenu::install(self.proxy.clone());
+            }
             match DesktopWindow::new(event_loop, self.proxy.clone()) {
                 Ok(window) => self.window = Some(window),
                 Err(error) => {
@@ -169,8 +183,17 @@ impl ApplicationHandler<Instant> for Desktop {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, deadline: Instant) {
-        self.schedule_repaint(deadline);
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: DesktopEvent) {
+        match event {
+            DesktopEvent::Repaint(deadline) => self.schedule_repaint(deadline),
+            #[cfg(target_os = "macos")]
+            DesktopEvent::MenuCommand(command) => {
+                self.app.execute_command(command);
+                if let Some(desktop) = &self.window {
+                    desktop.window.request_redraw();
+                }
+            }
+        }
     }
 
     fn window_event(
@@ -224,6 +247,10 @@ impl ApplicationHandler<Instant> for Desktop {
                 self.alerts.clear(&desktop.window);
             }
         }
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &self.native_menu {
+            menu.update(&self.app);
+        }
         match self.next_repaint {
             Some(deadline) if deadline <= Instant::now() => {
                 self.next_repaint = None;
@@ -266,7 +293,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !root.is_dir() {
         return Err("The workspace must be a directory.".into());
     }
-    let mut builder = EventLoop::<Instant>::with_user_event();
+    let mut builder = EventLoop::<DesktopEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     {
         use winit::platform::macos::EventLoopBuilderExtMacOS;
@@ -281,6 +308,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         startup_error: None,
         proxy: event_loop.create_proxy(),
         alerts: attention::GenerationAlerts::default(),
+        #[cfg(target_os = "macos")]
+        native_menu: None,
     };
     event_loop.run_app(&mut desktop)?;
     if let Some(error) = desktop.startup_error {

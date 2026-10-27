@@ -7,6 +7,13 @@ struct Message {
     text: String,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum AppCommand {
+    Settings,
+    Import,
+    Resume,
+}
+
 pub struct App {
     root: PathBuf,
     characters: crate::characters::CharacterGallery,
@@ -220,6 +227,45 @@ impl App {
         }
     }
 
+    pub(crate) fn command_enabled(&self, command: AppCommand) -> bool {
+        self.video.is_ready()
+            && !self.settings_open
+            && match command {
+                AppCommand::Settings => true,
+                AppCommand::Import => self.screenplay.can_import(),
+                AppCommand::Resume => self.video.can_resume(),
+            }
+    }
+
+    pub(crate) fn execute_command(&mut self, command: AppCommand) {
+        if !self.command_enabled(command) {
+            return;
+        }
+        match command {
+            AppCommand::Settings => {
+                self.settings_open = true;
+                self.settings_error = None;
+            }
+            AppCommand::Import => {
+                self.import_error = match select_fountain(&self.root) {
+                    Ok(Some(path)) => self.screenplay.import_fountain(&path).err(),
+                    Ok(None) => None,
+                    Err(error) => Some(error),
+                };
+            }
+            AppCommand::Resume => {
+                self.import_error = match select_resume(&self.root.join("outputs")) {
+                    Ok(Some(directory)) => {
+                        self.video.resume(directory);
+                        None
+                    }
+                    Ok(None) => None,
+                    Err(error) => Some(error),
+                };
+            }
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         if ui
             .ctx()
@@ -243,11 +289,11 @@ impl App {
         }
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                #[cfg(not(target_os = "macos"))]
                 ui.menu_button("File", |ui| {
                     if ui.button("Settings…").clicked() {
                         ui.close();
-                        self.settings_open = true;
-                        self.settings_error = None;
+                        self.execute_command(AppCommand::Settings);
                     }
                     if ui
                         .add_enabled(
@@ -259,11 +305,7 @@ impl App {
                         .clicked()
                     {
                         ui.close();
-                        self.import_error = match select_fountain(&self.root) {
-                            Ok(Some(path)) => self.screenplay.import_fountain(&path).err(),
-                            Ok(None) => None,
-                            Err(error) => Some(error),
-                        };
+                        self.execute_command(AppCommand::Import);
                     }
                     if ui
                         .add_enabled(self.video.can_resume(), egui::Button::new("Resume…"))
@@ -272,14 +314,7 @@ impl App {
                         .clicked()
                     {
                         ui.close();
-                        self.import_error = match select_resume(&self.root.join("outputs")) {
-                            Ok(Some(directory)) => {
-                                self.video.resume(directory);
-                                None
-                            }
-                            Ok(None) => None,
-                            Err(error) => Some(error),
-                        };
+                        self.execute_command(AppCommand::Resume);
                     }
                 });
                 ui.menu_button("Motion", |ui| {

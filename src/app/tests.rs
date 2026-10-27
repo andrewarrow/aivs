@@ -98,10 +98,15 @@ fn file_settings_modal_selects_and_persists_format_at_supported_sizes() {
             ]
         };
         let _ = frame(&mut app, vec![]);
-        let output = frame(&mut app, vec![]);
-        let _ = frame(&mut app, click(text_rect(&output, "File").center()));
-        let output = frame(&mut app, vec![]);
-        let _ = frame(&mut app, click(text_rect(&output, "Settings…").center()));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let output = frame(&mut app, vec![]);
+            let _ = frame(&mut app, click(text_rect(&output, "File").center()));
+            let output = frame(&mut app, vec![]);
+            let _ = frame(&mut app, click(text_rect(&output, "Settings…").center()));
+        }
+        #[cfg(target_os = "macos")]
+        app.execute_command(AppCommand::Settings);
         assert!(app.settings_open);
         let output = frame(&mut app, vec![]);
         for label in [
