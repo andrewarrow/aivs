@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "police-desk",
+  "name": "Old Police Station Desk",
+  "description": "A scuffed detective's desk in an analog-era police station.",
+  "image": {
+    "file": "reference.png",
+    "sha256": "1d6220a0d4205b036fc6ca25f84e8c9894ce112b7d588db18e3e17a3e4157249",
+    "width": 1672,
+    "height": 941
+  },
+  "generation": {
+    "tool": "built-in imagegen",
+    "prompt_file": "reference.txt"
+  }
+}

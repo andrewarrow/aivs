@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "auto-garage",
+  "name": "Auto Garage",
+  "description": "A sunlit neighborhood repair garage with two stools by a workbench.",
+  "image": {
+    "file": "reference.png",
+    "sha256": "803b7bc89ce70a6943895341b882a446a62e7a07b2f0dce74e63cad16f6c6114",
+    "width": 1672,
+    "height": 941
+  },
+  "generation": {
+    "tool": "built-in imagegen",
+    "prompt_file": "reference.txt"
+  }
+}

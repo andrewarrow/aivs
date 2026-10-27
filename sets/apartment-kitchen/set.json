@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "apartment-kitchen",
+  "name": "Apartment Kitchen",
+  "description": "A modest sunlit apartment kitchen with a small breakfast table.",
+  "image": {
+    "file": "reference.png",
+    "sha256": "0465fff6e9e23cbe6d7b4a4bfaac824366d52411ea9328be81bcd1df8ff2cba7",
+    "width": 1672,
+    "height": 941
+  },
+  "generation": {
+    "tool": "built-in imagegen",
+    "prompt_file": "reference.txt"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "bookstore-nook",
+  "name": "Bookstore Reading Nook",
+  "description": "Two armchairs tucked between shelves in an independent bookstore.",
+  "image": {
+    "file": "reference.png",
+    "sha256": "a34c6d2b84188141241dd25905092db43cfd779671c8212f75042d1b2f89be18",
+    "width": 1672,
+    "height": 941
+  },
+  "generation": {
+    "tool": "built-in imagegen",
+    "prompt_file": "reference.txt"
+  }
+}
