@@ -72,10 +72,10 @@ impl App {
         let mut startup = crate::startup::Timer::new();
         let video = crate::video::VideoWorkspace::new(root.clone());
         startup.mark("video workspace initialized and setup worker started");
-        let characters = crate::characters::CharacterGallery::load(&root);
-        startup.mark("character gallery loaded");
-        let sets = crate::sets::SetGallery::load(&root);
-        startup.mark("set gallery loaded");
+        let characters = crate::characters::CharacterGallery::load_in_background(&root);
+        startup.mark("character gallery worker started");
+        let sets = crate::sets::SetGallery::load_in_background(&root);
+        startup.mark("set gallery worker started");
         let screenplay = crate::screenplay::Screenplay::load(&root);
         startup.mark("screenplay loaded");
         Self {
@@ -662,6 +662,8 @@ impl App {
     }
 
     pub fn poll_background(&mut self, ctx: &egui::Context) {
+        self.characters.poll(ctx);
+        self.sets.poll(ctx);
         self.video.poll(ctx);
     }
 

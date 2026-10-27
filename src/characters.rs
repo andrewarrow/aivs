@@ -1,11 +1,15 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, TryRecvError},
+    time::Duration,
 };
 
 pub struct CharacterGallery {
     characters: Vec<Character>,
     selected: Option<usize>,
+    loading: Option<Receiver<Self>>,
+    load_failed: bool,
 }
 
 pub struct Character {
@@ -31,6 +35,23 @@ impl Character {
 }
 
 impl CharacterGallery {
+    pub fn load_in_background(root: &Path) -> Self {
+        let root = root.to_owned();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut startup = crate::startup::Timer::new();
+            let gallery = Self::load(&root);
+            startup.mark("background character gallery loaded");
+            let _ = sender.send(gallery);
+        });
+        Self {
+            characters: Vec::new(),
+            selected: None,
+            loading: Some(receiver),
+            load_failed: false,
+        }
+    }
+
     pub fn load(root: &Path) -> Self {
         let directory = if root.join("characters").is_dir() {
             root.join("characters")
@@ -74,6 +95,8 @@ impl CharacterGallery {
         Self {
             characters,
             selected: None,
+            loading: None,
+            load_failed: false,
         }
     }
 
@@ -84,8 +107,36 @@ impl CharacterGallery {
             .collect()
     }
 
+    pub fn poll(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = &self.loading else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(gallery) => {
+                *self = gallery;
+                ctx.request_repaint();
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.loading = None;
+                self.load_failed = true;
+                ctx.request_repaint();
+            }
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<&Character> {
         ui.heading("Characters");
+        if self.load_failed {
+            ui.label("Could not load characters.");
+            return None;
+        }
+        if self.loading.is_some() {
+            ui.label("Loading characters…");
+            return None;
+        }
         if self.characters.is_empty() {
             ui.label("No characters found.");
             return None;
