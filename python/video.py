@@ -68,6 +68,8 @@ def check(profile="hq"):
     model_path(profile=profile)
     emit("progress", label="Checking local storyboard renderer and cached image weights")
     storyboard_backend.check()
+    emit("progress", label="Checking saved-character voice converter and cached voice weights")
+    character_conditioning.check_voice_setup()
     emit("ready")
 
 

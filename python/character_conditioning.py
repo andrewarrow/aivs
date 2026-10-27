@@ -24,7 +24,8 @@ def _worker(*arguments) -> dict:
     if not python.is_file():
         raise RuntimeError(
             "Saved-character voices require the separate Seed-VC environment. "
-            "Follow README.md's Saved character rendering setup, then Resume this run. "
+            "Restart AIVS to finish automatic setup, then Resume this run. "
+            "For CLI setup, see README.md's Saved character rendering setup. "
             "For a new run with generated voices, choose --voice-mode native."
         )
     result = subprocess.run([
@@ -40,6 +41,11 @@ def _worker(*arguments) -> dict:
         if line.startswith("AIVS_VOICE "):
             return json.loads(line.removeprefix("AIVS_VOICE "))
     raise RuntimeError("Saved voice converter returned no provenance record.")
+
+
+def check_voice_setup() -> dict:
+    """Verify the isolated converter before desktop setup reports readiness."""
+    return _worker("--check")
 
 
 def _verify_source(source, profiles, run_dir):
@@ -58,7 +64,7 @@ def _voice_identity(source, run_dir, activity):
     key = (str(Path(run_dir).resolve()), source["source_sha256"], str(quality_backend.ROOT.resolve()))
     if key not in _VOICE_PREFLIGHTS:
         activity("Checking saved-character voice setup before planning")
-        _VOICE_PREFLIGHTS[key] = _worker("--check")
+        _VOICE_PREFLIGHTS[key] = check_voice_setup()
     return _VOICE_PREFLIGHTS[key]
 
 

@@ -174,7 +174,7 @@ The planner still preserves source dialogue in its prompts.
 ### Prerequisites
 
 - An **Apple Silicon Mac with Metal support** and **Rust 1.92+**.
-- **Homebrew**, so setup can install `uv` and FFmpeg if missing.
+- **Homebrew**, so setup can install `uv`, FFmpeg, and Git if missing.
 - A **Hugging Face access token** for downloading models.
 - The **Codex CLI**, signed in and available on `PATH` (or set `AIVS_CODEX_PATH`).
   Codex provides screenplay planning and automatic visual review; the chat panel is optional.
@@ -194,10 +194,11 @@ From this checkout:
    ```
 
 3. Let setup prepare Python 3.12 in `.venv` for video and `.venv-storyboard` for
-   still images, install their separate pinned packages, download the required
-   distilled, HQ, and storyboard models, and verify the GPU. Downloads reuse the
-   cache. Use **Check again** after adding a token, or **Retry setup** after fixing
-   a setup error.
+   still images, plus Python 3.10.21 in `.cache/seed-vc-env` for saved voices.
+   It installs their separate pinned packages, downloads the required
+   distilled, HQ, storyboard, and voice models, and verifies the GPU. Downloads
+   reuse the cache. Use **Check again** after adding a token, or **Retry setup**
+   after fixing a setup error.
 4. If needed, choose **Codex → Sign in with ChatGPT** and finish in your browser.
    An existing Codex login is reused.
 5. Edit the screenplay and cast each role in the scene. Drag a gallery character
@@ -256,8 +257,9 @@ cargo run -- /path/to/workspace
 AIVS_CODEX_PATH=/absolute/path/to/codex cargo run
 ```
 
-Put `.env` in the selected workspace. Keep this checkout's `python/` directory
-alongside the source when building; it contains the runtime pipeline.
+Put `.env` in the selected workspace. Keep this checkout's `python/` and
+`experiments/character-consistency/` directories alongside the source when
+building; they contain the runtime pipeline and saved-voice setup.
 
 ### Editing and casting
 
@@ -312,6 +314,7 @@ workspace whose video environment already exists:
 ```sh
 uv venv .venv-storyboard --python 3.12
 uv pip install --python .venv-storyboard/bin/python -r python/requirements-storyboard.txt
+.venv/bin/python experiments/character-consistency/setup_voice_conversion.py
 .venv/bin/python python/video.py download --profile hq
 ```
 
@@ -327,19 +330,20 @@ cache and output volumes.
 
 ### Saved character rendering setup
 
-The converter stays separate from the pinned MLX environment. In the GUI's
-workspace directory, install the existing pinned Seed-VC stack once:
+Desktop setup installs and verifies the pinned Seed-VC converter automatically,
+in a separate environment from MLX. Restart AIVS after updating an existing
+installation to complete this setup, then use **File → Resume…** for a failed run.
+Setup reuses verified model files and preserves local changes in the converter's
+source checkout.
+
+For CLI setup, run this from the checkout (add
+`--workspace /path/to/workspace` for a different workspace):
 
 ```sh
-uv venv .cache/seed-vc-env --python 3.10.21
-uv pip install --python .cache/seed-vc-env/bin/python \
-  -r experiments/character-consistency/requirements-seed-vc.txt
-git clone https://github.com/Plachtaa/seed-vc.git .cache/seed-vc
-git -C .cache/seed-vc checkout --detach 51383efd921027683c89e5348211d93ff12ac2a8
-.venv/bin/python experiments/character-consistency/download_voice_models.py
+.venv/bin/python experiments/character-consistency/setup_voice_conversion.py
 ```
 
-Skip installation steps for an already prepared converter. Before Codex planning,
+CLI setup requires `uv` and `git` on `PATH`. Before Codex planning,
 screenplay rendering checks every cast portrait and each speaking character's
 saved voice sample, then checks the converter's code revision, model hashes and
 MPS availability. A missing or invalid converter stops the run with a setup
