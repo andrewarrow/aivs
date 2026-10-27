@@ -133,7 +133,7 @@ impl Worker {
         self.send(Event::Progress(label.into(), None));
     }
 
-    fn python(&self, action: &str) -> Command {
+    fn production(&self, action: &str) -> Command {
         let mut command = Command::new(std::env::current_exe().expect("current AIVS executable"));
         command.args(["--production", action]);
         if matches!(action, "check" | "download") {
@@ -152,7 +152,7 @@ impl Worker {
         }
         self.progress("Checking local Python environment, GPU, and model cache");
         if self.root.join(".venv/bin/python").is_file()
-            && let Ok(output) = self.run(self.python("check"))
+            && let Ok(output) = self.run(self.production("check"))
         {
             if output.needs_token {
                 self.send(Event::NeedsToken);
@@ -198,7 +198,7 @@ impl Worker {
         command.args(["-u", VOICE_SETUP]);
         self.run(command)?;
         self.progress("Downloading the distilled and HQ video models");
-        let output = self.run(self.python("download"))?;
+        let output = self.run(self.production("download"))?;
         if output.needs_token {
             self.send(Event::NeedsToken);
         } else if output.ready {
@@ -219,7 +219,7 @@ impl Worker {
         request_file
             .write_all(request.as_bytes())
             .map_err(|error| format!("Cannot write screenplay request file: {error}"))?;
-        let mut command = self.python("render");
+        let mut command = self.production("render");
         command.arg("--screenplay-file").arg(request_file.path());
         command.args(["--profile", profile]);
         let output = self.run(command)?;
@@ -233,7 +233,7 @@ impl Worker {
 
     fn previsualize(&self, directory: &Path) -> Result<(), String> {
         self.progress("Preparing motion keyframes and animatic…");
-        let mut command = self.python("previsualize");
+        let mut command = self.production("previsualize");
         command.arg("--output-dir").arg(directory);
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
@@ -259,7 +259,7 @@ impl Worker {
                 planning_budget = planning_budget.max(saved);
             }
         }
-        let mut command = self.python("resume");
+        let mut command = self.production("resume");
         command.arg("--output-dir").arg(directory);
         if motion_previs {
             command.arg("--motion-previs");

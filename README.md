@@ -486,11 +486,9 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [crates/aivs-core/src/storyboard_backend.rs](crates/aivs-core/src/storyboard_backend.rs) | Codex ImageGen preflight, generation/edit sessions, input verification and checkpoint recovery. |
 | [crates/aivs-core/src/storyboard_images.rs](crates/aivs-core/src/storyboard_images.rs) | Reference sheets, EXIF orientation, Lanczos fitting and opaque PNG output. |
 | [python/storyboard_backend.py](python/storyboard_backend.py) | Compatibility adapter to Rust ImageGen and optional Python MFLUX inference. |
-
 | [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
 | [crates/aivs-core/src/inference.rs](crates/aivs-core/src/inference.rs) | Versioned Python worker requests, progress, cancellation and process cleanup. |
 | [python/inference_worker.py](python/inference_worker.py) | Runs one LTX or MFLUX model request and exits. |
-
 | [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration using the shared Rust transport. |
 | [src/main.rs](src/main.rs), [src/playback.rs](src/playback.rs) | Native egui/winit/wgpu window and macOS AVKit playback. |
 
