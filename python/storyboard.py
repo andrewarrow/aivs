@@ -115,17 +115,18 @@ def reference_specs(plan):
 
 def prepare_references(plan, boards, run_dir):
     """Resolve exact physical references, including the actors' identity inputs."""
-    expected = {s["id"]: _fingerprint(s) for s in reference_specs(plan)}
+    specs = {s["id"]: s for s in reference_specs(plan)}
+    expected = {key: _fingerprint(spec) for key, spec in specs.items()}
     rows = boards.get("references")
     if (not isinstance(rows, list) or {r.get("id") for r in rows} != set(expected)
             or len(rows) != len(expected)):
         raise ValueError("Storyboard references do not cover the canonical physical world.")
     for row in rows:
-        if row.get("definition_sha256") != expected[row["id"]]:
+        spec = specs[row["id"]]
+        if row.get("definition_sha256") != expected[row["id"]] or row.get("kind") != spec["kind"]:
             raise ValueError("Storyboard reference belongs to a different physical definition.")
         resolve_image(row, run_dir)
-        if row["kind"] == "prop":
-            spec = next(s for s in reference_specs(plan) if s["id"] == row["id"])
+        if spec["kind"] == "prop":
             prop_reference.require_accepted(spec, row)
         for portrait in row.get("generation", {}).get("inputs", []):
             resolve_image({"image": portrait}, run_dir)
@@ -337,6 +338,8 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
                 continue
             resolve_image(reference, run_dir)
             spec = specs[reference["id"]]
+            if reference.get("kind") != spec["kind"] or reference.get("definition_sha256") != _fingerprint(spec):
+                raise ValueError("Storyboard reference belongs to a different physical definition.")
             if reference["kind"] == "prop":
                 prop_reference.require_accepted(spec, reference)
                 definition = spec["definition"]
@@ -376,6 +379,7 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
     if absent:
         presence += "Do not depict " + ", ".join(absent) + "; their entrances occur later. "
     prompt = ("One cinematic live-action starting frame, a single photograph, no panels or lettering. "
+              "One instance of each visible part; use current docking and placement. "
               + presence + "Keep concealed features covered; references do not override current clothing or visibility. "
               + " ".join(instructions) + "\nVisible opening state: " + visible_state_prompt(plan, shot) +
               "\nKeep faces, active hands and essential props clear of frame edges.")
