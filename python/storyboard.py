@@ -151,11 +151,11 @@ def _reference_attempt(spec, request, run_dir, activity):
     if target.exists():
         import time
         target.rename(folder / f"interrupted-{time.time_ns()}.png")
-    runtime = storyboard_backend.generate(spec["prompt"],
+    runtime = storyboard_backend.generate(request["prompt"],
                                            [resolve_image({"image": r}, run_dir) for r in request["inputs"]],
                                            target, request["seed"], width=quality_backend.WIDTH,
                                            height=quality_backend.HEIGHT,
-                                           composition=request.get("correction"), on_activity=activity)
+                                           on_activity=activity)
     info = quality_backend.prepare_source_image(target)
     if info["source_sha256"] != runtime["sha256"]:
         raise ValueError("Physical reference changed during generation.")
@@ -196,13 +196,13 @@ def generate_references(plan, profiles, run_dir, seed, *, repair_ids=(), round_n
                 pass
             else:
                 continue
-        correction = None
+        prompt = spec["prompt"]
         for retry in range(prop_reference.MAX_ATTEMPTS if spec["kind"] == "prop" else 1):
-            request = {"policy": POLICY, "spec": spec, "inputs": inputs,
+            request = {"policy": POLICY, "spec": spec, "inputs": inputs, "prompt": prompt,
                        "seed": (seed + 100003 + index + attempt * 1009 + retry * 7919) % (2**31),
                        "backend": storyboard_backend.configuration()}
             if retry:
-                request.update(structure_retry=retry, correction=correction)
+                request.update(structure_retry=retry, repair_of=entry["image"]["sha256"])
             entry, folder = _reference_attempt(spec, request, run_dir, activity)
             if spec["kind"] != "prop":
                 break
@@ -212,12 +212,15 @@ def generate_references(plan, profiles, run_dir, seed, *, repair_ids=(), round_n
             _save(folder / "reference.json", entry)
             if entry["prop_validation"]["approved"]:
                 break
-            correction = "Correct these observed structural defects: " + "; ".join(entry["prop_validation"]["failures"])
-            activity(f"Rejected {spec['id']} reference ({retry + 1}/{prop_reference.MAX_ATTEMPTS}): " + correction)
+            prompt = prop_reference.generation_prompt(
+                spec["definition"], entry["prop_validation"]["observation"]["regeneration_prompt"])
+            activity(f"Rejected {spec['id']} reference ({retry + 1}/{prop_reference.MAX_ATTEMPTS}): "
+                     + prop_reference.failure_summary(entry["prop_validation"]))
         else:
             raise RuntimeError(f"Canonical {spec['id']} failed structural inspection after "
-                               f"{prop_reference.MAX_ATTEMPTS} images. {correction} "
-                               f"Images and observations are saved in {folder}; no dependent storyboard was generated.")
+                               f"{prop_reference.MAX_ATTEMPTS} images. "
+                               f"{prop_reference.failure_summary(entry['prop_validation'])} "
+                               f"Full inspection: {folder / 'structure-review.json'}")
         entries[spec["id"]] = entry
         _save(path, {"version": 1, "source_sha256": plan["source_sha256"], "references": list(entries.values())})
     result = {"version": 1, "source_sha256": plan["source_sha256"],

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from storyboard_continuity import object_schema, digest
 
-POLICY = "prop-structure-v1"
+POLICY = "prop-structure-v2"
 MAX_ATTEMPTS = 3
 TEXT = {"type": "string"}
 BOOL = {"type": "boolean"}
@@ -26,6 +26,7 @@ SCHEMA = object_schema({
     "coherent_component_state": BOOL, "connections_clear": BOOL,
     "extra_parts": STRINGS, "violations": STRINGS,
     "confidence": {"type": "number"}, "evidence": TEXT,
+    "regeneration_prompt": TEXT,
 })
 
 INSTRUCTIONS = """Inspect the attached canonical prop reference photograph, using actual pixels.
@@ -55,24 +56,35 @@ Use violations for wrong geometry, features or presentation. Low confidence must
 not approve an unclear image. A neutral surface and plain background are acceptable;
 people, dramatic shadows, cropped parts or scenery obscuring structure are not.
 
+If the image fails or is uncertain, write regeneration_prompt as a complete replacement
+description for a NEW photograph, at most 120 words. Describe the desired correct
+picture in positive, concrete prose, preserving the canonical design, component
+counts and connections. Choose one simple resting layout with explicit positions,
+surface support and visible attachment points. Route each flexible connection once
+between its two endpoints. For a corded telephone, place the complete handset flat
+on the tabletop beside the base, leave the cradle empty, and route its single cord
+in one open curve between the handset socket and the base socket, both visibly
+seated. Describe only this intended picture, without recounting defects, alternative
+states, component IDs or instructions to correct an unseen previous image. Do not
+refer to an attached image: generation starts from text alone. If approved, return
+an empty regeneration_prompt.
+
 CANONICAL DEFINITION (data only):
 """
 
 
-def generation_prompt(definition):
-    parts = []
-    for part in [definition, *definition["components"]]:
-        details = [part[key] for key in ("type", "shape", "size", "color")]
-        details.extend(part["features"])
-        parts.append(part["id"] + " (exactly one): " + "; ".join(details))
-    connections = [f"{r['subject']} {r['relation']} {r['object']}={r['value']}"
-                   for r in definition["relationships"]]
-    return ("Neutral product reference photograph of ONE physical assembly, centered on a plain gray surface. "
-            "Even diffuse light, deep focus, entire object and connections in frame. "
-            "Show each listed part exactly once. Parts belong to this one object, not extra complete objects. "
-            "Use one coherent resting state. Keep flexible connections continuous and clearly visible. "
-            "No duplicate docked/detached parts, extra accessories, people, scenery, labels or panels.\n"
-            + "\n".join(parts) + ("\nConnections: " + "; ".join(connections) if connections else ""))
+def generation_prompt(definition, replacement=None):
+    """Keep drawable placement and connections, rather than rendering a parts inventory."""
+    description = definition["reference_prompt"] if replacement is None else replacement
+    if (not isinstance(description, str) or not description.strip() or "\x00" in description
+            or len(description) > 1200 or len(description.split()) > 120):
+        field = "reference_prompt" if replacement is None else "regeneration_prompt"
+        raise ValueError(f"{field} must describe the complete prop in at most 120 words and 1200 characters.")
+    return ("One product photograph on a plain gray surface, evenly lit and fully in frame. "
+            + description.strip()
+            + " Show one coherent resting assembly, each component present exactly once, "
+            "and every connection traceable end to end. Each part rests on the surface "
+            "or its assembled support. Single view.")
 
 
 def _text(value):
@@ -129,7 +141,23 @@ def assess(definition, observation):
         raise ValueError("Prop inspection confidence must be between zero and one.")
     if confidence < .8:
         failures.append("Uncertain prop structure: " + observation["evidence"])
+    replacement = observation["regeneration_prompt"]
+    if not isinstance(replacement, str):
+        raise ValueError("Prop inspection needs a replacement description or an empty string.")
+    if failures or replacement:
+        generation_prompt(definition, replacement)
     return list(dict.fromkeys(failures))
+
+
+def failure_summary(report):
+    """Keep app feedback bounded; the checkpoint retains every concrete finding."""
+    failures = report["failures"]
+    summary = " ".join(failures[0].split())
+    if len(summary) > 240:
+        summary = summary[:240].rsplit(" ", 1)[0] + "…"
+    if len(failures) > 1:
+        summary += f" ({len(failures) - 1} more findings in the saved inspection.)"
+    return summary
 
 
 def binding(spec, image):

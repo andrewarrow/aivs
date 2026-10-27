@@ -118,11 +118,15 @@ references and full-body references for known morphology, then one still per
 shot. Only characters visible at time zero supply actor references. Earlier
 character-filled shots are never used as setting references. It runs through
 MFLUX in its own Python environment. Canonical props use centered, evenly lit
-product photographs. Before any prop reference can condition a storyboard, Codex
-inspects the actual pixels for exact component counts, extra parts, coherent
-assembly and clear connections. Failed or ambiguous references regenerate with
-the observed defects as feedback, up to three images per reference. Inspection
-receipts bind the definition, reviewer and image bytes; Resume reuses accepted
+product photographs, using the planner's visual description to preserve a concrete
+resting layout and connected assembly. Before any prop reference can condition a
+storyboard, Codex inspects the actual pixels for exact component counts, extra
+parts, coherent assembly and clear connections. For failed or ambiguous references, the inspector
+writes a complete replacement description in at most 120 words, specifying correct
+placement, support and connections. Retries use that description as their required
+prompt, up to three images per reference; defect reports stay in the inspection
+checkpoint instead of entering the image prompt as optional, truncated prose.
+Inspection receipts bind the definition, reviewer and image bytes; Resume reuses accepted
 receipts and preserves failed attempts. These inspections share the planning budget.
 Visible opening facts (costume, exposed body traits, components and ownership)
 enter the actual image prompt; concealed traits stay private. When a detailed
