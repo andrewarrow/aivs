@@ -1,5 +1,6 @@
 //! Production rules and Codex sessions without a desktop, GPU, or Python runtime.
 pub mod artifacts;
+pub mod character_conditioning;
 pub mod characters;
 pub mod codex;
 pub mod continuity;
@@ -8,6 +9,7 @@ pub mod media;
 pub mod motion;
 pub mod preproduction;
 pub mod prop_reference;
+pub mod render_estimate;
 pub mod render_formats;
 pub mod shooting_script;
 pub mod shot_renderer;
@@ -50,9 +52,11 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/lib.rs": include_str!("lib.rs"),
                             "crates/aivs-core/src/artifacts.rs": include_str!("artifacts.rs"),
                             "crates/aivs-core/src/characters.rs": include_str!("characters.rs"),
+                            "crates/aivs-core/src/character_conditioning.rs": include_str!("character_conditioning.rs"),
                             "crates/aivs-core/src/characters/prompt.rs": include_str!("characters/prompt.rs"),
                             "crates/aivs-core/src/dialogue.rs": include_str!("dialogue.rs"),
                             "crates/aivs-core/src/media/audio.rs": include_str!("media/audio.rs"),
+                            "crates/aivs-core/src/media/source.rs": include_str!("media/source.rs"),
                             "crates/aivs-core/src/media/review.rs": include_str!("media/review.rs"),
                             "crates/aivs-core/src/storyboard_backend.rs": include_str!("storyboard_backend.rs"),
                             "crates/aivs-core/src/storyboard_backend/preflight.rs": include_str!("storyboard_backend/preflight.rs"),
@@ -75,6 +79,7 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/motion/review.rs": include_str!("motion/review.rs"),
                             "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
                             "crates/aivs-core/src/render_formats.rs": include_str!("render_formats.rs"),
+                            "crates/aivs-core/src/render_estimate.rs": include_str!("render_estimate.rs"),
                             "crates/aivs-core/src/preproduction.rs": include_str!("preproduction.rs"),
                             "crates/aivs-core/src/shot_renderer.rs": include_str!("shot_renderer.rs"),
                             "crates/aivs-core/src/shooting_script.rs": include_str!("shooting_script.rs"),
@@ -91,6 +96,45 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         .is_some_and(|op| op.starts_with("character_"))
                     {
                         characters::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                        )
+                    } else if request["operation"]
+                        .as_str()
+                        .is_some_and(|op| op.starts_with("conditioning_"))
+                    {
+                        character_conditioning::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"], &cancelled, |event| {
+                                let envelope = json!({"version": PROTOCOL_VERSION, "id": request["id"], "event": event});
+                                serde_json::to_writer(&mut writer, &envelope).map_err(|e| e.to_string())?;
+                                writer.write_all(b"\n").and_then(|_| writer.flush()).map_err(|e| e.to_string())
+                            },
+                        ).map_err(|error| {
+                            if error.starts_with("Saved-character voices require") || error.starts_with("Saved voice conversion failed")
+                                || error.starts_with("Saved voice converter returned") {
+                                error_kind = "inference";
+                            }
+                            error
+                        })
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some(
+                            "prepare_source_image"
+                                | "prepare_source_audio"
+                                | "prepare_image_anchors"
+                        )
+                    ) {
+                        media::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                            &cancelled,
+                        )
+                    } else if request["operation"]
+                        .as_str()
+                        .is_some_and(|op| op.starts_with("render_estimate_"))
+                    {
+                        render_estimate::dispatch(
                             request["operation"].as_str().unwrap_or_default(),
                             &request["args"],
                         )

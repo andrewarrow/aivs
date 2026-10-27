@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
-import wave
+import rust_engine
 
 from download_space import preflight_downloads, valid_cached_file
 
@@ -271,73 +271,24 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
 
 
 def prepare_source_audio(source, minimum_duration):
-    """Validate fixed PCM audio before loading any GPU model weights."""
-    import hashlib
-
-    source = Path(source).expanduser().resolve()
-    try:
-        with wave.open(str(source), "rb") as stream:
-            rate, count = stream.getframerate(), stream.getnframes()
-            if stream.getcomptype() != "NONE" or stream.getsampwidth() != 2 or stream.getnchannels() not in (1, 2):
-                raise ValueError("Fixed audio must be mono or stereo 16-bit PCM WAV.")
-            duration = count / rate
-            if duration + 1 / rate < minimum_duration:
-                raise ValueError("Fixed audio is shorter than the requested video. Pad the shot track with silence.")
-            if len(stream.readframes(count)) != count * stream.getnchannels() * 2:
-                raise ValueError("Fixed audio is truncated.")
-    except (OSError, wave.Error, EOFError) as exc:
-        raise ValueError(f"Cannot read fixed audio: {source}") from exc
-    return {"source_file": str(source), "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-            "sample_rate": rate, "duration_seconds": duration, "conditioning": "frozen-audio"}
+    return rust_engine.call("prepare_source_audio", source=str(Path(source).expanduser().resolve()),
+                            minimum_duration=minimum_duration)
 
 
 def prepare_source_image(source):
-    """Validate Hunter's whole-first-frame image anchor before loading model weights."""
-    import hashlib
-    from PIL import Image
-
     source = Path(source).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Image file does not exist: {source}")
-    try:
-        with Image.open(source) as picture:
-            picture.verify()
-        with Image.open(source) as picture:
-            picture.load()
-            width, height = picture.size
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
-        raise ValueError(f"Cannot decode reference image: {source}") from exc
-    return {
-        "source_file": str(source),
-        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        "width": width, "height": height,
-        "conditioning": "whole-first-frame", "strength": 1.0,
-    }
+    return rust_engine.call("prepare_source_image", source=str(source))
 
 
 def prepare_image_anchors(anchors, frames, width, height):
-    """Validate output-frame timestamps and exact pixels before loading MLX."""
-    if not isinstance(anchors, list) or not 2 <= len(anchors) <= 4:
-        raise ValueError("Motion conditioning requires two to four image anchors.")
-    result = []
-    for anchor in anchors:
-        frame, strength = anchor.get("frame"), anchor.get("strength")
-        if (type(frame) is not int or not 0 <= frame < frames
-                or (result and frame <= result[-1]["frame"])
-                or type(strength) not in (int, float) or not math.isfinite(strength) or not 0 < strength <= 1):
-            raise ValueError("Image anchors need ordered, distinct output frames and strengths in (0, 1].")
-        image = prepare_source_image(anchor["file"])
-        if (image["width"], image["height"]) != (width, height):
-            raise ValueError("Image anchors must match the model dimensions.")
-        if image["source_sha256"] != anchor.get("sha256"):
-            raise ValueError("An image anchor changed before rendering.")
-        result.append(dict(image, frame=frame, strength=strength,
-                           conditioning="replace" if frame == 0 else "guide"))
-    if result[0]["frame"] != 0 or result[-1]["frame"] != frames - 1:
-        raise ValueError("Image anchors must include frame zero and the final output frame.")
-    if len({row["source_sha256"] for row in result}) != len(result):
-        raise ValueError("Motion anchors must contain distinct images.")
-    return result
+    # Path expansion is a CLI boundary concern; validation belongs to Rust.
+    if isinstance(anchors, list):
+        anchors = [dict(anchor, file=str(Path(anchor["file"]).expanduser().resolve()))
+                   if isinstance(anchor, dict) and "file" in anchor else anchor for anchor in anchors]
+    return rust_engine.call("prepare_image_anchors", anchors=anchors, frames=frames,
+                            width=width, height=height)
 
 
 def _image_generation_options(source_file, frames, hold_image_framing, anchors=None):

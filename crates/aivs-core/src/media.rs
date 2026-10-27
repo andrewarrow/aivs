@@ -2,6 +2,7 @@
 //! The caller publishes the assembled partial only after validation succeeds.
 mod audio;
 mod review;
+mod source;
 use crate::continuity::Result;
 use serde_json::{Value, json};
 use std::{
@@ -15,6 +16,8 @@ use std::{
 };
 
 const FPS: u64 = 24;
+
+pub(crate) use source::image as source_image;
 
 struct Process(Child);
 
@@ -322,6 +325,9 @@ fn validate(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
 
 pub fn dispatch(operation: &str, args: &Value, cancelled: &AtomicBool) -> Result<Value> {
     match operation {
+        "prepare_source_image" => source::image(&path(args, "source")?),
+        "prepare_source_audio" => source::audio(args),
+        "prepare_image_anchors" => source::anchors(args),
         "extract_last_frame" => extract(args, cancelled),
         "assemble_shots" => assemble(args, cancelled),
         "validate_video" => validate(args, cancelled),

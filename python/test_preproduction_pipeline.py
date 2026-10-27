@@ -108,7 +108,6 @@ class PreproductionPipelineTests(unittest.TestCase):
         self.mock(storyboard_backend, "generate", side_effect=self.generate_image)
         self.mock(shot_renderer, "validate_video", return_value={"valid": True})
         self.mock(shot_renderer, "_assemble", side_effect=self.assemble)
-        self.mock(character_conditioning, "_worker", side_effect=AssertionError("Native mode called Seed-VC"))
         self.mock(character_conditioning, "apply_voice", side_effect=AssertionError("Native mode converted audio"))
 
     def mock(self, target, name, *args, **kwargs):
@@ -463,10 +462,16 @@ class PreproductionPipelineTests(unittest.TestCase):
         self.write(profile_path, profile)
         self.mock(video, "check_environment")
         model = self.mock(video, "model_path")
-        converter = self.mock(character_conditioning, "_worker", side_effect=RuntimeError("Seed-VC unavailable"))
+        # The converter is now launched by Rust. Substitute its executable at
+        # the process boundary rather than mocking removed Python policy.
+        converter = self.root / ".cache/seed-vc-env/bin/python"
+        converter.parent.mkdir(parents=True)
+        called = self.root / "voice-check-called"
+        converter.write_text('#!/bin/sh\ntouch "' + str(called) + '"\necho "Seed-VC unavailable" >&2\nexit 1\n')
+        converter.chmod(0o755)
         with patch.dict(os.environ), self.assertRaisesRegex(RuntimeError, "Seed-VC unavailable"):
             video.generate_screenplay(self.request, seed=17, voice_mode="saved")
-        converter.assert_called_once_with("--check")
+        self.assertTrue(called.is_file())
         self.assertEqual(self.codex_calls, [])
         self.assertEqual(self.image_calls, [])
         model.assert_not_called()
