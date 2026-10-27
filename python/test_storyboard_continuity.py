@@ -143,6 +143,54 @@ class StoryboardContinuityTests(unittest.TestCase):
         result["continuity_review"]["observed_opening_state"]["props"][1]["physical"][0]["value"] = "smartphone"
         self.assertEqual(self.review(result)["decision"], "repair-required")
 
+    def test_visible_prop_unknown_or_missing_physical_facts_block_high_confidence_pass(self):
+        for attribute in ("type", "shape", "size", "color"):
+            for mode in ("unknown", "not-visible", "omitted"):
+                with self.subTest(attribute=attribute, mode=mode):
+                    result = row(self.plan, 2)
+                    physical = result["continuity_review"]["observed_opening_state"]["props"][0]["physical"]
+                    if mode == "omitted":
+                        physical[:] = [a for a in physical if a["key"] != attribute]
+                    else:
+                        next(a for a in physical if a["key"] == attribute)["value"] = mode
+                    reviewed = self.review(result)
+                    self.assertEqual(reviewed["decision"], "uncertain")
+                    self.assertTrue(any("physical." + attribute in v for v in reviewed["violations"]))
+
+    def test_missing_visible_component_and_connection_cannot_pass(self):
+        for group, identifier in (("props", "cord"), ("relationships", "connected-to")):
+            with self.subTest(group=group):
+                result = row(self.plan, 2)
+                state = result["continuity_review"]["observed_opening_state"]
+                field = "id" if group == "props" else "relation"
+                state[group] = [item for item in state[group] if item[field] != identifier]
+                self.assertEqual(self.review(result)["decision"], "uncertain")
+
+    def test_visible_prop_needs_distinguishing_features_and_ownership_evidence(self):
+        for state in ("opening", "ending"):
+            self.plan["shots"][1]["continuity"][state]["props"][0]["physical"].append(
+                {"key": "distinguishing_features", "value": "rotary dial"})
+        for field in ("distinguishing_features", "owner", "support", "state"):
+            with self.subTest(field=field):
+                result = row(self.plan, 2)
+                prop = result["continuity_review"]["observed_opening_state"]["props"][0]
+                if field == "distinguishing_features":
+                    prop["physical"][-1]["value"] = "unknown"
+                else:
+                    prop[field] = "unknown"
+                reviewed = self.review(result)
+                self.assertEqual(reviewed["decision"], "uncertain")
+                self.assertEqual(reviewed["failure_kind"], "uncertain")
+
+    def test_concealed_prop_can_have_unobservable_physical_facts(self):
+        for state in ("opening", "ending"):
+            self.plan["shots"][1]["continuity"][state]["props"][3]["visibility"] = "concealed"
+        result = row(self.plan, 2)
+        cord = result["continuity_review"]["observed_opening_state"]["props"][3]
+        cord["physical"] = []
+        cord.update(owner="unknown", support="unknown", state="unknown")
+        self.assertEqual(self.review(result)["decision"], "pass")
+
     def test_receiver_shape_changes_during_handoff(self):
         result = row(self.plan, 2)
         result["continuity_review"]["observed_opening_state"]["props"][1]["physical"][1]["value"] = "flat-slab"
@@ -222,6 +270,34 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.assertEqual(request["references"], [])
         self.assertIn("Do not depict A, B", request["prompt"])
         self.assertNotIn("old.png", json.dumps(request))
+
+    def test_visible_state_prompt_includes_prop_geometry_components_and_owner(self):
+        shot = self.plan["shots"][0]
+        shot["continuity"]["opening"]["characters"][0]["costume"] = "opaque tan coat"
+        prompt = storyboard.visible_state_prompt(self.plan, shot)
+        for detail in ("A:", "costume opaque tan coat", "corded-landline", "base-with-receiver",
+                       "receiver:", "curved-with-earpieces", "cord:", "coiled", "owner A",
+                       "support hand", "receiver connected-to base=yes"):
+            self.assertIn(detail, prompt)
+        self.assertNotIn("pregnant", prompt)
+        self.assertNotIn("source-plausible", prompt)
+
+    def test_visible_body_traits_compile_only_when_explicitly_exposed(self):
+        shot = self.plan["shots"][0]
+        character = shot["continuity"]["opening"]["characters"][0]
+        character["visibility"] = attributes(condition="visible", abdomen_size="visible")
+        shot["continuity"]["opening"]["reveals"][0]["value"] = "revealed"
+        prompt = storyboard.visible_state_prompt(self.plan, shot)
+        self.assertIn("condition pregnant", prompt)
+        self.assertIn("abdomen_size source-plausible", prompt)
+
+    def test_hidden_props_and_their_components_are_excluded_from_prompt(self):
+        shot = self.plan["shots"][0]
+        for prop in shot["continuity"]["opening"]["props"]:
+            prop["visibility"] = "concealed"
+        prompt = storyboard.visible_state_prompt(self.plan, shot)
+        for detail in ("corded-landline", "receiver", "coiled", "connected-to"):
+            self.assertNotIn(detail, prompt)
 
     def test_repair_reservation_includes_downstream_but_preserves_unrelated_frames(self):
         with tempfile.TemporaryDirectory() as temporary:

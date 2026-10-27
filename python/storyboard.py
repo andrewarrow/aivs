@@ -188,6 +188,55 @@ def generate_references(plan, profiles, run_dir, seed, *, repair_ids=(), round_n
     return result
 
 
+def visible_state_prompt(plan, shot):
+    """Compile drawable opening facts without disclosing concealed story facts."""
+    state = shot.get("continuity", {}).get("opening", {})
+    hidden = {"unknown", "not-visible", "concealed", "offscreen", "absent"}
+    concealed_reveals = {r["id"] for r in state.get("reveals", []) if r["value"] in hidden}
+    clauses = []
+    for character in state.get("characters", []):
+        if character["presence"] != "visible":
+            continue
+        visibility = {a["key"]: a["value"] for a in character["visibility"]}
+        details = [f"{key} {character[key]}" for key in ("costume", "posture", "location")
+                   if character[key] not in hidden]
+        for category in ("appearance", "morphology"):
+            for attribute in character[category]:
+                key, value = attribute["key"], attribute["value"]
+                exposed = visibility.get(category + "." + key, visibility.get(key))
+                if value in hidden or key in concealed_reveals or exposed in hidden:
+                    continue
+                # Physical existence is not visibility. Body conditions/sizes
+                # enter photographic prose only when explicitly exposed.
+                if category == "morphology" and exposed != "visible":
+                    continue
+                details.append(f"{key} {value}")
+        clauses.append(character["role"] + ": " + "; ".join(details))
+    canonical = {}
+    for prop in plan.get("world", {}).get("props", []):
+        for entity in [prop, *prop["components"]]:
+            canonical[entity["id"]] = (entity, prop)
+    visible = {p["id"] for p in state.get("props", []) if p["visibility"] == "visible"}
+    for prop in state.get("props", []):
+        if prop["id"] not in visible:
+            continue
+        definition, parent = canonical.get(prop["id"], ({}, {}))
+        physical = {key: definition[key] for key in ("type", "shape", "size", "color") if key in definition}
+        if definition.get("features"):
+            physical["distinguishing_features"] = "; ".join(definition["features"])
+        physical.update({a["key"]: a["value"] for a in prop["physical"]})
+        details = [f"{key} {value}" for key, value in physical.items() if value not in hidden]
+        if parent and parent["id"] != prop["id"] and parent["id"] not in visible:
+            details.append("component of " + parent["type"])
+        details.extend(f"{key} {prop[key]}" for key in ("owner", "support", "location", "state")
+                       if prop[key] not in hidden)
+        clauses.append(prop["id"] + ": " + "; ".join(details))
+    for relation in state.get("relationships", []):
+        if relation["subject"] in visible and relation["object"] in visible and relation["value"] not in hidden:
+            clauses.append(f"{relation['subject']} {relation['relation']} {relation['object']}={relation['value']}")
+    return ". ".join(clauses)
+
+
 def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, height):
     by_id = {profile["id"]: profile for profile in profiles}
     cast = {item["role"]: item["character"] for item in plan.get("source", {}).get("cast", [])}
@@ -237,13 +286,14 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
     if absent:
         presence += "Do not depict " + ", ".join(absent) + "; their entrances occur later. "
     prompt = ("One cinematic live-action starting frame, a single photograph, no panels or lettering. "
-              + presence + "Use references for named identities and physical features; apply the current physical state, visibility and ownership below. "
-              + " ".join(instructions) + "\n" + composition.strip() +
+              + presence + "Keep concealed features covered; references do not override current clothing or visibility. "
+              + " ".join(instructions) + "\nVisible opening state: " + visible_state_prompt(plan, shot) +
               "\nKeep faces, active hands and essential props clear of frame edges.")
     return {"policy": POLICY, "source_sha256": plan.get("source_sha256"), "shot": number,
             "opening_state": shot.get("continuity", {}).get("opening"),
             "world_sha256": _fingerprint(plan.get("world", {})),
-            "prompt": prompt, "references": references, "seed": (seed + number - 1) % (2**31),
+            "prompt": prompt, "composition": composition.strip(),
+            "references": references, "seed": (seed + number - 1) % (2**31),
             "width": width, "height": height, "backend": storyboard_backend.configuration()}
 
 
@@ -298,7 +348,8 @@ def regenerate_shot(plan: dict, profiles: list[dict], run_dir: Path, seed: int,
     references = [resolve_image({"image": reference}, run_dir) for reference in request["references"]]
     activity(f"Regenerating storyboard {shot_index + 1}: {reason}")
     runtime = storyboard_backend.generate(request["prompt"], references, partial, request["seed"],
-                                          width=width, height=height, on_activity=activity)
+                                          width=width, height=height, composition=request["composition"],
+                                          on_activity=activity)
     info = quality_backend.prepare_source_image(partial)
     if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):
         raise ValueError("Repaired storyboard has unexpected image dimensions or bytes.")
@@ -387,7 +438,8 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *, on_a
         try:
             references = [resolve_image({"image": reference}, run_dir) for reference in request["references"]]
             runtime = storyboard_backend.generate(request["prompt"], references, partial, request["seed"],
-                                                   width=width, height=height, on_activity=activity)
+                                                   width=width, height=height, composition=request["composition"],
+                                                   on_activity=activity)
             info = quality_backend.prepare_source_image(partial)
             if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):
                 raise ValueError(f"Storyboard {number} did not produce the requested image dimensions or bytes.")

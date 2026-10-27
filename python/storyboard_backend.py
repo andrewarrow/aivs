@@ -141,12 +141,13 @@ def download() -> None:
 
 
 def generate(prompt: str, references: list[Path], output: Path, seed: int, *,
-             width: int, height: int, on_activity=None) -> dict:
+             width: int, height: int, composition: str | None = None, on_activity=None) -> dict:
     """Render exactly one still; the subprocess exits before LTX loads weights."""
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite storyboard image: {output}")
     payload = {"prompt": prompt, "references": [str(path.resolve()) for path in references],
-               "output": str(output.resolve()), "seed": seed, "width": width, "height": height}
+               "composition": composition, "output": str(output.resolve()),
+               "seed": seed, "width": width, "height": height}
     return _worker("generate", payload, on_activity=on_activity,
                    log_file=output.with_suffix(".log"))
 
@@ -165,6 +166,35 @@ def _identity() -> dict:
             ("mflux", "mlx", "transformers", "huggingface-hub", "Pillow")}}
 
 
+def _fit_prompt(tokenizer, prompt, composition=None):
+    """Fit optional composition prose while retaining every compiled state fact."""
+    def count(value):
+        formatted = tokenizer.apply_chat_template([{"role": "user", "content": value}],
+                                                   tokenize=False, add_generation_prompt=True,
+                                                   enable_thinking=False)
+        return len(tokenizer.encode(formatted, add_special_tokens=True, truncation=False))
+
+    required_tokens = count(prompt)
+    if required_tokens > 512:
+        raise ValueError(f"Essential storyboard state needs {required_tokens} tokens; simplify the visible composition to fit 512.")
+    if composition is None:
+        return prompt, required_tokens, False
+    words = composition.split()
+    # Only remove whole words from the optional prose. The structured state,
+    # role exclusions, reference mapping and concealment rules are immutable.
+    candidate = prompt + "\nComposition: " + composition
+    tokens = count(candidate)
+    if tokens <= 512:
+        return candidate, tokens, False
+    while words:
+        words.pop()
+        candidate = prompt + "\nComposition: " + " ".join(words)
+        tokens = count(candidate)
+        if words and tokens <= 512:
+            return candidate, tokens, True
+    raise ValueError("Essential storyboard state leaves no room for composition; simplify the visible composition.")
+
+
 def _generate(payload: dict) -> dict:
     identity = _identity()
     from transformers import Qwen2TokenizerFast
@@ -176,12 +206,9 @@ def _generate(payload: dict) -> dict:
         raise FileExistsError(f"Storyboard output already exists: {output}")
     started = time.monotonic()
     tokenizer = Qwen2TokenizerFast.from_pretrained(str(_snapshot() / "tokenizer"), local_files_only=True)
-    formatted = tokenizer.apply_chat_template([{"role": "user", "content": payload["prompt"]}],
-                                              tokenize=False, add_generation_prompt=True,
-                                              enable_thinking=False)
-    token_count = len(tokenizer.encode(formatted, add_special_tokens=True, truncation=False))
-    if token_count > 512:
-        raise ValueError(f"Storyboard prompt needs {token_count} tokens; shorten it to fit the 512-token image encoder.")
+    prompt, token_count, shortened = _fit_prompt(tokenizer, payload["prompt"], payload.get("composition"))
+    if shortened:
+        print("Shortened composition prose to preserve essential opening state within 512 tokens.", flush=True)
     # The edit pipeline concatenates reference latents unconditionally. Empty
     # scenery shots use the same weights through its text-to-image variant.
     has_references = bool(payload["references"])
@@ -189,7 +216,7 @@ def _generate(payload: dict) -> dict:
     model = pipeline(model_config=ModelConfig.flux2_klein_4b(),
                      model_path=str(_snapshot()), quantize=8)
     image = model.generate_image(
-        prompt=payload["prompt"], seed=payload["seed"],
+        prompt=prompt, seed=payload["seed"],
         width=payload["width"], height=payload["height"], num_inference_steps=4,
         guidance=1.0, scheduler="flow_match_euler_discrete",
         **({"image_paths": payload["references"]} if has_references else {}),
@@ -198,7 +225,7 @@ def _generate(payload: dict) -> dict:
     with output.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     return {**identity, "pipeline": "reference-edit" if has_references else "text-to-image",
-            "prompt_tokens": token_count,
+            "prompt": prompt, "prompt_tokens": token_count, "composition_shortened": shortened,
             "elapsed_seconds": round(time.monotonic() - started, 3), "sha256": digest}
 
 

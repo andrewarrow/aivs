@@ -164,8 +164,9 @@ class PreproductionPipelineTests(unittest.TestCase):
         options["response_path"].write_text(raw, encoding="utf-8")
         return raw
 
-    def generate_image(self, prompt, references, output, seed, *, width, height, on_activity):
-        self.image_inputs.append({"output": str(output), "references": list(references), "prompt": prompt})
+    def generate_image(self, prompt, references, output, seed, *, width, height, on_activity, composition=None):
+        self.image_inputs.append({"output": str(output), "references": list(references), "prompt": prompt,
+                                  "composition": composition})
         if Path(output).name.endswith("partial.png"):
             self.image_calls.append(Path(output).name)
             self.assertTrue(references, "Every storyboard should receive the saved portrait and canonical references")
@@ -250,6 +251,30 @@ class PreproductionPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "acceptance"):
             self.render(plan, changed, resume=True)
         self.assertEqual(self.render_calls, [])
+
+    def test_accepted_production_storyboards_render_with_automatic_review_disabled(self):
+        plan, boards = self.prepare()
+        self.assertEqual(plan["storyboard_policy"], shooting_script.STORYBOARD_POLICY)
+        continuity.require_accepted(plan, boards, self.run)
+        result = self.render(plan, boards)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(self.render_calls), len(plan["shots"]))
+        for call in self.render_calls:
+            number = int(call["shot"])
+            self.assertEqual(call["image_sha256"], boards["shots"][number - 1]["image"]["sha256"])
+
+    def test_generator_receives_structured_opening_facts_and_composition(self):
+        plan, boards = self.prepare()
+        frames = [item for item in self.image_inputs if item["composition"] is not None]
+        self.assertEqual(len(frames), len(plan["shots"]))
+        for number, frame in enumerate(frames):
+            for detail in ("MARA:", "key:", "type key", "shape notched", "color brass"):
+                self.assertIn(detail, frame["prompt"])
+            opening = plan["shots"][number]["continuity"]["opening"]["props"][0]
+            self.assertIn("owner " + opening["owner"], frame["prompt"])
+            self.assertIn("support " + opening["support"], frame["prompt"])
+            self.assertEqual(frame["composition"], plan["shots"][number]["storyboard_prompt"])
+            self.assertEqual(frame["prompt"], boards["shots"][number]["generation"]["prompt"])
 
     def test_storyboards_only_produces_final_motion_plan_without_video_setup_or_inference(self):
         events = self.mock(video, "emit")

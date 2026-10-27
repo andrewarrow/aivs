@@ -117,13 +117,21 @@ FLUX.2 Klein generates reusable empty environment plates, important prop
 references and full-body references for known morphology, then one still per
 shot. Only characters visible at time zero supply actor references. Earlier
 character-filled shots are never used as setting references. It runs through
-MFLUX in its own Python environment and
-exits before LTX loads. Python validates source coverage, exact dialogue, timing,
+MFLUX in its own Python environment. Visible opening facts (costume, exposed body
+traits, prop geometry, components and ownership) enter the actual image prompt;
+concealed traits stay private. The worker preserves these facts within the
+512-token limit, shortening composition prose when necessary and recording the
+effective prompt. The image worker exits before LTX loads. Python validates
+source coverage, exact dialogue, timing,
 and prompt limits. The final shooting script and storyboard checksums are bound
 together with an accepted `storyboard-review.json`. The renderer and Resume
 reject missing, failed, incompatible or stale acceptance, even when image files
 exist. A concrete defect uses the existing two automatic repair rounds, including
 state-contract corrections, reference dependencies and reinspection of pixels.
+Visible canonical props and connections need positive physical evidence;
+unknown details block acceptance. Manually supplied experiment storyboards use
+their existing image/provenance checks; declaring the production storyboard
+policy still requires continuity acceptance even with automatic review disabled.
 Exhausted repairs save `storyboard-diagnostic.json` and stop before video.
 The former five-pass planner remains removed.
 
@@ -535,7 +543,7 @@ The mocked storyboard pipeline test can also run independently, without GPU
 inference, model downloads, or paid API calls:
 
 ```sh
-PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline test_storyboard_continuity -v
+PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline test_storyboard_continuity test_storyboard_backend test_production_comparison -v
 ```
 
 The suites cover editing, casting, setup, planning, cancellation, media validation,

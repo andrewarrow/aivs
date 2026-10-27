@@ -11,7 +11,7 @@ import json
 import math
 from pathlib import Path
 
-POLICY = "storyboard-continuity-v1"
+POLICY = "storyboard-continuity-v2"
 BATCH_SIZE = 6
 UNKNOWN = {"unknown", "not-visible"}
 
@@ -375,19 +375,27 @@ def review_shot(plan, number, row):
                 "explanation": f"Authorized {event['entity']} {event['field']}: {event['before']} -> {event['after']}. {event['motivation']}"}
         if item not in evidence:
             evidence.append(item)
-    # Wording of location/costume facts can differ; the visual reviewer compares
-    # those semantically. Role, ownership, presence and reveal IDs are categorical.
-    critical = {key for key in expected if key[1] in ("presence", "owner", "value", "costume", "state", "visibility")
+    # The reviewer reuses planned fact values for semantic matches. Identity,
+    # ownership, presence and physical facts must retain that shared vocabulary.
+    visible_props = {p["id"] for p in shot["continuity"]["opening"]["props"] if p["visibility"] == "visible"}
+    uncertainties = []
+    critical = {key for key in expected if key[1] in ("presence", "owner", "support", "value", "costume", "state", "visibility")
                 or key[1].startswith("visibility.") or physical_key(key)}
     for key in critical:
         actual = observed.get(key, "unknown")
         if expected[key] in UNKNOWN:
             continue
         if actual in UNKNOWN:
-            # Offscreen props may be unobservable. Required visible roles and
-            # revealed audience information must have positive pixel evidence.
-            if expected[key] in ("visible", "revealed") or (key[1] == "owner" and expected[key] in shot["opening_visible_roles"]):
-                violations.append(f"Cannot verify {key}: expected {expected[key]}, observed {actual}")
+            # Canonical props are story-critical. An ID in a response is not
+            # evidence of its type, geometry, components or current ownership.
+            # Demand those facts only for entities/connections planned visible;
+            # hidden anatomy and concealed/offscreen objects remain unobservable.
+            prop_visible = key[0].startswith("prop:") and key[0][5:] in visible_props
+            connection_visible = (key[0].startswith("relationship:")
+                                  and key[0][13:] in visible_props
+                                  and key[1].split(":", 1)[-1] in visible_props)
+            if expected[key] in ("visible", "revealed") or prop_visible or connection_visible:
+                uncertainties.append(f"Cannot verify {key}: expected {expected[key]}, observed {actual}")
         elif actual != expected[key]:
             violations.append(f"{key}: expected {expected[key]}, observed {actual}")
     for character in review["observed_opening_state"]["characters"]:
@@ -405,13 +413,14 @@ def review_shot(plan, number, row):
     decision = review["decision"]
     if violations or row.get("blocking_issue", "").strip():
         decision = "repair-required"
-    elif confidence < .8 or review["failure_kind"] == "uncertain":
+    elif uncertainties or confidence < .8 or review["failure_kind"] == "uncertain":
         decision = "uncertain"
     if review["failure_kind"] == "plan" and decision == "pass":
         decision = "repair-required"
     return {"shot": number, "expected_opening_state": shot["continuity"]["opening"],
             **review, "source_transition_evidence": evidence,
-            "violations": list(dict.fromkeys(violations)), "decision": decision,
+            "violations": list(dict.fromkeys(violations + uncertainties)), "decision": decision,
+            "failure_kind": "uncertain" if decision == "uncertain" else review["failure_kind"],
             "unobservable_facts": [list(key) for key in expected if observed.get(key, "unknown") in UNKNOWN]}
 
 

@@ -347,7 +347,10 @@ def render_shooting_script(
         raise ValueError("seed must be an integer.")
     if type(review_enabled) is not bool:
         raise ValueError("review_enabled must be a boolean.")
-    requires_storyboard_review = (storyboard is not None or plan.get("storyboard_policy") == "per-shot-first-frame-v1"
+    # Manual comparison frames use the image/provenance contract in prepare().
+    # Production declares its stronger policy in the plan or source snapshot;
+    # review_enabled=False must never disable that acceptance gate.
+    requires_storyboard_review = (plan.get("storyboard_policy") == "per-shot-first-frame-v1"
                                  or plan.get("source", {}).get("storyboard_policy") == "per-shot-first-frame-v1")
     if requires_storyboard_review and storyboard is None:
         raise ValueError("This plan requires its validated first-frame storyboard for every shot.")
