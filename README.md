@@ -319,6 +319,11 @@ The image worker uses the pinned FLUX.2 Klein 4B snapshot through MFLUX. Model
 downloads share `.cache/huggingface/`; completed scene plans and images are reused
 through `.cache/preproduction/`. Generation uses cached weights and saves image
 prompts, seeds, reference hashes, and backend provenance alongside each run.
+Before downloading model weights, setup checks the combined missing video and
+storyboard files against their pinned download sizes. Complete cached files are
+reused; damaged and partial files count as missing. The check reserves another
+2 GiB for temporary files and 5 GiB for generated outputs, accounting for separate
+cache and output volumes.
 
 ### Saved character rendering setup
 
@@ -334,10 +339,17 @@ git -C .cache/seed-vc checkout --detach 51383efd921027683c89e5348211d93ff12ac2a8
 .venv/bin/python experiments/character-consistency/download_voice_models.py
 ```
 
-Skip installation steps for an already prepared converter. Code revision, model
-hashes, and MPS availability are checked before video inference. A missing or
-invalid converter stops a single-speaker render with a setup error rather than
-silently substituting a generated voice. Once setup is ready, use Resume.
+Skip installation steps for an already prepared converter. Before Codex planning,
+screenplay rendering checks every cast portrait and each speaking character's
+saved voice sample, then checks the converter's code revision, model hashes and
+MPS availability. A missing or invalid converter stops the run with a setup
+error. Install it, then use Resume.
+
+For a smoke test without Seed-VC, select `--voice-mode native` on a new CLI
+screenplay render. This explicitly retains the model's generated voices and
+does not require saved voice samples. The GUI keeps saved voices as its default.
+Voice mode is saved with the run and cannot change on Resume; changing it needs
+a new run. Native and saved-voice plans use distinct cache identities.
 
 Each shot keeps `video.source.mp4`, the original native picture and soundtrack,
 plus `voice/source.wav`, `voice/converted.wav`, and conversion provenance.
@@ -450,6 +462,29 @@ Add `--render-format portrait` for 1080×1920; `--script-file` defaults to lands
 the same scene with a different video profile or seed automatically reuses its
 matching completed preproduction.
 
+To inspect actual generated first frames and motion directions before video
+inference, use `--storyboards-only`. This completes both planning passes, image
+generation, bounded image repairs, and the source-fidelity check, then saves
+`storyboards.json`, its images, and `shooting-script.json`. It does not require
+LTX weights or Seed-VC, but needs the cached LTX tokenizer, storyboard environment
+and image weights, and cast portraits. Saved voice samples and the converter are
+checked when you later Resume into video rendering. `--plan-only` and
+`--storyboards-only` are mutually exclusive.
+
+For a small first run, [this single-line scene](docs/examples/storyboard-smoke.json)
+uses Ava's saved portrait and explicit native voices:
+
+```sh
+.venv/bin/python python/video.py render \
+  --screenplay-file docs/examples/storyboard-smoke.json \
+  --storyboards-only --seed 83
+```
+
+Inspect the stills in the emitted output directory. Continue that same plan into
+HQ video with `python/video.py resume --output-dir /path/to/output-directory`.
+Add `--storyboards-only` to Resume to finish or inspect only the image stage.
+This debug stop is optional; ordinary production continues automatically.
+
 `--shooting-script /path/to/shooting-script.json` imports a finalized storyboard
 plan and the bound images from the same directory, revalidating them against the
 current script, cast, and format. Keep `storyboard-plan.json`, `storyboards.json`, and its image files
@@ -478,6 +513,13 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 -m unittest discover -s python -v
+```
+
+The mocked storyboard pipeline test can also run independently, without GPU
+inference, model downloads, or paid API calls:
+
+```sh
+PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline -v
 ```
 
 The suites cover editing, casting, setup, planning, cancellation, media validation,

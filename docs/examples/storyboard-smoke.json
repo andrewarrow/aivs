@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "cast": [{"role": "AVA", "character": "ava"}],
+  "voice_mode": "native",
+  "render_format": "landscape",
+  "script": "INT. QUIET ROOM - DAY\n\nAva sits at a table and looks up.\n\nAVA: \"Ready.\"\n"
+}

@@ -18,6 +18,7 @@ import sys
 import time
 
 from quality_backend import ROOT, CACHE
+from download_space import preflight_downloads, valid_cached_file
 
 MODEL_REPO = "black-forest-labs/FLUX.2-klein-4B"
 MODEL_REVISION = "e7b7dc27f91deacad38e78976d1f2b499d76a294"
@@ -51,26 +52,8 @@ def configuration() -> dict:
 def _snapshot() -> Path:
     path = CACHE / "hub" / ("models--" + MODEL_REPO.replace("/", "--")) / "snapshots" / MODEL_REVISION
     for filename in _FILES:
-        asset = path / filename
-        if not asset.is_file() or asset.stat().st_size == 0:
+        if not valid_cached_file(path / filename):
             raise InvalidStoryboardCache(filename)
-        if filename.endswith(".safetensors"):
-            try:
-                with asset.open("rb") as stream:
-                    length = int.from_bytes(stream.read(8), "little")
-                    if not 1 <= length <= 100 * 1024**2:
-                        raise ValueError("Invalid weights header")
-                    header = json.loads(stream.read(length))
-                end = max(value["data_offsets"][1] for name, value in header.items() if name != "__metadata__")
-                if 8 + length + end != asset.stat().st_size:
-                    raise ValueError("Truncated weights")
-            except (ValueError, KeyError, TypeError, UnicodeError) as exc:
-                raise InvalidStoryboardCache(filename) from exc
-        elif filename.endswith(".json"):
-            try:
-                json.loads(asset.read_text(encoding="utf-8"))
-            except (ValueError, UnicodeError) as exc:
-                raise InvalidStoryboardCache(filename) from exc
     return path
 
 
@@ -122,15 +105,29 @@ def check() -> dict:
     return _worker("check")
 
 
+def download_spec():
+    return {"repo_id": MODEL_REPO, "revision": MODEL_REVISION,
+            "allow_patterns": ["transformer/*", "vae/*", "text_encoder/*", "tokenizer/*",
+                               "model_index.json", "LICENSE.md"],
+            "required_files": list(_FILES)}
+
+
+def preflight_download():
+    from dotenv import dotenv_values
+    token = os.environ.get("HF_TOKEN") or dotenv_values(ROOT / ".env").get("HF_API") or False
+    return preflight_downloads([download_spec()], cache_dir=CACHE / "hub", output_dir=ROOT / "outputs",
+                               token=token)
+
+
 def download() -> None:
     """Explicit setup only; download pinned files, without loading a model."""
     from huggingface_hub import hf_hub_download, snapshot_download
     from dotenv import dotenv_values
 
     token = os.environ.get("HF_TOKEN") or dotenv_values(ROOT / ".env").get("HF_API") or False
+    preflight_download()
     snapshot_download(MODEL_REPO, revision=MODEL_REVISION, cache_dir=str(CACHE / "hub"),
-                      allow_patterns=["transformer/*", "vae/*", "text_encoder/*", "tokenizer/*",
-                                      "model_index.json", "LICENSE.md"], token=token, max_workers=3)
+                      allow_patterns=download_spec()["allow_patterns"], token=token, max_workers=3)
     # Hugging Face trusts existing blobs. A retry must also replace a blob
     # damaged by a previously interrupted copy or a full disk.
     for _ in range(len(_FILES)):

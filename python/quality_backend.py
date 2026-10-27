@@ -6,10 +6,11 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import time
 import wave
+
+from download_space import preflight_downloads, valid_cached_file
 
 ROOT = Path(os.environ.get("AIVS_WORKSPACE", Path(__file__).resolve().parents[1])).resolve()
 CACHE = ROOT / ".cache" / "huggingface"
@@ -54,6 +55,32 @@ def profile_config(profile="distilled"):
     }
 
 
+def download_spec(profile="distilled"):
+    profile_config(profile)
+    weights = HQ_WEIGHTS if profile == "hq" else WEIGHTS
+    return {"repo_id": MODEL_REPO, "revision": MODEL_REVISION,
+            "allow_patterns": [*weights, "*.json", "chat_template.jinja", "LICENSE", "README.md"],
+            "required_files": [*weights, *CONFIGS]}
+
+
+def _download_token():
+    from dotenv import dotenv_values
+    token = os.environ.get("HF_TOKEN") or dotenv_values(ROOT / ".env").get("HF_API")
+    if not isinstance(token, str) or not token.strip():
+        raise RuntimeError("Create .env with HF_API set to your Hugging Face access token.")
+    return token.strip()
+
+
+def preflight_download(profile="distilled", *, include_storyboard=False):
+    """Check the combined setup footprint before the first model is downloaded."""
+    specs = [download_spec(profile)]
+    if include_storyboard:
+        import storyboard_backend
+        specs.append(storyboard_backend.download_spec())
+    return preflight_downloads(specs, cache_dir=CACHE / "hub", output_dir=ROOT / "outputs",
+                               token=_download_token())
+
+
 def model_path(download=False, progress_class=None, *, profile="distilled"):
     from huggingface_hub import snapshot_download
 
@@ -64,24 +91,13 @@ def model_path(download=False, progress_class=None, *, profile="distilled"):
             return model_path(profile=profile)
         except (OSError, RuntimeError):
             pass
-        required_gib = 70 if profile == "hq" else 50
-        if profile == "hq":
-            try:
-                model_path()
-                required_gib = 22
-            except (OSError, RuntimeError):
-                pass
-        if shutil.disk_usage(ROOT).free < required_gib * 1024**3:
-            raise RuntimeError(f"Model setup needs about {required_gib} GiB free for the selected weights and download workspace.")
-        from dotenv import dotenv_values
-        token = dotenv_values(ROOT / ".env").get("HF_API")
-        if not token or not token.strip():
-            raise RuntimeError("Create .env with HF_API set to your Hugging Face access token.")
+        preflight_download(profile)
+        token = _download_token()
     else:
         token = False
     snapshot = Path(snapshot_download(
         MODEL_REPO, revision=MODEL_REVISION, cache_dir=str(CACHE / "hub"),
-        allow_patterns=[*weights, "*.json", "chat_template.jinja", "LICENSE", "README.md"],
+        allow_patterns=download_spec(profile)["allow_patterns"],
         local_files_only=not download, token=token, max_workers=3, tqdm_class=progress_class,
     ))
     if download:
@@ -111,25 +127,9 @@ def validate_snapshot(snapshot, *, profile="distilled"):
         raise RuntimeError("Model cache is incomplete: " + ", ".join(missing) + hint)
     # Check safetensors lengths without reading all weights on every startup. This
     # rejects truncated blobs, including a partial snapshot returned offline.
-    for name in weights:
-        path = snapshot / name
-        try:
-            with path.open("rb") as reader:
-                header_size = int.from_bytes(reader.read(8), "little")
-                if not 1 <= header_size <= 100 * 1024**2:
-                    raise ValueError("Invalid header length")
-                metadata = json.loads(reader.read(header_size))
-            end = max(entry["data_offsets"][1] for key, entry in metadata.items() if key != "__metadata__")
-            if 8 + header_size + end != path.stat().st_size:
-                raise ValueError("Invalid file length")
-        except (ValueError, KeyError, TypeError, UnicodeError) as exc:
-            raise InvalidCache(name) from exc
-    for name in CONFIGS:
-        if name.endswith(".json"):
-            try:
-                json.loads((snapshot / name).read_text())
-            except (ValueError, UnicodeError) as exc:
-                raise InvalidCache(name) from exc
+    for name in (*weights, *CONFIGS):
+        if not valid_cached_file(snapshot / name):
+            raise InvalidCache(name)
 
 
 def doctor():

@@ -64,15 +64,22 @@ _CHARACTER_ASSET_CAPABILITIES = {
 
 
 def _asset_capabilities(source: dict) -> dict:
-    if source.get("storyboard_policy") != STORYBOARD_POLICY:
-        return _CHARACTER_ASSET_CAPABILITIES
-    return dict(_CHARACTER_ASSET_CAPABILITIES, new_scene_opening=(
-        "Every segment starts on its own locally generated storyboard image, including reverse angles "
-        "and later segments in the same scene. Saved portraits guide actor identity during still-image "
-        "generation; they are not themselves video opening frames. The storyboard_prompt establishes "
-        "the intended opening composition, costumes, prop ownership and story state. Animate that "
-        "composition directly; do not begin on a portrait or inherit the prior video's final frame."
-    ), limits="Generated storyboards and voice conversion do not guarantee identity, continuity or lip sync.")
+    capabilities = dict(_CHARACTER_ASSET_CAPABILITIES)
+    if source.get("storyboard_policy") == STORYBOARD_POLICY:
+        capabilities.update(new_scene_opening=(
+            "Every segment starts on its own locally generated storyboard image, including reverse angles "
+            "and later segments in the same scene. Saved portraits guide actor identity during still-image "
+            "generation; they are not themselves video opening frames. The storyboard_prompt establishes "
+            "the intended opening composition, costumes, prop ownership and story state. Animate that "
+            "composition directly; do not begin on a portrait or inherit the prior video's final frame."
+        ), limits="Generated storyboards and voice conversion do not guarantee identity, continuity or lip sync.")
+    if source.get("voice_mode", "saved") == "native":
+        capabilities.update(voice=(
+            "Keep the model's native generated soundtrack for every shot. No saved-voice conversion runs. "
+            "Use the saved performers' voice descriptions as prompt guidance; voice samples will not condition audio. "
+            "Do not split source dialogue or overlap to accommodate a voice converter."
+        ), limits="Portraits, generated storyboards and native voice descriptions do not guarantee identity, continuity or lip sync.")
+    return capabilities
 
 
 def _json(value: object) -> str:
@@ -123,6 +130,9 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
     storyboard_policy = request.get("storyboard_policy")
     if storyboard_policy not in (None, STORYBOARD_POLICY):
         raise ValueError("Unrecognized storyboard planning policy.")
+    voice_mode = request.get("voice_mode", "saved")
+    if voice_mode not in ("saved", "native"):
+        raise ValueError("Voice mode must be saved or native.")
     script = request.get("script")
     if not isinstance(script, str) or not script.strip() or len(script) > _MAX_SCRIPT or "\x00" in script:
         raise ValueError(f"Screenplay must be nonempty text of at most {_MAX_SCRIPT} characters.")
@@ -238,10 +248,15 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
         identity["character_conditioning"] = conditioning
     if storyboard_policy is not None:
         identity["storyboard_policy"] = storyboard_policy
+    # Saved voices are the historical default; explicit selection preserves
+    # existing source hashes. Native voices are a different production input.
+    if voice_mode == "native":
+        identity["voice_mode"] = voice_mode
     digest = hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
     return {"version": 1, "script": script, "cast": bindings, "characters": relevant,
             **({"character_conditioning": conditioning} if conditioning is not None else {}),
             **({"storyboard_policy": storyboard_policy} if storyboard_policy is not None else {}),
+            **({"voice_mode": voice_mode} if voice_mode == "native" else {}),
             **({"render_format": render_format} if render_format is not None else {}),
             "beats": beats, "fade_out": fade_out, "source_sha256": digest}
 
@@ -461,6 +476,8 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
         image_direction = ("Animate the supplied storyboard first frame, preserving its cast, composition, "
                            "costumes and prop state as the action begins. " if storyboard_enabled else "")
         prompt = (image_direction + action_prompt + " " + framing + cast + speech_direction
+                  + ("Keep each speaker's described voice consistent throughout this shot. "
+                     if source.get("voice_mode") == "native" and required else "")
                   + "No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
@@ -1297,6 +1314,7 @@ def _source_request(source: dict) -> dict:
         **({"character_conditioning": source["character_conditioning"]}
            if "character_conditioning" in source else {}),
         **({"storyboard_policy": source["storyboard_policy"]} if "storyboard_policy" in source else {}),
+        **({"voice_mode": source["voice_mode"]} if "voice_mode" in source else {}),
         **({"render_format": source["render_format"]["name"]} if "render_format" in source else {}),
     }
 

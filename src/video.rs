@@ -734,7 +734,7 @@ impl VideoWorkspace {
                             ui.add(egui::ProgressBar::new(self.fraction.unwrap_or(0.0))
                                 .animate(self.fraction.is_none())
                                 .desired_width(width));
-                            ui.label("First video setup downloads about 62 GB and needs 70 GiB free; storyboard models need additional space. Cached files are reused. Keep AIVS open.");
+                            ui.label("Setup checks combined space for video and storyboard models before downloading weights. Cached files are reused. Keep AIVS open.");
                         }
                         self.error_ui(ui);
                         self.activity_ui(ui, 120.0);
