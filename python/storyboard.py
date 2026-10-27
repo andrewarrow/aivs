@@ -11,13 +11,15 @@ import characters
 import storyboard_backend
 from render_formats import resolve_format
 
-POLICY = "per-shot-first-frame-v1"
+POLICY = "per-shot-first-frame-v2"
 
 
 def planned_shot_sha256(plan: dict, shot: dict) -> str:
     """Bind a frame to the exact planned source, coverage, prompt and timing."""
     content = {"source_sha256": plan.get("source_sha256"),
                "planning_policy": plan.get("planning_policy"), "shot": shot}
+    if "world" in plan:
+        content["world"] = plan["world"]
     return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False,
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -94,18 +96,109 @@ def _fingerprint(value: dict) -> str:
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def reference_specs(plan):
+    world = plan["world"]
+    specs = []
+    for item in world["environments"]:
+        specs.append({"id": f"environment:{item['scene_id']}", "kind": "environment", "definition": item,
+                      "prompt": "One clean cinematic environment plate. No people, body parts, loose garments or movable story props. " + item["reference_prompt"]})
+    for item in world["props"]:
+        specs.append({"id": "prop:" + item["id"], "kind": "prop", "definition": item,
+                      "prompt": "Single physical prop reference photograph on a neutral surface, no people or text. Show one instance of each specified component and its actual connections. " + item["reference_prompt"]})
+    for item in world["characters"]:
+        if item["morphology"]:
+            specs.append({"id": "body:" + item["role"], "kind": "body", "definition": item,
+                          "prompt": "Full body neutral character reference photograph. Preserve the attached performer's identity, plausible body proportions and neutral fitted clothing. " + item["reference_prompt"]})
+    return specs
+
+
+def prepare_references(plan, boards, run_dir):
+    """Resolve exact physical references, including the actors' identity inputs."""
+    expected = {s["id"]: _fingerprint(s) for s in reference_specs(plan)}
+    rows = boards.get("references")
+    if (not isinstance(rows, list) or {r.get("id") for r in rows} != set(expected)
+            or len(rows) != len(expected)):
+        raise ValueError("Storyboard references do not cover the canonical physical world.")
+    for row in rows:
+        if row.get("definition_sha256") != expected[row["id"]]:
+            raise ValueError("Storyboard reference belongs to a different physical definition.")
+        resolve_image(row, run_dir)
+        for portrait in row.get("generation", {}).get("inputs", []):
+            resolve_image({"image": portrait}, run_dir)
+    return rows
+
+
+def generate_references(plan, profiles, run_dir, seed, *, repair_ids=(), round_number=0, on_activity=None):
+    """One checkpointed library shared by every frame; review it in pass two."""
+    run_dir = Path(run_dir)
+    activity = on_activity or (lambda message: None)
+    path = run_dir / "storyboard-references.json"
+    saved = json.loads(path.read_text()) if path.is_file() else {"version": 1, "references": []}
+    if saved.get("source_sha256", plan["source_sha256"]) != plan["source_sha256"]:
+        raise ValueError("Saved physical references belong to another source.")
+    entries = {row["id"]: row for row in saved["references"]}
+    by_role = {c["role"]: c["character"] for c in plan["source"]["cast"]}
+    by_id = {p["id"]: p for p in profiles}
+    for index, spec in enumerate(reference_specs(plan)):
+        inputs = []
+        if spec["kind"] == "body":
+            profile = by_id[by_role[spec["definition"]["role"]]]
+            inputs = [{"file": f"characters/{profile['id']}/{profile['image']['file']}", "sha256": profile["image"]["sha256"]}]
+        attempt = round_number if spec["id"] in repair_ids else 0
+        old = entries.get(spec["id"])
+        if attempt == 0 and old and old.get("definition_sha256") == _fingerprint(spec):
+            resolve_image(old, run_dir)
+            continue
+        request = {"policy": POLICY, "spec": spec, "inputs": inputs,
+                   "seed": (seed + 100003 + index + attempt * 1009) % (2**31),
+                   "backend": storyboard_backend.configuration()}
+        identity = _fingerprint(request)
+        folder = run_dir / "storyboards" / "references" / identity
+        folder.mkdir(parents=True, exist_ok=True)
+        checkpoint = folder / "reference.json"
+        if checkpoint.is_file():
+            entry = json.loads(checkpoint.read_text())
+            if entry.get("generation_sha256") != identity:
+                raise ValueError("Reference checkpoint inputs changed.")
+            resolve_image(entry, run_dir)
+        else:
+            activity("Generating reusable " + spec["id"] + " reference")
+            storyboard_backend.check()
+            _save(folder / "request.json", request)
+            target = folder / "reference.png"
+            if target.exists():
+                import time
+                target.rename(folder / f"interrupted-{time.time_ns()}.png")
+            runtime = storyboard_backend.generate(spec["prompt"], [resolve_image({"image": r}, run_dir) for r in inputs],
+                                                   target, request["seed"], width=quality_backend.WIDTH,
+                                                   height=quality_backend.HEIGHT, on_activity=activity)
+            info = quality_backend.prepare_source_image(target)
+            if info["source_sha256"] != runtime["sha256"]:
+                raise ValueError("Physical reference changed during generation.")
+            entry = {"id": spec["id"], "kind": spec["kind"], "definition_sha256": _fingerprint(spec),
+                     "generation_sha256": identity, "generation": request,
+                     "image": {"file": target.relative_to(run_dir).as_posix(), "sha256": info["source_sha256"],
+                               "width": info["width"], "height": info["height"]}}
+            _save(checkpoint, entry)
+        entries[spec["id"]] = entry
+        _save(path, {"version": 1, "source_sha256": plan["source_sha256"], "references": list(entries.values())})
+    result = {"version": 1, "source_sha256": plan["source_sha256"],
+              "references": [entries[s["id"]] for s in reference_specs(plan)]}
+    _save(path, result)
+    return result
+
+
 def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, height):
     by_id = {profile["id"]: profile for profile in profiles}
     cast = {item["role"]: item["character"] for item in plan.get("source", {}).get("cast", [])}
-    visible = shot.get("visible_roles", list(cast))
-    references, instructions, seen = [], [], set()
+    visible = shot.get("opening_visible_roles")
+    if not isinstance(visible, list):
+        raise ValueError(f"Storyboard shot {number} needs explicit opening_visible_roles.")
+    references, instructions = [], []
     for role in visible:
         if role not in cast or cast[role] not in by_id:
             raise ValueError(f"Storyboard shot {number} has an unknown visible performer: {role}")
         profile = by_id[cast[role]]
-        if profile["id"] in seen:
-            continue
-        seen.add(profile["id"])
         asset = profile.get("image")
         if not asset:
             raise ValueError(f"{profile['name']} needs a saved portrait for storyboard generation.")
@@ -113,11 +206,23 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
                      "sha256": asset["sha256"], "role": role, "character": profile["id"]}
         resolve_image({"image": reference}, run_dir)
         references.append(reference)
-        instructions.append(f"Image {len(references)}: {role}'s facial identity; preserve this exact performer.")
-    if prior is not None:
-        references.append(dict(prior["image"], purpose="same-scene-setting"))
-        instructions.append(f"Image {len(references)}: same-scene set and light. "
-                            "The composition below determines current costume, props and camera.")
+        instructions.append(f"Image {len(references)}: {role}'s face identity.")
+    library_path = Path(run_dir) / "storyboard-references.json"
+    if library_path.is_file():
+        library = json.loads(library_path.read_text())
+        needed = {f"environment:{shot['scene_id']}"} | {"body:" + role for role in visible}
+        visible_props = {p["id"] for p in shot["continuity"]["opening"]["props"] if p["visibility"] == "visible"}
+        needed |= {"prop:" + p["id"] for p in plan["world"]["props"] if shot["scene_id"] in p["scene_ids"]
+                   and {p["id"], *(c["id"] for c in p["components"])} & visible_props}
+        for reference in library["references"]:
+            if reference["id"] not in needed:
+                continue
+            resolve_image(reference, run_dir)
+            references.append(dict(reference["image"], purpose=reference["kind"], reference_id=reference["id"]))
+            instructions.append(f"Image {len(references)}: {reference['id']} physical reference.")
+    # A previous frame is a scene full of people and mutable story facts, not a
+    # clean environment plate. Never feed it back as an authoritative set image.
+    # Independent frames share the director's scene description instead.
     composition = shot.get("storyboard_prompt")
     if not isinstance(composition, str) or not composition.strip():
         # Compatibility for hand-authored plans: start state describes a still,
@@ -127,11 +232,17 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
             raise ValueError(f"Shot {number} needs a storyboard_prompt or a static start_state.")
         if shot.get("scene"):
             composition = str(shot["scene"]) + ". " + composition
+    presence = ("Visible people at time zero: " + (", ".join(visible) if visible else "none; an empty composition") + ". ")
+    absent = [role for role in cast if role not in visible]
+    if absent:
+        presence += "Do not depict " + ", ".join(absent) + "; their entrances occur later. "
     prompt = ("One cinematic live-action starting frame, a single photograph, no panels or lettering. "
-              "Only depict people present in this opening composition; reference portraits do not require "
-              "offscreen people to appear. " + " ".join(instructions) + "\n" + composition.strip() +
+              + presence + "Use references for named identities and physical features; apply the current physical state, visibility and ownership below. "
+              + " ".join(instructions) + "\n" + composition.strip() +
               "\nKeep faces, active hands and essential props clear of frame edges.")
     return {"policy": POLICY, "source_sha256": plan.get("source_sha256"), "shot": number,
+            "opening_state": shot.get("continuity", {}).get("opening"),
+            "world_sha256": _fingerprint(plan.get("world", {})),
             "prompt": prompt, "references": references, "seed": (seed + number - 1) % (2**31),
             "width": width, "height": height, "backend": storyboard_backend.configuration()}
 
@@ -219,6 +330,7 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *, on_a
             raise ValueError("Storyboard plan and saved character snapshots do not match.")
     if type(seed) is not int:
         raise ValueError("Storyboard seed must be an integer.")
+    references = generate_references(plan, profiles, run_dir, seed, on_activity=activity)
     spec = resolve_format(plan["render_format"]) if "render_format" in plan else None
     width, height = ((spec["model_width"], spec["model_height"]) if spec else
                      (quality_backend.WIDTH, quality_backend.HEIGHT))
@@ -237,12 +349,10 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *, on_a
         manifest = {"version": 1, "policy": POLICY, "source_sha256": plan.get("source_sha256"),
                     "seed": seed, "status": "generating", "shots": []}
         _save(path, manifest)
-    previous_by_scene = {}
+    manifest["references"] = references["references"]
     backend = None
     for number, shot in enumerate(plan["shots"], 1):
-        scene = shot.get("scene_id")
-        prior = previous_by_scene.get(scene) if scene is not None else None
-        request = _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, height)
+        request = _frame_request(plan, shot, profiles, run_dir, None, number, seed, width, height)
         request_hash = _fingerprint(request)
         fingerprint = planned_shot_sha256(plan, shot)
         if number <= len(manifest["shots"]):
@@ -253,7 +363,6 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *, on_a
                     or entry.get("generation") != request):
                 raise ValueError(f"Saved storyboard {number} has different inputs; start a new run.")
             resolve_image(entry, run_dir)
-            previous_by_scene[scene] = entry
             activity(f"Reusing saved storyboard {number}/{len(plan['shots'])}")
             continue
         if backend is None:
@@ -292,7 +401,6 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *, on_a
                                "sha256": info["source_sha256"], "width": width, "height": height}}
             manifest["shots"].append(entry)
             _save(path, manifest)
-            previous_by_scene[scene] = entry
         except BaseException as exc:
             manifest.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
                             error=str(exc) or type(exc).__name__)

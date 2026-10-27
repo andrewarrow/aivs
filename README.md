@@ -106,17 +106,26 @@ composed storyboard image instead of inheriting the previous shot's final frame.
 
 Preproduction has two Codex passes, with local image generation between them:
 
-1. Design independent shots and their starting images: cast, location, costume,
-   props, camera composition, ordered story beats, and exact dialogue.
-2. Inspect the generated images and write motion, acting, camera, and sound
-   directions that animate those compositions.
+1. Design independent shots, canonical physical entities, and source-backed
+   opening/ending state contracts. Physical identity, costume, ownership and
+   audience visibility are separate facts.
+2. Inspect the actual image sequence and its physical references, compare
+   neighboring frames and source transitions, then write motion directions.
+   Longer sequences use overlapping batches with saved observations.
 
-FLUX.2 Klein generates one still per shot using the snapshotted cast portraits
-as reference images. It runs through MFLUX in its own Python environment and
+FLUX.2 Klein generates reusable empty environment plates, important prop
+references and full-body references for known morphology, then one still per
+shot. Only characters visible at time zero supply actor references. Earlier
+character-filled shots are never used as setting references. It runs through
+MFLUX in its own Python environment and
 exits before LTX loads. Python validates source coverage, exact dialogue, timing,
 and prompt limits. The final shooting script and storyboard checksums are bound
-together; a draft without its completed image-based motion pass is not a render
-input. The former five-pass planning and repair loop is removed.
+together with an accepted `storyboard-review.json`. The renderer and Resume
+reject missing, failed, incompatible or stale acceptance, even when image files
+exist. A concrete defect uses the existing two automatic repair rounds, including
+state-contract corrections, reference dependencies and reinspection of pixels.
+Exhausted repairs save `storyboard-diagnostic.json` and stop before video.
+The former five-pass planner remains removed.
 
 Both Codex passes share a **10-minute planning budget** by default. Change
 **File → Settings… → Planning budget** to allow 1–30 minutes, or use
@@ -430,6 +439,9 @@ Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
 | `screenplay.txt`, `screenplay-request.json` | Original script and cast bindings. |
 | `storyboard-plan.json`, `storyboard-plan.txt` | First-pass shot design and still-image prompts. |
 | `storyboards.json`, `storyboards/` | Verified first-frame images, prompts, reference hashes, and generation provenance. |
+| `storyboard-references.json`, `storyboards/references/` | Canonical environment, prop/component and body reference images. |
+| `storyboard-review.json` | Expected/observed opening states, source evidence, physical/sequence violations, uncertainty, and exact acceptance binding. |
+| `storyboard-repairs.json`, `storyboard-review-before-repair-*.json`, `storyboard-diagnostic.json` | Bounded repair journal, preserved findings, and terminal rejection diagnostics. |
 | `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |
 | `planning-budget.json` | Cumulative Codex planning time, allowance, and last pass. |
 | `preproduction.json` | Shared-cache identity and reuse provenance. |
@@ -491,10 +503,10 @@ This debug stop is optional; ordinary production continues automatically.
 
 `--shooting-script /path/to/shooting-script.json` imports a finalized storyboard
 plan and the bound images from the same directory, revalidating them against the
-current script, cast, and format. Keep `storyboard-plan.json`, `storyboards.json`, and its image files
-beside that plan. Completed legacy plans remain resumable in their original runs;
-start a new run to adopt the current workflow. Changing format requires new
-preproduction.
+current script, cast, and format. Keep the storyboard plan, manifest, acceptance
+report, reference library and image files beside that plan. Older storyboard
+approvals without the current continuity contract are incompatible; preserve
+their artifacts and start a fresh run. Changing format requires new preproduction.
 
 To resume an existing run from the command line:
 
@@ -523,7 +535,7 @@ The mocked storyboard pipeline test can also run independently, without GPU
 inference, model downloads, or paid API calls:
 
 ```sh
-PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline -v
+PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline test_storyboard_continuity -v
 ```
 
 The suites cover editing, casting, setup, planning, cancellation, media validation,

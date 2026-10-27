@@ -19,6 +19,7 @@ import tempfile
 import time
 
 from render_formats import framing_prompt, resolve_format
+import storyboard_continuity as continuity
 
 _HEADING = re.compile(r"^(?:INT\.?\s*/\s*EXT\.?|EXT\.?\s*/\s*INT\.?|I\s*/\s*E\.?|INT\.?|EXT\.?|EST\.?)\s+", re.I)
 _TRANSITION = re.compile(r"^(?:FADE\s+(?:IN|OUT)\.?|CUT TO:|DISSOLVE TO:|SMASH CUT TO:|THE END\.?|[A-Z][A-Z\s]+ TO:)\s*$", re.I)
@@ -31,7 +32,7 @@ _MAX_TEXT = 4_000
 _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
                    "image", "scene_image", "voice_sample")
 DEFAULT_PLANNING_BUDGET_SECONDS = 600
-PLANNER_VERSION = "storyboard-two-pass-v1"
+PLANNER_VERSION = "storyboard-two-pass-v2"
 _PLANNING_POLICY = "single-render-v1"
 STORYBOARD_POLICY = "per-shot-first-frame-v1"
 
@@ -494,13 +495,17 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             raise ValueError(f"Shot {index} needs at least {minimum} seconds for its dialogue and action.")
         shots.append({"seconds": seconds, "beat_ids": ids, "prompt_template": template,
                       "prompt": prompt, "start_state": start, "end_state": end,
-                      **({"storyboard_prompt": storyboard_prompt} if storyboard_enabled else {}),
+                      **({"storyboard_prompt": storyboard_prompt,
+                          "opening_visible_roles": item.get("opening_visible_roles"),
+                          "continuity": item.get("continuity")} if storyboard_enabled else {}),
                       **({"visible_roles": visible_roles} if cast_identity is not None else {}),
                       **production,
                       "continue_previous": continue_previous, "scene": scene_markers[0],
                       "scene_id": scene_ids[0]})
     if expected != len(source_beats) + 1:
         raise ValueError("Shooting script omits source beats.")
+    if storyboard_enabled:
+        continuity.validate_plan({"source": source, "shots": shots, "world": candidate.get("world")})
     for beat_id, parts in action_parts.items():
         if any(part["part"] != index or part["parts"] != len(parts)
                for index, part in enumerate(parts, 1)):
@@ -512,6 +517,7 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
     return {"version": 1, "source_sha256": source["source_sha256"],
             **({"planning_policy": planning_policy} if planning_policy is not None else {}),
             **({"storyboard_policy": STORYBOARD_POLICY} if storyboard_enabled else {}),
+            **({"world": candidate["world"]} if storyboard_enabled else {}),
             **({"planner_version": candidate["planner_version"]} if "planner_version" in candidate else {}),
             **({"planning_stage": candidate["planning_stage"]} if "planning_stage" in candidate else {}),
             **({"cast_identity": cast_identity} if cast_identity is not None else {}),
@@ -659,16 +665,33 @@ def _director_schema() -> dict:
     schema = json.loads(json.dumps(_SCHEMA))
     schema["properties"]["storyboard_policy"] = {"type": "string", "enum": [STORYBOARD_POLICY]}
     schema["required"].append("storyboard_policy")
+    schema["properties"]["world"] = continuity.WORLD_SCHEMA
+    schema["required"].append("world")
     shot = schema["properties"]["shots"]["items"]
     shot["properties"]["storyboard_prompt"] = {"type": "string"}
     shot["required"].append("storyboard_prompt")
+    shot["properties"]["opening_visible_roles"] = continuity.STRINGS
+    shot["properties"]["continuity"] = continuity.CONTRACT_SCHEMA
+    shot["required"].extend(["opening_visible_roles", "continuity"])
     return schema
+
+
+_motion_shot = _MOTION_SCHEMA["properties"]["shots"]["items"]
+_motion_shot["properties"].update({
+    "continuity_review": continuity.REVIEW_SCHEMA,
+    "world_repair": {"type": "array", "maxItems": 1, "items": continuity.WORLD_SCHEMA},
+    "plan_repair": {"type": "array", "maxItems": 1,
+                    "items": _director_schema()["properties"]["shots"]["items"]},
+})
+_motion_shot["required"].extend(["continuity_review", "plan_repair", "world_repair"])
 
 
 def _plan_fingerprint(plan: dict) -> str:
     # Approval belongs to these exact compiled prompts, durations and continuity
     # states, not merely to the unchanged screenplay.
     content = {key: plan.get(key) for key in ("source_sha256", "cast_identity", "shots", "fade_out")}
+    if "world" in plan:
+        content["world"] = plan["world"]
     for key in ("planning_policy", "storyboard_policy", "planner_version"):
         if key in plan:
             content[key] = plan[key]
@@ -1322,10 +1345,10 @@ def _source_request(source: dict) -> dict:
 def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executable=None,
                              token_counter=None, on_activity=None, on_activity_delta=None,
                              planning_budget_seconds=DEFAULT_PLANNING_BUDGET_SECONDS) -> dict:
-    """Pass 2: see actual stills and write motion, expression, sound and dialogue.
+    """Pass two: overlapping sequence review and image-grounded motion direction.
 
-    Compositions, source coverage, timings and shot order are frozen. The caller
-    rebinds its storyboard manifest to the finalized motion prompts afterward.
+    Pixel observations and reference reviews are checkpointed together. A changed
+    upstream image invalidates later review context, never unrelated image bytes.
     """
     import storyboard
 
@@ -1337,117 +1360,180 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
     if plan.get("planner_version") != PLANNER_VERSION or plan.get("planning_stage") != "storyboard":
         raise ValueError("The motion pass requires a saved storyboard director plan.")
     bindings = storyboard.prepare(plan, boards, run_dir)
-    image_paths = [storyboard.resolve_image(binding, run_dir) for binding in bindings]
-    board_images = [{"shot": binding["shot"], "image": binding["image"]} for binding in bindings]
-    board_sha256 = hashlib.sha256(_json(board_images).encode("utf-8")).hexdigest()
+    storyboard.prepare_references(plan, boards, run_dir)
+    board_images = [{"shot": b["shot"], "image": b["image"]} for b in bindings]
+    board_sha256 = hashlib.sha256(_json(board_images).encode()).hexdigest()
     director_sha256 = _plan_fingerprint(plan)
     activity = on_activity or (lambda message: None)
     _budget(run_dir, source["source_sha256"], planning_budget_seconds)
     final_path = run_dir / "shooting-script.json"
     if final_path.is_file():
         final = load_shooting_script(final_path, request, profiles, token_counter=token_counter)
-        motion = final.get("motion_plan", {})
-        if (motion.get("director_plan_sha256") != director_sha256
-                or motion.get("storyboard_sha256") != board_sha256):
-            raise ValueError("Saved motion direction does not match these storyboard images.")
-        activity("Reusing saved image-based motion direction.")
+        continuity.require_accepted(final, boards, run_dir)
         return final
 
     cache_path = run_dir / "motion-directions.json"
     saved = _read_object(cache_path) if cache_path.is_file() else {}
-    cached_rows = saved.get("shots", {}) if saved.get("source_sha256") == source["source_sha256"] else {}
-    if not isinstance(cached_rows, dict):
-        raise ValueError("Saved motion directions must contain shot records.")
-    input_hashes = {
-        number: hashlib.sha256(_json({"source_sha256": source["source_sha256"],
-                                     "shot": shot, "image": board_images[number - 1]}).encode()).hexdigest()
-        for number, shot in enumerate(plan["shots"], 1)
-    }
-    rows_by_number = {}
-    for number, fingerprint in input_hashes.items():
-        cached = cached_rows.get(str(number))
-        if isinstance(cached, dict) and cached.get("input_sha256") == fingerprint:
-            rows_by_number[number] = cached.get("row")
-    pending = [number for number in input_hashes if number not in rows_by_number]
+    cached = saved.get("shots", {}) if saved.get("policy") == continuity.POLICY else {}
+    if not isinstance(cached, dict):
+        raise ValueError("Saved sequence directions must contain shot records.")
+    # Include all earlier pixels (persistent world history) and the next frame
+    # (the outgoing cut), not just the individual shot's image.
+    hashes = {n: continuity.digest({"policy": continuity.POLICY, "plan": plan,
+                                   "images": board_images[:min(n + 1, len(board_images))],
+                                   "references": boards.get("references", [])})
+              for n in range(1, len(plan["shots"]) + 1)}
+    rows = {n: cached[str(n)]["row"] for n in hashes
+            if isinstance(cached.get(str(n)), dict) and cached[str(n)].get("input_sha256") == hashes[n]}
+    pending = [n for n in hashes if n not in rows]
+    direction = Path(__file__).with_name("shooting-script-review-instructions.txt").read_text()
+    portrait_images = [{"id": "portrait:" + c["role"],
+                        "file": f"characters/{c['character']}/{next(p for p in profiles if p['id'] == c['character'])['image']['file']}",
+                        "sha256": next(p for p in profiles if p['id'] == c['character'])["image"]["sha256"]}
+                       for c in source["cast"]]
+    references = [{"id": r["id"], **r["image"]} for r in boards.get("references", [])]
+    reference_ids = {r["id"] for r in references}
 
-    def compile_rows(rows):
-        shots = []
-        observations = []
-        issues = []
-        for number, (shot, row) in enumerate(zip(plan["shots"], rows), 1):
-            if not isinstance(row, dict) or type(row.get("shot")) is not int or row["shot"] != number:
-                raise ValueError(f"Motion shot {number} is missing or out of order.")
-            template = _bounded(row.get("prompt_template"), f"Shot {number} motion prompt", 1600)
-            observations.append(_bounded(row.get("image_observations"), f"Shot {number} image observations", 1200))
-            issue = row.get("blocking_issue")
-            if not isinstance(issue, str) or len(issue) > 1200 or "\x00" in issue:
-                raise ValueError(f"Shot {number} blocking_issue must be text of at most 1200 characters, empty when none.")
-            composition = row.get("storyboard_prompt")
-            if not isinstance(composition, str) or len(composition) > 1200 or "\x00" in composition:
-                raise ValueError(f"Shot {number} repair composition must be text of at most 1200 characters.")
-            if issue.strip():
-                composition = _bounded(composition, f"Shot {number} replacement storyboard composition", 1200)
-                if "{{" in composition or "}}" in composition:
-                    raise ValueError("Replacement storyboards must be static compositions without dialogue placeholders.")
-                issues.append({"shot": number, "issue": issue.strip(), "image_observations": observations[-1],
-                               "storyboard_prompt": composition})
-            elif composition.strip():
-                raise ValueError("Motion direction must leave storyboard_prompt empty unless its frame needs repair.")
-            # A blocked image cannot yet have valid motion directions. Preserve
-            # its director template until its replacement is inspected.
-            revised = dict(shot, prompt_template=shot["prompt_template"] if issue.strip() else template)
-            revised.pop("prompt", None)
-            shots.append(revised)
-        candidate_plan = dict(plan, shots=shots, planning_stage="final")
-        final = validate_shooting_script(candidate_plan, request, profiles, token_counter=token_counter)
-        final["motion_plan"] = {
-            "version": 1, "director_plan_sha256": director_sha256,
-            "storyboard_sha256": board_sha256, "images": board_images,
-            "image_observations": observations, "plan_sha256": _plan_fingerprint(final),
-        }
-        return final, issues
-
-    def validate(candidate):
-        rows = candidate.get("shots") if isinstance(candidate, dict) else None
-        if not isinstance(rows, list) or len(rows) != len(pending):
-            raise ValueError("The motion pass must return exactly the requested storyboard shots.")
-        combined = dict(rows_by_number)
-        for number, row in zip(pending, rows):
-            if not isinstance(row, dict) or type(row.get("shot")) is not int or row["shot"] != number:
-                raise ValueError("Motion direction must return the requested shot numbers in order.")
-            combined[number] = row
-        ordered = [combined[number] for number in input_hashes]
-        final, issues = compile_rows(ordered)
-        _atomic_json(cache_path, {"version": 1, "source_sha256": source["source_sha256"], "shots": {
-            str(number): {"input_sha256": input_hashes[number], "row": row}
-            for number, row in combined.items()
-        }})
-        if issues:
-            raise StoryboardRepairRequired(issues)
-        return final
-
-    if pending:
-        direction = Path(__file__).with_name("shooting-script-review-instructions.txt").read_text(encoding="utf-8")
-        instruction = direction.rstrip() + "\n\n" + _json({
-            "plan": plan, "shots_to_direct": pending,
-            "images_in_shot_order": [board_images[number - 1] for number in pending],
+    def checkpoint():
+        _atomic_json(cache_path, {"version": 2, "policy": continuity.POLICY, "shots": {
+            str(n): {"input_sha256": hashes[n], "row": row} for n, row in rows.items()}})
+        reviewed = list(continuity.review_sequence(plan, rows).values())
+        _atomic_json(run_dir / "storyboard-review.json", {
+            "version": 1, "policy": continuity.POLICY, "binding": continuity.report_binding(plan, boards),
+            "status": "reviewing", "shots": reviewed,
         })
-        activity(f"Planning 2/2: directing motion from {len(pending)} storyboard images.")
-        final = _planning_call(
-            "motion", instruction, _MOTION_SCHEMA, validate,
+
+    for offset in range(0, len(pending), continuity.BATCH_SIZE):
+        numbers = pending[offset:offset + continuity.BATCH_SIZE]
+        context = sorted({k for n in numbers for k in (n - 1, n, n + 1) if k in hashes})
+        images = [board_images[n - 1] for n in context]
+        attachments = [storyboard.resolve_image({"image": r}, run_dir) for r in portrait_images + references]
+        attachments += [storyboard.resolve_image(b, run_dir) for b in images]
+        instruction = direction.rstrip() + "\n\n" + _json({
+            "plan": plan, "shots_to_direct": numbers, "images_in_shot_order": images,
+            "reference_images_first": portrait_images + references,
+            "persistent_review_state": list(continuity.review_sequence(plan, {n: row for n, row in rows.items() if n < numbers[0]}).values()),
+            "reference_ids_to_review": sorted(reference_ids),
+        })
+
+        def validate_batch(candidate):
+            supplied = candidate.get("shots") if isinstance(candidate, dict) else None
+            if not isinstance(supplied, list) or len(supplied) != len(numbers):
+                raise ValueError("Return exactly the requested sequence shot numbers.")
+            for n, row in zip(numbers, supplied):
+                if not isinstance(row, dict) or type(row.get("shot")) is not int or row["shot"] != n:
+                    raise ValueError("Sequence shot numbers are missing or out of order.")
+                _bounded(row.get("image_observations"), "Pixel observations", 1200)
+                _bounded(row.get("prompt_template"), "Motion direction", 1600)
+                review = continuity.review_shot(plan, n, row)
+                fixes = row.get("plan_repair")
+                if not isinstance(fixes, list) or len(fixes) > 1:
+                    raise ValueError("A plan repair must be empty or contain the complete replacement shot.")
+                if review["failure_kind"] == "plan" and not fixes:
+                    raise ValueError("A structurally wrong plan requires a concrete replacement state/coverage contract.")
+                if fixes and review["failure_kind"] != "plan":
+                    raise ValueError("Only a diagnosed plan failure may revise a shot contract.")
+                world_fixes = row.get("world_repair")
+                if not isinstance(world_fixes, list) or len(world_fixes) > 1:
+                    raise ValueError("Canonical world repair must be empty or one complete replacement world.")
+                if world_fixes and review["failure_kind"] != "plan":
+                    raise ValueError("Only a diagnosed plan failure may revise canonical physical definitions.")
+                findings = review["reference_findings"]
+                if not isinstance(findings, list) or {f.get("id") for f in findings} != reference_ids or len(findings) != len(reference_ids):
+                    raise ValueError("Inspect every supplied canonical reference image exactly once per shot review.")
+                for finding in findings:
+                    _bounded(finding.get("evidence"), "Reference pixel evidence", 1200)
+                    if (finding.get("decision") not in ("pass", "repair-required", "uncertain")
+                            or type(finding.get("confidence")) not in (int, float)
+                            or not math.isfinite(finding["confidence"]) or not 0 <= finding["confidence"] <= 1):
+                        raise ValueError("Reference findings need a valid decision and confidence.")
+                if review["decision"] != "pass" or any(f["decision"] != "pass" or f["confidence"] < .8 for f in findings):
+                    _bounded(row.get("storyboard_prompt"), "Concrete corrected opening composition", 1200)
+                elif row.get("storyboard_prompt") or fixes or world_fixes:
+                    raise ValueError("Accepted frames must not include repairs.")
+                blocking = row.get("blocking_issue")
+                composition = row.get("storyboard_prompt")
+                if (not isinstance(blocking, str) or len(blocking) > 1200 or "\x00" in blocking
+                        or not isinstance(composition, str) or len(composition) > 1200 or "\x00" in composition
+                        or "{{" in composition or "}}" in composition):
+                    raise ValueError("Storyboard repairs need bounded static compositions and concrete blocking text.")
+            # Keep the existing targeted correction for invalid animation text
+            # inside this call, rather than failing after publishing the review.
+            trial = [dict(s) for s in plan["shots"]]
+            for n, row in zip(numbers, supplied):
+                if continuity.review_shot(plan, n, row)["decision"] == "pass":
+                    trial[n - 1]["prompt_template"] = row["prompt_template"]
+                    trial[n - 1].pop("prompt", None)
+            validate_shooting_script(dict(plan, shots=trial), request, profiles, token_counter=token_counter)
+            combined = dict(rows)
+            combined.update(zip(numbers, supplied))
+            for n, report in continuity.review_sequence(plan, combined).items():
+                if n in numbers and report["decision"] != "pass" and not combined[n]["storyboard_prompt"].strip():
+                    raise ValueError(f"Shot {n} sequence contradiction requires a corrected composition: {report['violations']}")
+            if len(combined) == len(plan["shots"]) and any(r["plan_repair"] or r["world_repair"] for r in combined.values()):
+                corrected = [dict(s) for s in plan["shots"]]
+                world = plan["world"]
+                replacements = []
+                for n, row in combined.items():
+                    if row["plan_repair"]:
+                        corrected[n - 1] = dict(row["plan_repair"][0])
+                        corrected[n - 1].pop("prompt", None)
+                    replacements.extend(row["world_repair"])
+                if replacements:
+                    world = replacements[0]
+                    if any(w != world for w in replacements):
+                        raise ValueError("Canonical world corrections conflict across shots.")
+                validate_shooting_script(dict(plan, shots=corrected, world=world), request, profiles,
+                                         token_counter=token_counter)
+            return supplied
+
+        activity(f"Planning 2/2: reviewing sequence and directing shots {numbers[0]}–{numbers[-1]}.")
+        result = _planning_call(
+            "motion", instruction, _MOTION_SCHEMA, validate_batch,
             source_sha256=source["source_sha256"], run_dir=run_dir, executable=executable,
-            image_paths=[image_paths[number - 1] for number in pending], planning_budget_seconds=planning_budget_seconds,
+            image_paths=attachments, planning_budget_seconds=planning_budget_seconds,
             on_activity=on_activity, on_activity_delta=on_activity_delta,
         )
-    else:
-        final = validate({"shots": []})
+        rows.update(zip(numbers, result))
+        checkpoint()
+
+    sequence_reviews = continuity.review_sequence(plan, rows)
+    reviews, issues, shots = [], [], []
+    for n, shot in enumerate(plan["shots"], 1):
+        row = rows[n]
+        review = sequence_reviews[n]
+        reviews.append(review)
+        bad_refs = [f["id"] for f in review["reference_findings"] if f["decision"] != "pass" or f["confidence"] < .8]
+        if review["decision"] != "pass" or bad_refs:
+            detail = "; ".join(review["violations"]) or row.get("blocking_issue") or review["evidence"]
+            issues.append({"shot": n, "issue": detail, "storyboard_prompt": row["storyboard_prompt"],
+                           "image_observations": row["image_observations"],
+                           "failure_kind": review["failure_kind"], "plan_repair": row["plan_repair"],
+                           "world_repair": row["world_repair"], "reference_ids": bad_refs})
+        revised = dict(shot, prompt_template=row["prompt_template"])
+        revised.pop("prompt", None)
+        shots.append(revised)
+    report = {"version": 1, "policy": continuity.POLICY,
+              "binding": continuity.report_binding(plan, boards),
+              "status": "repair-required" if issues else "reviewed", "shots": reviews}
+    _atomic_json(run_dir / "storyboard-review.json", report)
+    if issues:
+        raise StoryboardRepairRequired(issues)
+    final = validate_shooting_script(dict(plan, shots=shots, planning_stage="final"), request, profiles,
+                                     token_counter=token_counter)
+    final["motion_plan"] = {"version": 1, "director_plan_sha256": director_sha256,
+                            "storyboard_sha256": board_sha256, "images": board_images,
+                            "image_observations": [rows[n]["image_observations"] for n in hashes],
+                            "plan_sha256": _plan_fingerprint(final)}
     activity("Checking final motion prompts against essential source actions and reveals.")
-    final = _ensure_source_fidelity(
-        final, run_dir=run_dir, token_counter=token_counter, executable=executable,
-        planning_budget_seconds=planning_budget_seconds, on_activity=on_activity,
-        on_activity_delta=on_activity_delta,
-    )
+    final = _ensure_source_fidelity(final, run_dir=run_dir, token_counter=token_counter, executable=executable,
+                                    planning_budget_seconds=planning_budget_seconds, on_activity=on_activity,
+                                    on_activity_delta=on_activity_delta)
+    # Publish acceptance before the final script. A crash can only leave an
+    # unfinalized reviewed plan, never a final plan whose review was skipped.
+    report.update(status="accepted", binding=continuity.report_binding(final, boards))
+    _atomic_json(run_dir / "storyboard-review.json", report)
+    boards["continuity_acceptance"] = {"policy": continuity.POLICY, "review_sha256": continuity.digest(report)}
+    _atomic_json(run_dir / "storyboards.json", boards)
     save_shooting_script(final, run_dir)
     return final
-
-

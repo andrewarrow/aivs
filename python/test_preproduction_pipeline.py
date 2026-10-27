@@ -23,6 +23,7 @@ import shooting_script
 import shot_renderer
 import storyboard
 import storyboard_backend
+import storyboard_continuity as continuity
 import video
 
 
@@ -69,8 +70,37 @@ class PreproductionPipelineTests(unittest.TestCase):
                           ["Mara stands beside a key on the table.", "Mara holds the key above an open box."],
                           ["Mara holds the lifted key.", "The key rests inside the box."]), 1)],
         }
+        self.director["world"] = {
+            "characters": [{"role": "MARA", "morphology": [{"key": "stature", "value": "average"}],
+                            "reference_prompt": "Mara with average proportions in neutral clothing."}],
+            "props": [{"id": "key", "scene_ids": [1], "type": "key", "shape": "notched", "size": "palm-sized",
+                       "color": "brass", "features": [], "components": [], "relationships": [],
+                       "reference_prompt": "One brass notched key on a neutral surface."}],
+            "environments": [{"scene_id": 1, "reference_prompt": "Empty room with table and open box, no loose props."}],
+        }
+        physical = [{"key": k, "value": self.director["world"]["props"][0][k]}
+                    for k in ("type", "shape", "size", "color")]
+        def state(owner, support):
+            return {"characters": [{"role": "MARA", "presence": "visible", "location": "room", "posture": "standing",
+                                    "costume": "unknown", "appearance": [], "morphology": [{"key": "stature", "value": "average"}],
+                                    "visibility": []}],
+                    "props": [{"id": "key", "owner": owner, "support": support, "location": "room", "state": "intact",
+                               "visibility": "visible", "physical": physical}],
+                    "reveals": [], "relationships": []}
+        states = [state("none", "table"), state("MARA", "hand"), state("none", "box")]
+        for n, shot in enumerate(self.director["shots"]):
+            shot["opening_visible_roles"] = ["MARA"]
+            transitions = [{"entity": "prop:key", "field": field, "before": states[n]["props"][0][field],
+                            "after": states[n + 1]["props"][0][field], "timing": "during-shot", "mode": "on-screen",
+                            "beat_ids": [2 * n + 1], "quote": self.actions[n], "motivation": "Visible source action.",
+                            "physical_transformation": False, "story_time": "continuous"}
+                           for field in ("owner", "support")]
+            shot["continuity"] = {"opening": states[n], "ending": states[n + 1], "transitions": transitions}
         self.codex_calls, self.image_calls, self.render_calls = [], [], []
+        self.image_inputs = []
+        self.motion_inputs = []
         self.interrupt_image = self.interrupt_render = False
+        self.review_transform = None
         self.mock(quality_backend, "ROOT", self.root)
         self.mock(video, "ROOT", self.root)
         self.mock(shooting_script, "_executable", return_value="mock-codex")
@@ -112,19 +142,33 @@ class PreproductionPipelineTests(unittest.TestCase):
         else:
             self.codex_calls.append("motion")
             data = json.loads(instruction.rsplit("\n\n", 1)[1])
-            self.assertEqual(len(options["image_paths"]), len(data["shots_to_direct"]))
+            self.motion_inputs.append(data)
+            self.assertEqual(len(options["image_paths"]), len(data["images_in_shot_order"]) + len(data["reference_images_first"]))
             self.assertTrue(all(Path(path).is_file() for path in options["image_paths"]))
             result = {"shots": [{"shot": number, "prompt_template": "A steady camera. " + self.templates[number - 1],
                                  "image_observations": "The performer, key and destination are visible.",
-                                 "blocking_issue": "", "storyboard_prompt": ""}
+                                 "blocking_issue": "", "storyboard_prompt": "", "plan_repair": [], "world_repair": [],
+                                 "continuity_review": {
+                                     "observed_opening_state": copy.deepcopy(data["plan"]["shots"][number - 1]["continuity"]["opening"]),
+                                     "source_transition_evidence": [], "violations": [],
+                                     "evidence": "Same performer and brass key, held or supported as expected.",
+                                     "neighbor_comparison": "The previous action explains the key's current support.",
+                                     "confidence": .95, "decision": "pass", "failure_kind": "none",
+                                     "reference_findings": [{"id": rid, "decision": "pass", "confidence": .95,
+                                                              "evidence": "Reference pixels match the canonical definition."}
+                                                             for rid in data["reference_ids_to_review"]]}}
                                 for number in data["shots_to_direct"]]}
+        if self.codex_calls[-1] == "motion" and self.review_transform is not None:
+            self.review_transform(result, data)
         raw = json.dumps(result)
         options["response_path"].write_text(raw, encoding="utf-8")
         return raw
 
     def generate_image(self, prompt, references, output, seed, *, width, height, on_activity):
-        self.image_calls.append(Path(output).name)
-        self.assertTrue(references, "Every storyboard should receive the saved portrait")
+        self.image_inputs.append({"output": str(output), "references": list(references), "prompt": prompt})
+        if Path(output).name.endswith("partial.png"):
+            self.image_calls.append(Path(output).name)
+            self.assertTrue(references, "Every storyboard should receive the saved portrait and canonical references")
         if self.interrupt_image and Path(output).name == "002.partial.png":
             self.interrupt_image = False
             raise KeyboardInterrupt()
@@ -201,15 +245,11 @@ class PreproductionPipelineTests(unittest.TestCase):
             self.prepare()
         self.assertEqual(len(self.render_calls), 2)
 
-        # Exercise the renderer guard independently with an explicitly supplied
-        # replacement binding; an old first-frame take must never be reused.
+        # The renderer itself must reject new bytes without sequence acceptance.
         self.render_calls.clear()
-        result = self.render(plan, changed, resume=True)
-        self.assertEqual([call["shot"] for call in self.render_calls], ["001"])
-        self.assertEqual(self.render_calls[0]["image"], replacement)
-        self.assertFalse(result["shots"][0].get("reused", False))
-        self.assertTrue(result["shots"][1]["reused"])
-        self.assertTrue((self.run / "takes/001/001/video.mp4").is_file())
+        with self.assertRaisesRegex(ValueError, "acceptance"):
+            self.render(plan, changed, resume=True)
+        self.assertEqual(self.render_calls, [])
 
     def test_storyboards_only_produces_final_motion_plan_without_video_setup_or_inference(self):
         events = self.mock(video, "emit")
@@ -229,6 +269,136 @@ class PreproductionPipelineTests(unittest.TestCase):
         self.assertTrue(any(call.args[0] == "storyboards_ready" for call in events.call_args_list))
         model.assert_not_called()
         renderer.assert_not_called()
+
+    def fail_first_frame(self, result, data):
+        record = next(r for r in result["shots"] if r["shot"] == 1)
+        record["continuity_review"]["observed_opening_state"]["props"][0]["physical"][0]["value"] = "smartphone"
+        record.update(blocking_issue="The canonical key has become a smartphone in the actual pixels.",
+                      storyboard_prompt="Medium shot of Mara beside one canonical brass key on the table.")
+
+    def test_repair_is_reinspected_and_only_failed_frame_is_regenerated(self):
+        def once(result, data):
+            if self.codex_calls.count("motion") == 1:
+                self.fail_first_frame(result, data)
+        self.review_transform = once
+        plan, boards = self.prepare()
+        self.assertEqual(self.codex_calls.count("motion"), 2)
+        self.assertEqual(self.image_calls, ["001.partial.png", "002.partial.png", "frame.partial.png"])
+        self.assertEqual(boards["shots"][1]["image"]["file"], "storyboards/002.png")
+        self.assertIn("repairs/01/001", boards["shots"][0]["image"]["file"])
+        self.assertTrue((self.run / "storyboard-review-before-repair-1.json").is_file())
+        report = continuity.require_accepted(plan, boards, self.run)
+        self.assertEqual(report["binding"]["images"][0]["image"]["sha256"], boards["shots"][0]["image"]["sha256"])
+        self.assertEqual(self.render_calls, [])
+
+    def test_source_wrong_plan_contract_is_corrected_before_frame_regeneration(self):
+        correct = copy.deepcopy(self.director["shots"][0])
+        wrong = self.director["shots"][0]
+        wrong["continuity"]["opening"] = copy.deepcopy(wrong["continuity"]["ending"])
+        wrong["continuity"]["transitions"] = []
+        wrong["start_state"] = "Mara already holds the lifted key."
+        wrong["storyboard_prompt"] = "Mara already holds the key, the lifting action completed."
+        def once(result, data):
+            if self.codex_calls.count("motion") == 1:
+                record = result["shots"][0]
+                record["continuity_review"].update(failure_kind="plan", decision="repair-required",
+                    violations=["The planned opening has completed the source lifting action prematurely."])
+                record.update(plan_repair=[correct], blocking_issue="Restore the pre-lift state contract.",
+                              storyboard_prompt=correct["storyboard_prompt"])
+        self.review_transform = once
+        plan, boards = self.prepare()
+        self.assertEqual(plan["shots"][0]["continuity"]["opening"]["props"][0]["owner"], "none")
+        self.assertEqual(self.codex_calls.count("motion"), 2)
+        self.assertIn("repairs/01/001", boards["shots"][0]["image"]["file"])
+        continuity.require_accepted(plan, boards, self.run)
+
+    def test_two_failed_repair_rounds_stop_before_video_inference_and_resume(self):
+        self.review_transform = self.fail_first_frame
+        with self.assertRaisesRegex(RuntimeError, "2 automatic repair rounds"):
+            self.prepare()
+        self.assertEqual(self.codex_calls.count("motion"), 3)
+        repairs = json.loads((self.run / "storyboard-repairs.json").read_text())
+        self.assertEqual(len(repairs["rounds"]), 2)
+        diagnostic = json.loads((self.run / "storyboard-diagnostic.json").read_text())
+        self.assertFalse(diagnostic["video_inference_allowed"])
+        self.assertFalse((self.run / "shooting-script.json").exists())
+        before = len(self.image_calls)
+        with self.assertRaisesRegex(RuntimeError, "2 automatic repair rounds"):
+            self.prepare()
+        self.assertEqual(len(self.image_calls), before)
+        self.assertEqual(self.render_calls, [])
+
+    def test_failed_review_cannot_be_reused_even_when_image_files_and_hashes_match(self):
+        plan, boards = self.prepare()
+        report = json.loads((self.run / "storyboard-review.json").read_text())
+        report["status"] = "rejected"
+        self.write(self.run / "storyboard-review.json", report)
+        with self.assertRaisesRegex(ValueError, "acceptance"):
+            self.prepare()
+        with self.assertRaisesRegex(ValueError, "acceptance"):
+            self.render(plan, boards, resume=True)
+        self.assertEqual(self.render_calls, [])
+
+    def test_changed_cast_snapshot_or_contract_invalidates_acceptance(self):
+        plan, boards = self.prepare()
+        changed = copy.deepcopy(plan)
+        changed["shots"][0]["storyboard_prompt"] += " Revised camera."
+        with self.assertRaises(ValueError):
+            self.render(changed, boards, resume=True)
+        profile_path = self.run / "characters/mara/character.json"
+        profile = json.loads(profile_path.read_text())
+        profile["description"] = "A different physical performer description"
+        self.write(profile_path, profile)
+        with self.assertRaisesRegex(ValueError, "cast snapshot"):
+            self.render(plan, boards, resume=True)
+        self.assertEqual(self.render_calls, [])
+
+    def test_verified_compatible_assets_can_be_copied_from_cache(self):
+        plan, boards = self.prepare()
+        destination = self.root / "cached-run"
+        destination.mkdir()
+        characters.snapshot_characters(self.profiles, destination, root=self.root)
+        copied_plan, copied_boards = preproduction.prepare(
+            self.request, self.profiles, destination, 999, token_counter=lambda text: len(text.split()))
+        self.assertEqual(copied_plan, plan)
+        self.assertEqual(copied_boards, boards)
+        continuity.require_accepted(copied_plan, copied_boards, destination)
+        self.assertEqual(self.codex_calls, ["director", "motion", "fidelity"])
+
+    def test_prop_body_and_empty_set_references_are_reused_without_prior_storyboard_pixels(self):
+        plan, boards = self.prepare()
+        self.assertEqual({r["id"] for r in boards["references"]}, {"prop:key", "body:MARA", "environment:1"})
+        prop = next(r for r in boards["references"] if r["id"] == "prop:key")
+        for entry in boards["shots"]:
+            references = entry["generation"]["references"]
+            self.assertTrue(any(r.get("reference_id") == "prop:key" and r["sha256"] == prop["image"]["sha256"] for r in references))
+            self.assertFalse(any(r.get("purpose") == "same-scene-setting" for r in references))
+        count = len(self.image_inputs)
+        self.prepare()
+        self.assertEqual(len(self.image_inputs), count)
+
+    def test_overlapping_batches_carry_persistent_observations(self):
+        with patch.object(continuity, "BATCH_SIZE", 1):
+            plan, boards = self.prepare()
+        self.assertEqual([data["shots_to_direct"] for data in self.motion_inputs], [[1], [2]])
+        self.assertEqual([b["shot"] for b in self.motion_inputs[1]["images_in_shot_order"]], [1, 2])
+        self.assertEqual(self.motion_inputs[1]["persistent_review_state"][0]["shot"], 1)
+        continuity.require_accepted(plan, boards, self.run)
+
+    def test_defective_prop_reference_repairs_all_dependent_frames_and_reinspects(self):
+        def once(result, data):
+            if self.codex_calls.count("motion") != 1:
+                return
+            for record in result["shots"]:
+                finding = next(f for f in record["continuity_review"]["reference_findings"] if f["id"] == "prop:key")
+                finding.update(decision="repair-required", evidence="Reference is a different physical object.")
+                record.update(blocking_issue="Canonical reference pixels depict the wrong object.",
+                              storyboard_prompt=data["plan"]["shots"][record["shot"] - 1]["storyboard_prompt"])
+        self.review_transform = once
+        plan, boards = self.prepare()
+        self.assertEqual(self.codex_calls.count("motion"), 2)
+        self.assertTrue(all("repairs/01/" in e["image"]["file"] for e in boards["shots"]))
+        continuity.require_accepted(plan, boards, self.run)
 
     def test_missing_portrait_stops_before_codex_or_model_checks(self):
         profile_path = self.root / "characters/mara/character.json"

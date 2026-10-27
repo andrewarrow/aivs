@@ -175,6 +175,10 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
         return False
     if saved.get("character_assets") != report.get("character_assets"):
         return False
+    if report.get("storyboard_acceptance") is not None and (
+            saved.get("storyboard_acceptance") != report["storyboard_acceptance"]
+            or saved.get("prompt") != report["prompt"]):
+        return False
     if (saved.get("planned_storyboard", saved.get("storyboard")) !=
             report.get("planned_storyboard", report.get("storyboard"))):
         return False
@@ -343,8 +347,9 @@ def render_shooting_script(
         raise ValueError("seed must be an integer.")
     if type(review_enabled) is not bool:
         raise ValueError("review_enabled must be a boolean.")
-    if (plan.get("storyboard_policy") == "per-shot-first-frame-v1"
-            or plan.get("source", {}).get("storyboard_policy") == "per-shot-first-frame-v1") and storyboard is None:
+    requires_storyboard_review = (plan.get("storyboard_policy") == "per-shot-first-frame-v1"
+                                 or plan.get("source", {}).get("storyboard_policy") == "per-shot-first-frame-v1")
+    if requires_storyboard_review and storyboard is None:
         raise ValueError("This plan requires its validated first-frame storyboard for every shot.")
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -364,6 +369,9 @@ def render_shooting_script(
     activity = on_activity or (lambda message: None)
     storyboard_bindings = (storyboard_assets.prepare(plan, storyboard, output.parent)
                            if storyboard is not None else None)
+    if requires_storyboard_review:
+        import storyboard_continuity
+        storyboard_continuity.require_accepted(plan, storyboard, output.parent)
     asset_bindings = None
     if character_profiles is not None:
         import character_conditioning
@@ -448,6 +456,7 @@ def render_shooting_script(
                     "storyboard_prompt": shot.get("storyboard_prompt")}
                    if frame_binding is not None else {}),
                 **({"render_config": render_config} if render_config is not None else {}),
+                **({"storyboard_acceptance": storyboard["continuity_acceptance"]} if requires_storyboard_review else {}),
             }
             if automatic_review:
                 report.update(planned_prompt=planned_shot["prompt"],
@@ -464,6 +473,8 @@ def render_shooting_script(
                 binding = candidate.get("storyboard")
                 if binding is None or binding == frame_binding:
                     return
+                if requires_storyboard_review:
+                    raise ValueError("Saved adapted storyboard has no acceptance for this exact sequence.")
                 execution_shot = dict(planned_shot, prompt=candidate["prompt"],
                                       prompt_template=candidate["prompt_template"],
                                       storyboard_prompt=candidate["storyboard_prompt"])
@@ -614,7 +625,7 @@ def render_shooting_script(
                     save_shot(index, report)
                     if use_previous_frame and not reuse_native:
                         _extract_last_frame(previous_clip, source_frame, image_file)
-                    if (automatic_review and _uses_previous_frame(shots, index) and visual_reviews and not reuse_native
+                    if (automatic_review and storyboard_bindings is None and _uses_previous_frame(shots, index) and visual_reviews and not reuse_native
                             and not (pending and report.get("adaptation", {}).get("status") in ("applied", "unchanged"))):
                         emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Reconciling observed continuity")
                         try:
@@ -680,6 +691,8 @@ def render_shooting_script(
                         elif (not use_previous_frame and "file" in portrait
                                 and _file_sha256(image_file) != portrait["sha256"]):
                             raise ValueError("Saved character portrait changed before rendering.")
+                        if requires_storyboard_review:
+                            storyboard_continuity.require_accepted(plan, storyboard, output.parent)
                         report["runtime"] = renderer(
                             shot["prompt"], report["seed"], frames, native_clip,
                             on_progress=shot_progress,
