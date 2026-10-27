@@ -88,6 +88,73 @@ pub fn prop_binding(ctx: &mut Context<'_>, spec: &Value, image: &Value) -> Resul
         json!({"policy":"prop-structure-v2","reviewer_sha256":ctx.implementation("prop_reference.py")?,"definition_sha256":ctx.digest(spec)?,"image_sha256":image["sha256"]}),
     )
 }
+fn shared_prop_design(spec: &Value) -> Option<Value> {
+    let definition = &spec["definition"];
+    if spec["kind"] != "prop"
+        || !definition["components"].as_array()?.is_empty()
+        || !definition["relationships"].as_array()?.is_empty()
+    {
+        return None;
+    }
+    // Instance identity and scene membership do not change a simple prop's design.
+    // Retain the reference prompt so visually distinct variants cannot share pixels.
+    let mut design = definition.clone();
+    let fields = design.as_object_mut()?;
+    fields.remove("id");
+    fields.remove("scene_ids");
+    Some(design)
+}
+
+fn reuse_prop_reference(
+    ctx: &mut Context<'_>,
+    spec: &Value,
+    specs: &[Value],
+    entries: &[Value],
+    repair_ids: &[Value],
+    run: &Path,
+) -> Result<Option<Value>> {
+    let Some(design) = shared_prop_design(spec) else {
+        return Ok(None);
+    };
+    for entry in entries {
+        if entry["id"] == spec["id"] || repair_ids.contains(&entry["id"]) {
+            continue;
+        }
+        let Some(original) = specs.iter().find(|s| s["id"] == entry["id"]) else {
+            continue;
+        };
+        if shared_prop_design(original).as_ref() != Some(&design)
+            || entry["definition_sha256"] != ctx.digest(original)?
+            || entry["generation"]["backend"] != backend(ctx)?
+        {
+            continue;
+        }
+        let binding = prop_binding(ctx, original, &entry["image"])?;
+        if prop_reference::require_accepted(original, entry, &binding).is_err() {
+            continue;
+        }
+        storyboard::resolve_image(entry, run)?;
+        let mut shared = entry.clone();
+        shared["id"] = spec["id"].clone();
+        shared["definition_sha256"] = json!(ctx.digest(spec)?);
+        shared["generation"] = json!({"policy":"shared-prop-design-v1","backend":backend(ctx)?,
+            "shared_from":entry["id"],"source_generation_sha256":entry["generation_sha256"],
+            "spec":spec,"inputs":[]});
+        shared["generation_sha256"] = json!(ctx.digest(&shared["generation"])?);
+        shared["prop_validation"]["observation"]["parts"][0]["id"] =
+            spec["definition"]["id"].clone();
+        shared["prop_validation"]["binding"] = prop_binding(ctx, spec, &shared["image"])?;
+        prop_reference::require_accepted(spec, &shared, &shared["prop_validation"]["binding"])?;
+        ctx.activity(format!(
+            "Reusing accepted {} reference for {} (identical design)",
+            text(entry, "id")?,
+            text(spec, "id")?
+        ))?;
+        return Ok(Some(shared));
+    }
+    Ok(None)
+}
+
 pub fn contracts(ctx: &mut Context<'_>, plan: &Value, boards: &Value) -> Result<Value> {
     let specs = if plan.get("world").is_some() {
         storyboard::reference_specs(plan)?
@@ -109,14 +176,7 @@ pub fn contracts(ctx: &mut Context<'_>, plan: &Value, boards: &Value) -> Result<
         {
             bindings[id] = prop_binding(ctx, spec, &entry["image"])?;
         }
-        let definition = &spec["definition"];
-        if rows(&definition["components"])?.is_empty()
-            && rows(&definition["relationships"])?.is_empty()
-        {
-            let mut design = json!({});
-            for key in ["type", "shape", "size", "color", "features"] {
-                design[key] = definition[key].clone();
-            }
+        if let Some(design) = shared_prop_design(spec) {
             shared[id] = json!(ctx.digest(&design)?);
         }
     }
@@ -368,6 +428,19 @@ pub fn generate_references(
         let mut approved = false;
         let count = if spec["kind"] == "prop" { 3 } else { 1 };
         let mut folder = PathBuf::new();
+        if attempt == 0
+            && let Some(shared) = reuse_prop_reference(
+                ctx,
+                spec,
+                rows(&specs)?,
+                &entries,
+                rows(repair_ids)?,
+                run,
+            )?
+        {
+            last = shared;
+            approved = true;
+        }
         if attempt == 0
             && let Some(set) = spec.get("assigned_set")
         {

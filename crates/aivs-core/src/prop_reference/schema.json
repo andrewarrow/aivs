@@ -33,10 +33,12 @@
             "type": "integer"
           },
           "matches_definition": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The observable design matches the definition, with no visible contradiction. Hidden incidental features are not certified; describe them as unobservable in evidence."
           },
           "clearly_visible": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Enough of this part is visible to identify and count it. Every surface, internal joint and support need not be exposed. A wholly hidden part cannot pass."
           },
           "evidence": {
             "type": "string"
@@ -87,7 +89,8 @@
       "type": "boolean"
     },
     "connections_clear": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "Declared relationships and source-essential functional connections are supported by visible evidence. Incidental joints or supports hidden by intended containment do not require proof."
     },
     "extra_parts": {
       "type": "array",

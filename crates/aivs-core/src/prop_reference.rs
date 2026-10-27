@@ -90,7 +90,7 @@ pub fn generation_prompt(definition: &Value, replacement: Option<&Value>) -> Res
             )
         })?;
     Ok(format!(
-        "One product photograph on a plain gray surface, evenly lit and fully in frame. {} Show one coherent resting assembly, each component present exactly once, and every connection traceable end to end. Each part rests on the surface or its assembled support. Single view.",
+        "One product photograph on a plain gray surface, evenly lit and fully in frame. {} Show one coherent resting assembly, each declared component identifiable exactly once, and declared or essential functional connections traceable end to end. Each part rests on the surface or its assembled support. Preserve specified packing and containment; incidental internal joints and supports may be naturally occluded. Single view.",
         description.trim()
     ))
 }
