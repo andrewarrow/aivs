@@ -12,6 +12,7 @@ mod macos;
 mod screenplay;
 mod sets;
 mod settings;
+mod startup;
 mod video;
 
 use std::{error::Error, num::NonZeroU32, sync::Arc, time::Instant};
@@ -45,6 +46,7 @@ impl DesktopWindow {
     fn new(
         event_loop: &ActiveEventLoop,
         proxy: EventLoopProxy<DesktopEvent>,
+        startup: &mut startup::Timer,
     ) -> Result<Self, Box<dyn Error>> {
         let context = egui::Context::default();
         context.set_request_repaint_callback(move |request| {
@@ -52,6 +54,7 @@ impl DesktopWindow {
                 let _ = proxy.send_event(DesktopEvent::Repaint(deadline));
             }
         });
+        startup.mark("egui context initialized");
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
@@ -61,13 +64,16 @@ impl DesktopWindow {
                     .with_visible(false),
             )?,
         );
+        startup.mark("native window created (hidden)");
         let mut painter = pollster::block_on(Painter::new(
             context.clone(),
             egui_wgpu::WgpuConfiguration::default(),
             false,
             egui_wgpu::RendererOptions::default(),
         ));
+        startup.mark("GPU painter created");
         pollster::block_on(painter.set_window(ViewportId::ROOT, Some(window.clone())))?;
+        startup.mark("GPU window surface configured");
         let input = egui_winit::State::new(
             context.clone(),
             ViewportId::ROOT,
@@ -77,6 +83,7 @@ impl DesktopWindow {
             painter.max_texture_side(),
         );
         window.request_redraw();
+        startup.mark("input initialized; first redraw requested");
         Ok(Self {
             context,
             window,
@@ -86,10 +93,18 @@ impl DesktopWindow {
         })
     }
 
-    fn redraw(&mut self, event_loop: &ActiveEventLoop, app: &mut app::App) -> Option<Instant> {
+    fn redraw(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        app: &mut app::App,
+        startup: &mut startup::Timer,
+    ) -> Option<Instant> {
         let size = self.window.inner_size();
         if size.width == 0 || size.height == 0 {
             return None;
+        }
+        if self.first_frame {
+            startup.mark("first redraw received");
         }
         egui_winit::update_viewport_info(
             self.input
@@ -104,6 +119,9 @@ impl DesktopWindow {
         let output = self
             .context
             .run_ui(self.input.take_egui_input(&self.window), |ui| app.ui(ui));
+        if self.first_frame {
+            startup.mark("first UI layout completed");
+        }
         self.input.handle_platform_output_with_event_loop(
             &self.window,
             event_loop,
@@ -112,6 +130,9 @@ impl DesktopWindow {
         let primitives = self
             .context
             .tessellate(output.shapes, output.pixels_per_point);
+        if self.first_frame {
+            startup.mark("first frame platform output and tessellation completed");
+        }
         self.painter.paint_and_update_textures(
             ViewportId::ROOT,
             output.pixels_per_point,
@@ -126,8 +147,10 @@ impl DesktopWindow {
             &self.window,
         );
         if self.first_frame {
+            startup.mark("first frame painted");
             self.window.set_visible(true);
             self.window.focus_window();
+            startup.mark("window shown and focus requested");
             self.first_frame = false;
         }
         if app.quit {
@@ -147,6 +170,7 @@ impl Drop for DesktopWindow {
 }
 
 struct Desktop {
+    startup: startup::Timer,
     app: app::App,
     window: Option<DesktopWindow>,
     next_repaint: Option<Instant>,
@@ -169,11 +193,13 @@ impl Desktop {
 impl ApplicationHandler<DesktopEvent> for Desktop {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
+            self.startup.mark("event loop resumed");
             #[cfg(target_os = "macos")]
             if self.native_menu.is_none() {
                 self.native_menu = macos::NativeMenu::install(self.proxy.clone());
+                self.startup.mark("native menu installed");
             }
-            match DesktopWindow::new(event_loop, self.proxy.clone()) {
+            match DesktopWindow::new(event_loop, self.proxy.clone(), &mut self.startup) {
                 Ok(window) => self.window = Some(window),
                 Err(error) => {
                     self.startup_error = Some(error);
@@ -226,7 +252,7 @@ impl ApplicationHandler<DesktopEvent> for Desktop {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(deadline) = desktop.redraw(event_loop, &mut self.app) {
+                if let Some(deadline) = desktop.redraw(event_loop, &mut self.app, &mut self.startup) {
                     self.schedule_repaint(deadline);
                 }
             }
@@ -274,6 +300,7 @@ impl ApplicationHandler<DesktopEvent> for Desktop {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let mut startup = startup::Timer::new();
     if std::env::args().nth(1).as_deref() == Some("--production") {
         std::process::exit(aivs_core::production::cli::main(std::env::args().skip(2).collect()));
     }
@@ -284,7 +311,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         return Ok(());
     }
+    startup.mark("GUI main entered");
     env_logger::init();
+    startup.mark("logging initialized");
     let root = std::env::args_os()
         .nth(1)
         .map(std::path::PathBuf::from)
@@ -293,6 +322,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !root.is_dir() {
         return Err("The workspace must be a directory.".into());
     }
+    startup.mark("workspace path resolved");
     let mut builder = EventLoop::<DesktopEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     {
@@ -301,8 +331,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         builder.with_activation_policy(winit::platform::macos::ActivationPolicy::Regular);
     }
     let event_loop = builder.build()?;
+    startup.mark("native event loop created");
+    let app = app::App::new(root);
+    startup.mark("application initialized");
     let mut desktop = Desktop {
-        app: app::App::new(root),
+        startup,
+        app,
         window: None,
         next_repaint: None,
         startup_error: None,
@@ -311,6 +345,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[cfg(target_os = "macos")]
         native_menu: None,
     };
+    desktop.startup.mark("entering native event loop");
     event_loop.run_app(&mut desktop)?;
     if let Some(error) = desktop.startup_error {
         return Err(error);

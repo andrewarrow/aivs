@@ -69,14 +69,23 @@ pub struct App {
 
 impl App {
     pub fn new(root: PathBuf) -> Self {
+        let mut startup = crate::startup::Timer::new();
+        let video = crate::video::VideoWorkspace::new(root.clone());
+        startup.mark("video workspace initialized and setup worker started");
+        let characters = crate::characters::CharacterGallery::load(&root);
+        startup.mark("character gallery loaded");
+        let sets = crate::sets::SetGallery::load(&root);
+        startup.mark("set gallery loaded");
+        let screenplay = crate::screenplay::Screenplay::load(&root);
+        startup.mark("screenplay loaded");
         Self {
-            video: crate::video::VideoWorkspace::new(root.clone()),
+            video,
             screenplay_fraction: 0.5,
-            characters: crate::characters::CharacterGallery::load(&root),
-            sets: crate::sets::SetGallery::load(&root),
+            characters,
+            sets,
             characters_open: true,
             sets_open: true,
-            screenplay: crate::screenplay::Screenplay::load(&root),
+            screenplay,
             codex_started: false,
             root,
             client: None,
