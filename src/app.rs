@@ -221,9 +221,6 @@ impl App {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        // Clear each frame so the native player hides when chat/setup replaces
-        // the workspace, and update its clipping rect after scrolling/resizing.
-        self.video.playback_target = None;
         if ui
             .ctx()
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q))
@@ -355,10 +352,6 @@ impl App {
             egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         }
         self.settings_ui(ui.ctx());
-        // The native AVKit view sits above egui; hide it while the modal is open.
-        if self.settings_open {
-            self.video.playback_target = None;
-        }
     }
 
     fn settings_ui(&mut self, ctx: &egui::Context) {
@@ -524,10 +517,6 @@ impl App {
         ui.allocate_rect(bounds, egui::Sense::hover());
     }
 
-    pub fn playback_target(&self) -> Option<&crate::playback::PlaybackTarget> {
-        self.video.playback_target.as_ref()
-    }
-
     pub fn poll_background(&mut self, ctx: &egui::Context) {
         self.video.poll(ctx);
     }
@@ -542,10 +531,6 @@ impl App {
 
     pub fn take_generation_failure(&mut self) -> Option<String> {
         self.video.take_failure_alert()
-    }
-
-    pub fn set_playback_error(&mut self, error: Option<String>) {
-        self.video.playback_error = error;
     }
 
     fn connection_ui(&mut self, ui: &mut egui::Ui) {

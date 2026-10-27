@@ -104,10 +104,6 @@ fn file_settings_modal_selects_and_persists_format_at_supported_sizes() {
         let _ = frame(&mut app, click(text_rect(&output, "Settings…").center()));
         assert!(app.settings_open);
         let output = frame(&mut app, vec![]);
-        assert!(
-            app.playback_target().is_none(),
-            "native player must not cover the modal"
-        );
         for label in [
             "Settings",
             "Render format",
@@ -251,10 +247,6 @@ fn video_workspace_and_optional_chat_fit_supported_sizes() {
                 (gallery.size().x - expected_gallery_width).abs() <= 1.0,
                 "gallery width at {width}x{height} should be {expected_gallery_width}, got {}",
                 gallery.size().x
-            );
-            assert_eq!(
-                app.playback_target().is_some(),
-                !chat_open || width - expected_gallery_width >= 680.0
             );
         }
     }

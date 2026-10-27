@@ -280,7 +280,7 @@ AIVS_EVENT {"event":"activity_delta","id":"two","delta":" stream"}
 }
 
 #[test]
-fn completed_video_has_a_visible_player_at_supported_sizes() {
+fn completed_video_has_a_reveal_button_at_supported_sizes() {
     for (width, height) in [
         (390.0, 844.0),
         (768.0, 1024.0),
@@ -292,8 +292,9 @@ fn completed_video_has_a_visible_player_at_supported_sizes() {
         workspace.handle_event(Event::Complete(path.clone()));
         let ctx = egui::Context::default();
         let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+        let mut output = None;
         for _ in 0..4 {
-            let _ = ctx.run_ui(
+            output = Some(ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(bounds),
                     ..Default::default()
@@ -304,13 +305,15 @@ fn completed_video_has_a_visible_player_at_supported_sizes() {
                     });
                     assert!(ui.min_rect().right() <= bounds.right() + 1.0);
                 },
-            );
+            ));
         }
-        let target = workspace.playback_target.as_ref().unwrap();
-        assert_eq!(target.path, path);
-        assert!(target.rect.intersects(target.clip_rect));
-        assert!(target.rect.right() <= bounds.right());
-        assert!(target.rect.height() >= 44.0);
+        assert_eq!(workspace.output.as_ref(), Some(&path));
+        let output = output.unwrap();
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::epaint::Shape::Text(text)
+                if text.galley.text() == "Reveal in Finder"
+                    && bounds.contains_rect(egui::Rect::from_min_size(text.pos, text.galley.size())))
+        }));
     }
 }
 

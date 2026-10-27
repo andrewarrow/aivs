@@ -242,32 +242,23 @@ impl VideoWorkspace {
                 }
                 self.error_ui(ui);
                 self.activity_ui(ui, 240.0);
-                if let Some(path) = &self.output {
+                if let Some(path) = self.output.clone() {
                     ui.add_space(8.0);
-                    let width = ui.available_width().min(420.0 * self.output_aspect);
-                    let height = width / self.output_aspect + 40.0;
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                    let response = ui.add(
+                        egui::Button::new("Reveal in Finder").min_size(egui::vec2(0.0, 44.0)),
+                    );
                     if self.reveal_output {
                         response.scroll_to_me(Some(egui::Align::Center));
                         self.reveal_output = false;
                     }
-                    ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-                    self.playback_target = Some(crate::playback::PlaybackTarget {
-                        path: path.clone(),
-                        rect,
-                        clip_rect: ui.clip_rect(),
-                    });
-                    if let Some(error) = &self.playback_error {
-                        ui.add(egui::Label::new(error).wrap());
+                    if response.clicked() {
+                        match Command::new("open").arg("-R").arg(&path).status() {
+                            Ok(status) if status.success() => {}
+                            _ => {
+                                self.error = Some("Could not reveal the video in Finder.".into());
+                            }
+                        }
                     }
-                }
-                if let Some(path) = &self.output {
-                    ui.add(
-                        egui::Label::new(path.display().to_string())
-                            .wrap()
-                            .selectable(true),
-                    );
                 }
             });
     }

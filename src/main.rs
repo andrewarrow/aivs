@@ -7,7 +7,6 @@ mod app;
 mod attention;
 mod characters;
 mod codex;
-mod playback;
 mod screenplay;
 mod sets;
 mod settings;
@@ -32,7 +31,6 @@ struct DesktopWindow {
     input: egui_winit::State,
     painter: Painter,
     first_frame: bool,
-    playback: playback::Playback,
 }
 
 impl DesktopWindow {
@@ -77,7 +75,6 @@ impl DesktopWindow {
             input,
             painter,
             first_frame: true,
-            playback: playback::Playback::default(),
         })
     }
 
@@ -120,15 +117,6 @@ impl DesktopWindow {
             Vec::new(),
             &self.window,
         );
-        let playback_error = self
-            .playback
-            .sync(&self.window, app.playback_target(), &self.context)
-            .err();
-        app.set_playback_error(playback_error);
-        if app.playback_target().is_some() {
-            self.context
-                .request_repaint_after(std::time::Duration::from_millis(250));
-        }
         if self.first_frame {
             self.window.set_visible(true);
             self.window.focus_window();
@@ -146,7 +134,6 @@ impl DesktopWindow {
 
 impl Drop for DesktopWindow {
     fn drop(&mut self) {
-        self.playback = playback::Playback::default();
         self.painter.destroy();
     }
 }

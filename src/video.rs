@@ -485,11 +485,8 @@ pub struct VideoWorkspace {
     current_log_stream: Option<String>,
     error: Option<String>,
     output: Option<PathBuf>,
-    output_aspect: f32,
     failure_alert: Option<String>,
     reveal_output: bool,
-    pub playback_target: Option<crate::playback::PlaybackTarget>,
-    pub playback_error: Option<String>,
 }
 
 impl VideoWorkspace {
@@ -519,11 +516,8 @@ impl VideoWorkspace {
             current_log_stream: None,
             error: None,
             output: None,
-            output_aspect: 16.0 / 9.0,
             failure_alert: None,
             reveal_output: false,
-            playback_target: None,
-            playback_error: None,
         }
     }
 
@@ -643,7 +637,6 @@ impl VideoWorkspace {
                 self.rendering = false;
                 self.fraction = Some(1.0);
                 self.remaining_seconds = None;
-                self.playback_error = None;
                 let animatic = path.file_name().is_some_and(|name| name == "animatic.mp4");
                 let report = path
                     .parent()
@@ -656,14 +649,6 @@ impl VideoWorkspace {
                     })
                     .and_then(|directory| std::fs::read(directory.join("render.json")).ok())
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-                self.output_aspect = report
-                    .as_ref()
-                    .and_then(|report| {
-                        let width = report["width"].as_u64()?;
-                        let height = report["height"].as_u64()?;
-                        (width > 0 && height > 0).then_some(width as f32 / height as f32)
-                    })
-                    .unwrap_or(16.0 / 9.0);
                 self.status = if animatic {
                     "Animatic ready. Final Render uses the accepted keyframes."
                 } else {
