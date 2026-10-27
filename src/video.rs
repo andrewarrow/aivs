@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod ui;
+
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/video.py");
 const REQUIREMENTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/requirements.txt");
 const VOICE_SETUP: &str = concat!(
@@ -640,7 +642,13 @@ impl VideoWorkspace {
                 let animatic = path.file_name().is_some_and(|name| name == "animatic.mp4");
                 let report = path
                     .parent()
-                    .and_then(|directory| if animatic { directory.parent() } else { Some(directory) })
+                    .and_then(|directory| {
+                        if animatic {
+                            directory.parent()
+                        } else {
+                            Some(directory)
+                        }
+                    })
                     .and_then(|directory| std::fs::read(directory.join("render.json")).ok())
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
                 self.output_aspect = report
@@ -656,7 +664,9 @@ impl VideoWorkspace {
                 } else {
                     match report.as_ref().and_then(|report| report["status"].as_str()) {
                         Some("complete") => "Video ready.",
-                        Some("rendered-with-issues") => "Video rendered; visual issues need review.",
+                        Some("rendered-with-issues") => {
+                            "Video rendered; visual issues need review."
+                        }
                         _ => "Video rendered; visual review is incomplete.",
                     }
                 }
@@ -718,247 +728,6 @@ impl VideoWorkspace {
         }
     }
 
-    pub fn setup_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            if self.setup == Setup::Checking {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Checking local setup…");
-                });
-            }
-        });
-        // A ready install goes directly from the startup check to its workspace.
-        if self.setup == Setup::Checking {
-            return;
-        }
-        let ctx = ui.ctx().clone();
-        let width = (ctx.content_rect().width() - 64.0).clamp(240.0, 480.0);
-        egui::Modal::new(egui::Id::new("video_setup")).show(&ctx, |ui| {
-            ui.set_width(width);
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 80.0).max(180.0))
-                .show(ui, |ui| {
-                    ui.heading("Set up AIVS");
-                    ui.add_space(8.0);
-                    if self.setup == Setup::NeedsToken {
-                        ui.label("Get an access token from Hugging Face, then create a .env file in this workspace with HF_API set to your token.");
-                        ui.hyperlink_to("Get a Hugging Face access token", "https://huggingface.co/settings/tokens");
-                        ui.label(egui::RichText::new("HF_API=your_token").monospace());
-                        ui.add(egui::Label::new(format!("File: {}", self.root.join(".env").display())).wrap());
-                        if ui.add(egui::Button::new("Check again").min_size(egui::vec2(100.0, 44.0))).clicked() {
-                            self.start(Task::Setup);
-                        }
-                    } else {
-                        ui.label("Python, the Apple GPU renderer, and the model cache must be ready before you can continue.");
-                        ui.add_space(8.0);
-                        ui.add(egui::Label::new(&self.status).wrap());
-                        if self.job.is_some() {
-                            ui.add(egui::ProgressBar::new(self.fraction.unwrap_or(0.0))
-                                .animate(self.fraction.is_none())
-                                .desired_width(width));
-                            ui.label("Setup checks space for the video models before downloading weights. Codex generates storyboard images. Cached files are reused. Keep AIVS open.");
-                        }
-                        self.error_ui(ui);
-                        self.activity_ui(ui, 120.0);
-                        if self.setup == Setup::Failed
-                            && ui.add(egui::Button::new("Retry setup").min_size(egui::vec2(100.0, 44.0))).clicked()
-                        {
-                            self.start(Task::Setup);
-                        }
-                    }
-                });
-            // Escape and backdrop clicks deliberately do not unlock setup.
-        });
-    }
-
-    pub fn ui(&mut self, ui: &mut egui::Ui, screenplay: &crate::screenplay::Screenplay) {
-        let scenes = screenplay.scenes();
-        if !scenes
-            .iter()
-            .any(|scene| Some(scene.id) == self.selected_scene)
-        {
-            self.selected_scene = scenes.first().map(|scene| scene.id);
-        }
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.set_max_width(ui.available_width().min(760.0));
-                ui.heading("Talking video");
-                ui.add(
-                    egui::Label::new(format!(
-                        "LTX-2.5 · {} · 24 fps · generated speech and video",
-                        self.render_format.label()
-                    ))
-                    .wrap(),
-                );
-                ui.add_space(16.0);
-                let scene_label = ui.label("Scene");
-                let selected_text = scenes
-                    .iter()
-                    .enumerate()
-                    .find(|(_, scene)| Some(scene.id) == self.selected_scene)
-                    .map_or_else(
-                        || "No scenes".to_owned(),
-                        |(index, scene)| format!("{}. {}", index + 1, scene.heading),
-                    );
-                ui.add_enabled_ui(self.job.is_none() && !scenes.is_empty(), |ui| {
-                    ui.spacing_mut().interact_size.y = 44.0;
-                    egui::ComboBox::from_id_salt("render_scene")
-                        .selected_text(&selected_text)
-                        .width(ui.available_width())
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for (index, scene) in scenes.iter().enumerate() {
-                                ui.selectable_value(
-                                    &mut self.selected_scene,
-                                    Some(scene.id),
-                                    format!("{}. {}", index + 1, scene.heading),
-                                )
-                                .on_hover_text(scene.heading);
-                            }
-                        })
-                        .response
-                        .labelled_by(scene_label.id)
-                        .on_hover_text(&selected_text);
-                });
-                ui.add_space(8.0);
-                ui.add_enabled_ui(self.job.is_none(), |ui| {
-                    let mut profile = self.render_profile;
-                    ui.horizontal_wrapped(|ui| {
-                        let label = ui.label("Quality");
-                        ui.spacing_mut().interact_size.y = 44.0;
-                        egui::ComboBox::from_id_salt("render_profile")
-                            .selected_text(profile.label())
-                            .show_ui(ui, |ui| {
-                                for option in [
-                                    crate::settings::RenderProfile::Hq,
-                                    crate::settings::RenderProfile::Distilled,
-                                ] {
-                                    ui.selectable_value(&mut profile, option, option.label());
-                                }
-                            })
-                            .response
-                            .labelled_by(label.id)
-                            .on_hover_text("Both options generate a storyboard image for every shot.");
-                    });
-                    if profile != self.render_profile {
-                        match profile.save(&self.root) {
-                            Ok(()) => self.render_profile = profile,
-                            Err(error) => self.error = Some(error),
-                        }
-                    }
-                });
-                ui.add_space(8.0);
-                let request = self
-                    .selected_scene
-                    .ok_or_else(|| "Add a scene heading before generating.".to_owned())
-                    .and_then(|scene_id| self.render_request(screenplay, scene_id));
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .add_enabled(
-                            self.job.is_none() && request.is_ok(),
-                            egui::Button::new("Generate video").min_size(egui::vec2(128.0, 44.0)),
-                        )
-                        .clicked()
-                        && let Ok(request) = &request
-                    {
-                        self.start(Task::Render(request.clone()));
-                    }
-                    if self.rendering
-                        && ui
-                            .add_enabled(
-                                !self.stopping,
-                                egui::Button::new("Stop").min_size(egui::vec2(64.0, 44.0)),
-                            )
-                            .clicked()
-                    {
-                        if let Some(job) = &self.job {
-                            job.stop();
-                        }
-                        self.stopping = true;
-                    }
-                    if let Some(path) = self.output.clone()
-                        && ui
-                            .add(egui::Button::new("Show files").min_size(egui::vec2(96.0, 44.0)))
-                            .clicked()
-                        && let Some(parent) = path.parent()
-                    {
-                        self.open(parent);
-                    }
-                });
-                if let Err(message) = &request {
-                    ui.add(egui::Label::new(message).wrap());
-                }
-                ui.add_space(8.0);
-                if self.rendering
-                    && let Some(fraction) = self.fraction
-                {
-                    let fraction = fraction.min(0.99);
-                    let text = self.remaining_seconds.map_or_else(
-                        || "Estimating time remaining…".into(),
-                        |seconds| {
-                            format!(
-                                "≈{:.0}% · About {} left",
-                                fraction * 100.0,
-                                remaining_time(seconds)
-                            )
-                        },
-                    );
-                    ui.add(egui::ProgressBar::new(fraction).text(text));
-                }
-                if self.rendering && self.fraction.is_none() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        let status = if self.stopping {
-                            "Stopping…"
-                        } else {
-                            &self.status
-                        };
-                        ui.add(
-                            egui::Label::new(format!(
-                                "{status} · {} elapsed",
-                                remaining_time(self.started_at.elapsed().as_secs() as f64)
-                            ))
-                            .wrap(),
-                        );
-                    });
-                } else if self.stopping && self.rendering {
-                    ui.label("Stopping…");
-                } else if !self.status.is_empty() {
-                    ui.add(egui::Label::new(&self.status).wrap());
-                }
-                self.error_ui(ui);
-                self.activity_ui(ui, 240.0);
-                if let Some(path) = &self.output {
-                    ui.add_space(8.0);
-                    let width = ui.available_width().min(420.0 * self.output_aspect);
-                    let height = width / self.output_aspect + 40.0;
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-                    if self.reveal_output {
-                        response.scroll_to_me(Some(egui::Align::Center));
-                        self.reveal_output = false;
-                    }
-                    ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-                    self.playback_target = Some(crate::playback::PlaybackTarget {
-                        path: path.clone(),
-                        rect,
-                        clip_rect: ui.clip_rect(),
-                    });
-                    if let Some(error) = &self.playback_error {
-                        ui.add(egui::Label::new(error).wrap());
-                    }
-                }
-                if let Some(path) = &self.output {
-                    ui.add(
-                        egui::Label::new(path.display().to_string())
-                            .wrap()
-                            .selectable(true),
-                    );
-                }
-            });
-    }
-
     fn render_request(
         &self,
         screenplay: &crate::screenplay::Screenplay,
@@ -971,39 +740,6 @@ impl VideoWorkspace {
         value["render_profile"] = self.render_profile.id().into();
         value["planning_budget_seconds"] = self.planning_budget_seconds.into();
         serde_json::to_string(&value).map_err(|error| error.to_string())
-    }
-
-    fn error_ui(&self, ui: &mut egui::Ui) {
-        if let Some(error) = &self.error {
-            ui.add(egui::Label::new(format!("Error: {error}")).wrap());
-        }
-    }
-
-    fn activity_ui(&self, ui: &mut egui::Ui, max_height: f32) {
-        if !self.logs.is_empty() {
-            egui::CollapsingHeader::new("Activity")
-                .id_salt(("video_activity", self.started_at))
-                .default_open(self.rendering)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("video_activity")
-                        .max_height(max_height)
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                            for line in &self.logs {
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(line).monospace()).wrap(),
-                                );
-                            }
-                        });
-                });
-        }
-    }
-
-    fn open(&mut self, path: &Path) {
-        if let Err(error) = Command::new("open").arg(path).spawn() {
-            self.error = Some(format!("Could not open output: {error}"));
-        }
     }
 
     #[cfg(test)]
