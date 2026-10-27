@@ -42,6 +42,15 @@ fn conditioning(ctx: &mut Context<'_>, operation: &str, mut args: Value) -> Resu
     })
 }
 pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
+    if args["render_config"]
+        .get("backend")
+        .is_some_and(|backend| backend != "mlx")
+    {
+        return Err(
+            "The cloud comparison renderer has been retired; production renders use local MLX."
+                .into(),
+        );
+    }
     let plan = &args["plan"];
     let validated = shot_renderer::validate_plan(plan)?;
     let shots = rows(&plan["shots"])?;
@@ -246,40 +255,32 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
                     let take = report["take"].clone();
                     let emitter = &mut ctx.emit;
                     let last_fraction = &mut last;
-                    let runtime = if config["backend"] == "ltx-cloud" {
-                        super::premium::render(&ctx.root, &payload, &ctx.cancelled, |event| {
-                            emitter(event)
-                        })?
-                    } else {
-                        inference::run(
-                            &json!({"root":ctx.root,"python":ctx.python,"worker_operation":"ltx_render","payload":payload}),
-                            ctx.cancelled.clone(),
-                            |event| {
-                                if event["type"] != "inference_progress" {
-                                    return emitter(event);
-                                }
-                                let data = &event["data"];
-                                let Some(fraction) = data["fraction"].as_f64() else {
-                                    return Ok(());
-                                };
-                                let fraction = fraction.clamp(0.0, 1.0);
-                                let by_duration = (completed as f64 + duration as f64 * fraction)
-                                    / seconds as f64;
-                                *last_fraction =
-                                    (*last_fraction).max((0.97 * by_duration).min(0.97));
-                                let remaining =
-                                    data["remaining_seconds"].as_f64().map(|remaining| {
-                                        remaining.max(0.0)
-                                            + (seconds - completed - duration) as f64
-                                                * shot_started.elapsed().as_secs_f64().max(0.001)
-                                                / (duration as f64 * fraction).max(0.05)
-                                    });
-                                emitter(
-                                    json!({"type":"render_progress","data":{"fraction":last_fraction,"label":format!("Shot {}/{}, take {take}: {}",index+1,shots.len(),data["label"].as_str().unwrap_or("Rendering")),"remaining_seconds":remaining}}),
-                                )
-                            },
-                        )?
-                    };
+                    let runtime = inference::run(
+                        &json!({"root":ctx.root,"python":ctx.python,"worker_operation":"ltx_render","payload":payload}),
+                        ctx.cancelled.clone(),
+                        |event| {
+                            if event["type"] != "inference_progress" {
+                                return emitter(event);
+                            }
+                            let data = &event["data"];
+                            let Some(fraction) = data["fraction"].as_f64() else {
+                                return Ok(());
+                            };
+                            let fraction = fraction.clamp(0.0, 1.0);
+                            let by_duration =
+                                (completed as f64 + duration as f64 * fraction) / seconds as f64;
+                            *last_fraction = (*last_fraction).max((0.97 * by_duration).min(0.97));
+                            let remaining = data["remaining_seconds"].as_f64().map(|remaining| {
+                                remaining.max(0.0)
+                                    + (seconds - completed - duration) as f64
+                                        * shot_started.elapsed().as_secs_f64().max(0.001)
+                                        / (duration as f64 * fraction).max(0.05)
+                            });
+                            emitter(
+                                json!({"type":"render_progress","data":{"fraction":last_fraction,"label":format!("Shot {}/{}, take {take}: {}",index+1,shots.len(),data["label"].as_str().unwrap_or("Rendering")),"remaining_seconds":remaining}}),
+                            )
+                        },
+                    )?;
                     report["runtime"] = runtime;
                     if prepared["convert_voice"] == true {
                         report["native_sha256"] = json!(artifacts::file_hash(&native)?);
@@ -444,7 +445,7 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         all.push(scene.clone());
     }
     let status = shot_renderer::render_status(&json!(all))?;
-    let mut result = json!({"status":status,"backend":if config["backend"]=="ltx-cloud"{"ltx-cloud"}else{"mlx"},"pipeline":"directed-shots","output_frames":seconds*24,"elapsed_seconds":(started.elapsed().as_secs_f64()*100.0).round()/100.0,"shots":summaries,"video":video});
+    let mut result = json!({"status":status,"backend":"mlx","pipeline":"directed-shots","output_frames":seconds*24,"elapsed_seconds":(started.elapsed().as_secs_f64()*100.0).round()/100.0,"shots":summaries,"video":video});
     if !config.is_null() {
         result["render_config"] = config.clone();
     }

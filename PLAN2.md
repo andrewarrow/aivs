@@ -1,5 +1,11 @@
 # Reusable characters without sacrificing lip sync
 
+Historical investigation plan. The experiments below are complete; their one-off
+render, comparison, and review tools, including Kokoro, have been retired. Saved
+evidence and media remain. This supersedes the original instruction to retain
+the comparison code. See the [archive](experiments/character-consistency/README.md)
+for preserved records and the [README](README.md) for the current production path.
+
 ## Decision
 
 Keep the goal of reusable performers with consistent appearance and voice. Change
@@ -167,7 +173,7 @@ and spoken words in the [native-reference clip](outputs/2026-10-26_native-refere
 The run preserves its prompt, references, code snapshots,
 hashes, raw native media, and a PCM WAV decoded from the final AAC soundtrack.
 See the [recorded result](experiments/character-consistency/native-reference-control.json)
-and [reproduction instructions](experiments/character-consistency/README.md#native-reference-control-plan2-milestone-a).
+and [archived investigation](experiments/character-consistency/README.md).
 Milestone A has passed. Its generated voice remains temporary diagnostic audio;
 the accepted converted Lena take is recorded separately under Milestone B. This
 native control itself remains diagnostic and does not satisfy fixed-voice

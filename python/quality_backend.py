@@ -1,4 +1,4 @@
-"""Hunter's native LTX-2.5 talking-video path, isolated from the Rust UI."""
+"""LTX-2.5 MLX inference and pinned model setup for Rust-owned production."""
 
 from __future__ import annotations
 
@@ -150,29 +150,6 @@ def doctor():
         raise RuntimeError("The MLX Apple GPU calculation failed.")
 
 
-def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
-           audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False, profile="distilled",
-           image_anchors=None):
-    """Rust launches one isolated model worker and waits for resource release."""
-    import sys
-
-    def receive(event):
-        if event["type"] == "inference_progress" and on_progress is not None:
-            on_progress(**event["data"])
-        elif event["type"] == "activity":
-            print(event["message"], file=sys.stderr, flush=True)
-
-    return rust_engine.call("inference", root=str(ROOT), python=sys.executable,
-        worker_operation="ltx_render", on_event=receive, payload={
-            "prompt": prompt, "seed": seed, "frames": frames, "output": str(Path(output).resolve()),
-            "image_file": str(Path(image_file).expanduser().resolve()) if image_file is not None else None,
-            "audio_file": str(Path(audio_file).expanduser().resolve()) if audio_file is not None else None,
-            "hold_image_framing": hold_image_framing, "width": width, "height": height,
-            "keep_native": keep_native, "profile": profile,
-            "image_anchors": [dict(a, file=str(Path(a["file"]).expanduser().resolve())) for a in image_anchors]
-                             if isinstance(image_anchors, list) else image_anchors})
-
-
 def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
            audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False, profile="distilled",
            image_anchors=None):
@@ -247,27 +224,6 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
             "mlx", "mlx-metal", "mlx-arsenal", "ltx-core-mlx", "ltx-pipelines-mlx", "transformers",
         )},
     }
-
-
-def prepare_source_audio(source, minimum_duration):
-    return rust_engine.call("prepare_source_audio", source=str(Path(source).expanduser().resolve()),
-                            minimum_duration=minimum_duration)
-
-
-def prepare_source_image(source):
-    source = Path(source).expanduser().resolve()
-    if not source.is_file():
-        raise FileNotFoundError(f"Image file does not exist: {source}")
-    return rust_engine.call("prepare_source_image", source=str(source))
-
-
-def prepare_image_anchors(anchors, frames, width, height):
-    # Path expansion is a CLI boundary concern; validation belongs to Rust.
-    if isinstance(anchors, list):
-        anchors = [dict(anchor, file=str(Path(anchor["file"]).expanduser().resolve()))
-                   if isinstance(anchor, dict) and "file" in anchor else anchor for anchor in anchors]
-    return rust_engine.call("prepare_image_anchors", anchors=anchors, frames=frames,
-                            width=width, height=height)
 
 
 def _image_generation_options(source_file, frames, hold_image_framing, anchors=None):

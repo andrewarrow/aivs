@@ -104,19 +104,6 @@ def download() -> None:
     _snapshot()
 
 
-def generate(prompt: str, references: list[Path], output: Path, seed: int, *,
-             width: int, height: int, composition: str | None = None,
-             compact_prompt: str | None = None, on_activity=None) -> dict:
-    """Render exactly one still; the subprocess exits before LTX loads weights."""
-    if output.exists():
-        raise FileExistsError(f"Refusing to overwrite storyboard image: {output}")
-    payload = {"prompt": prompt, "references": [str(path.resolve()) for path in references],
-               "composition": composition, "compact_prompt": compact_prompt, "output": str(output.resolve()),
-               "seed": seed, "width": width, "height": height}
-    return _worker("generate", payload, on_activity=on_activity,
-                   log_file=output.with_suffix(".log"))
-
-
 def _identity() -> dict:
     from importlib.metadata import PackageNotFoundError, version
 

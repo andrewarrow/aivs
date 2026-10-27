@@ -11,7 +11,7 @@ import rust_engine
 
 @contextmanager
 def project_lock(name):
-    # Kept for standalone Seed-VC tools, which share Rust's workspace lock.
+    # Standalone motion commands share Rust's workspace lock.
     with (ROOT / name).open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

@@ -3,8 +3,8 @@ mod boards;
 pub mod cli;
 mod direction;
 mod fidelity;
+mod helpers;
 mod motion;
-mod premium;
 mod preparation;
 mod rendering;
 mod review;
@@ -369,6 +369,6 @@ pub fn dispatch(
             run::dispatch(&mut context, operation, args)
         }
         "production_motion" => motion::dispatch(&mut context, args),
-        _ => Err(format!("Unknown production operation: {operation}")),
+        _ => helpers::dispatch(&mut context, operation, args),
     }
 }
