@@ -108,9 +108,19 @@ pub fn validate_review(plan: &Value, number: usize, frame: &Value, value: &Value
     for (key, wanted) in continuity::facts(&state)? {
         let actual = observations.get(&key).map(String::as_str);
         let entity = key.0.split_once(':').map_or(key.0.as_str(), |(_, id)| id);
+        let position_consistent = checked["field_assessments"]
+            .as_array()
+            .is_some_and(|fields| {
+                fields.iter().any(|finding| {
+                    finding["entity"] == key.0
+                        && finding["field"] == "location"
+                        && finding["assessment"] == "consistent"
+                })
+            });
         if key.1 == "location"
             && !unknown(&wanted)
             && actual != Some(wanted.as_str())
+            && !position_consistent
             && (visible_ids.contains(entity) || actual.is_some_and(|actual| !unknown(actual)))
         {
             findings.push(format!(

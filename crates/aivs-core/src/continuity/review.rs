@@ -2,15 +2,80 @@
 use super::facts::{facts, get, key_label, persistent, physical_key, text, unknown};
 use super::plan::source_evidence;
 use super::types::{Plan, SceneState};
-use super::{FactKey, Result, decode};
+use super::{FactKey, Facts, Result, decode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Assessment {
+    Consistent,
+    Unobservable,
+    Contradiction,
+    Uncertain,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FieldAssessment {
+    entity: String,
+    field: String,
+    expected: String,
+    observed: String,
+    assessment: Assessment,
+    evidence: String,
+}
+
+fn symbolic(key: &FactKey) -> bool {
+    matches!(key.1.as_str(), "presence" | "owner" | "value") || key.0.starts_with("relationship:")
+}
+
+/// Bind semantic judgments to the exact contract and independently recorded pixels.
+/// Missing assessments retain the strict behavior used by older review receipts.
+fn field_assessments<'a>(
+    rows: &'a [FieldAssessment],
+    expected: &Facts,
+    observed: &Facts,
+) -> Result<BTreeMap<FactKey, &'a FieldAssessment>> {
+    let mut result = BTreeMap::new();
+    for row in rows {
+        for value in [
+            &row.entity,
+            &row.field,
+            &row.expected,
+            &row.observed,
+            &row.evidence,
+        ] {
+            text(value)?;
+        }
+        let key = (row.entity.clone(), row.field.clone());
+        if get(expected, &key) != Some(row.expected.as_str())
+            || get(observed, &key).unwrap_or("unknown") != row.observed.as_str()
+            || result.insert(key.clone(), row).is_some()
+        {
+            return Err(
+                "Field assessments must uniquely match the planned and observed facts.".into(),
+            );
+        }
+        if row.assessment == Assessment::Consistent
+            && (unknown(&row.observed) || (symbolic(&key) && row.expected != row.observed))
+        {
+            return Err(
+                "A consistent assessment needs observed evidence and exact entity/state IDs."
+                    .into(),
+            );
+        }
+    }
+    Ok(result)
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Review {
     observed_opening_state: SceneState,
+    #[serde(default)]
+    field_assessments: Vec<FieldAssessment>,
     source_transition_evidence: Vec<Value>,
     violations: Vec<String>,
     evidence: String,
@@ -35,6 +100,7 @@ pub(super) fn review_shot_data(
     let review: Review = decode(&row["continuity_review"])?;
     let observed = facts(&review.observed_opening_state)?;
     let expected = facts(&shot.continuity.opening)?;
+    let assessments = field_assessments(&review.field_assessments, &expected, &observed)?;
     if !review.confidence.is_finite() || !(0.0..=1.0).contains(&review.confidence) {
         return Err("Visual evidence confidence must be between zero and one.".into());
     }
@@ -104,6 +170,30 @@ pub(super) fn review_shot_data(
         .collect();
     let mut uncertainties = Vec::new();
     for (key, wanted) in &expected {
+        if let Some(finding) = assessments.get(key) {
+            let detail = || {
+                format!(
+                    "{}: expected {wanted}, observed {}; {}",
+                    key_label(key),
+                    finding.observed,
+                    finding.evidence
+                )
+            };
+            match finding.assessment {
+                Assessment::Contradiction => {
+                    violations.push(detail());
+                    continue;
+                }
+                Assessment::Uncertain => {
+                    uncertainties.push(detail());
+                    continue;
+                }
+                Assessment::Consistent => continue,
+                // Symbolic identity, ownership and reveal requirements stay strict.
+                Assessment::Unobservable if !symbolic(key) => continue,
+                Assessment::Unobservable => {}
+            }
+        }
         let critical = matches!(
             key.1.as_str(),
             "presence" | "owner" | "support" | "value" | "costume" | "state" | "visibility"
@@ -212,7 +302,12 @@ pub(super) fn review_shot_data(
     result["unobservable_facts"] = json!(
         expected
             .iter()
-            .filter(|(key, _)| unknown(get(&observed, key).unwrap_or("unknown")))
+            .filter(|(key, _)| {
+                unknown(get(&observed, key).unwrap_or("unknown"))
+                    || assessments
+                        .get(key)
+                        .is_some_and(|finding| finding.assessment == Assessment::Unobservable)
+            })
             .map(|(key, _)| key)
             .collect::<Vec<_>>()
     );
@@ -237,11 +332,30 @@ pub fn review_sequence(
         if report["decision"] != "pass" {
             continue;
         }
-        for (key, actual) in facts(&decode(&report["observed_opening_state"])?)? {
-            if unknown(&actual) || !persistent(&key) {
+        let observed = facts(&decode(&report["observed_opening_state"])?)?;
+        let expected = facts(&plan.shots[number - 1].continuity.opening)?;
+        let fields: Vec<FieldAssessment> =
+            decode(report.get("field_assessments").unwrap_or(&json!([])))?;
+        let assessments = field_assessments(&fields, &expected, &observed)?;
+        for (key, actual) in &observed {
+            let actual = match assessments.get(key) {
+                Some(finding)
+                    if finding.assessment == Assessment::Unobservable && !symbolic(key) =>
+                {
+                    continue;
+                }
+                Some(finding)
+                    if finding.assessment == Assessment::Consistent
+                        && !unknown(&finding.expected) =>
+                {
+                    &finding.expected
+                }
+                _ => actual,
+            };
+            if unknown(actual) || !persistent(key) {
                 continue;
             }
-            if let Some((earlier, value)) = known.get(&key) {
+            if let Some((earlier, value)) = known.get(key) {
                 let mut supported = value.as_str();
                 for n in *earlier..=number {
                     for timing in ["across-cut", "during-shot"] {
@@ -261,13 +375,13 @@ pub fn review_sequence(
                         }
                     }
                 }
-                if actual != supported {
+                if actual.as_str() != supported {
                     report["violations"].as_array_mut().ok_or("Invalid review violations.")?.push(json!(format!("Sequence contradiction with frame {earlier}: {} was {value}, now {actual}; source-backed intervening transitions support {supported}.", key_label(&key))));
                     report["decision"] = json!("repair-required");
                 }
             }
             if report["decision"] == "pass" {
-                known.insert(key, (number, actual));
+                known.insert(key.clone(), (number, actual.clone()));
             }
         }
     }

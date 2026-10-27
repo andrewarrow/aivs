@@ -10,7 +10,7 @@ outputs/
 .setup.lock
 .render.lock
 __pycache__/
-screenplay.json
+screenplay*.json
 .screenplay.json.tmp
 settings.json
 .settings.json.tmp

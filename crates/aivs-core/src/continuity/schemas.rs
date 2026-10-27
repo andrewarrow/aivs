@@ -135,6 +135,20 @@ pub fn schema(name: &str) -> Result<Value> {
         "continuity.review" => object(&[
             ("observed_opening_state", schema("continuity.state")?),
             (
+                "field_assessments",
+                array(object(&[
+                    ("entity", text.clone()),
+                    ("field", text.clone()),
+                    ("expected", text.clone()),
+                    ("observed", text.clone()),
+                    (
+                        "assessment",
+                        choices(&["consistent", "unobservable", "contradiction", "uncertain"]),
+                    ),
+                    ("evidence", text.clone()),
+                ])),
+            ),
+            (
                 "source_transition_evidence",
                 array(object(&[
                     ("beat_ids", ids),
