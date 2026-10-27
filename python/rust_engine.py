@@ -47,6 +47,19 @@ def framing_prompt(name):
     return call("framing_prompt", name=name)
 
 
+def activity_events(on_activity=None, on_activity_delta=None):
+    """Forward Rust-owned production progress to the existing UI callbacks."""
+    def receive(event):
+        if event["type"] == "activity" and on_activity is not None:
+            on_activity(event["message"])
+        elif event["type"] == "activity_delta":
+            if on_activity_delta is not None:
+                on_activity_delta(event["id"], event["delta"])
+            elif on_activity is not None:
+                on_activity("Codex: " + event["delta"])
+    return receive
+
+
 def _command():
     configured = os.environ.get("AIVS_ENGINE_PATH")
     if configured:

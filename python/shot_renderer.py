@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import time
@@ -63,94 +62,27 @@ def _take_seed(base_seed: int, take: int) -> int:
 
 
 def _saved_report(shot_dir: Path) -> dict | None:
-    try:
-        report = json.loads((shot_dir / "render.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        return None
-    return rust_engine.call("validate_saved_take_report", report=report)
+    return rust_engine.call("take_saved_report", shot_dir=str(Path(shot_dir).resolve()))
 
 
 def _last_archived_take(archive_dir: Path) -> int:
-    if not archive_dir.is_dir():
-        return 0
-    return max((int(entry.name) for entry in archive_dir.iterdir()
-                if entry.is_dir() and entry.name.isdecimal()), default=0)
+    return rust_engine.call("take_last_archive", archive_dir=str(Path(archive_dir).resolve()))
 
 
 def _archive_take(shot_dir: Path, archive_dir: Path, take: int) -> int:
-    """Move a whole take atomically before assigning a new seed to its path.
-
-    Archives live outside the active shot directory, so a stop between the
-    rename and the next checkpoint cannot mistake old media for the new take.
-    """
-    take = max(take, _last_archived_take(archive_dir) + 1)
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    destination = archive_dir / f"{take:03d}"
-    _atomic_json(shot_dir / "archive.json", {
-        "original_directory": str(shot_dir),
-        "directory": str(destination),
-        "clip": str(destination / "video.mp4"),
-    })
-    shot_dir.rename(destination)
-    # Reports must open the rejected clip after its old path becomes a new take.
-    # The manifest also locates assets referenced by historical runtime paths.
-    for filename in ("speech-validation.json", "render.json"):
-        try:
-            data = json.loads((destination / filename).read_text(encoding="utf-8"))
-        except (FileNotFoundError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        speech = data.get("speech_validation") if filename == "render.json" else data
-        if isinstance(speech, dict) and "clip" in speech:
-            speech["original_clip"] = speech["clip"]
-            speech["clip"] = str(destination / "video.mp4")
-            _atomic_json(destination / filename, data)
-    shot_dir.mkdir()
-    return take
+    return rust_engine.call("take_archive", shot_dir=str(Path(shot_dir).resolve()),
+                            archive_dir=str(Path(archive_dir).resolve()), take=take)
 
 
 def _matches_saved_take(saved: dict, report: dict, clip: Path,
                         previous_clip: Path | None) -> bool:
-    # Rust decides eligibility and requests only the missing byte evidence.
-    # In particular, old continuation runs need a decoded predecessor frame;
-    # native-picture resume skips the final voice-conversion identity check.
-    evidence = dict(saved=saved, report=report, clip_path=str(clip),
-                    is_final_clip=clip.name == "video.mp4" and clip.is_file(),
-                    has_previous_clip=previous_clip is not None)
-    decision = rust_engine.call("match_saved_take", **evidence)
-    if decision["status"] == "needs_previous_frame":
-        with tempfile.TemporaryDirectory(prefix=".resume-frame-", dir=clip.parent) as temporary:
-            frame = Path(temporary) / "frame.png"
-            _extract_last_frame(previous_clip, decision["source_frame"], frame)
-            evidence["legacy_frame_sha256"] = _file_sha256(frame)
-        decision = rust_engine.call("match_saved_take", **evidence)
-    if decision["status"] == "needs_clip_hash":
-        evidence["clip_sha256"] = _file_sha256(clip)
-        decision = rust_engine.call("match_saved_take", **evidence)
-    if decision["status"] not in ("matched", "mismatch"):
-        raise RuntimeError("The Rust engine returned an incomplete take verification.")
-    return decision["status"] == "matched"
+    return rust_engine.call("take_matches", saved=saved, report=report, clip=str(Path(clip).resolve()),
+        previous_clip=str(Path(previous_clip).resolve()) if previous_clip is not None else None)
 
 
-def _restore_take(source: Path, shot_dir: Path, archive_dir: Path,
-                  saved: dict) -> None:
-    """Restore an accepted archive without losing it or the current attempt."""
-    with tempfile.TemporaryDirectory(prefix=".restore-take-", dir=shot_dir.parent) as temporary:
-        staged = Path(temporary) / "take"
-        shutil.copytree(source, staged)
-        (staged / "archive.json").unlink(missing_ok=True)
-        restored = dict(saved, status="verifying", restored_from=str(source), reused=True)
-        restored.pop("error", None)
-        restored.pop("speech_validation", None)
-        restored.pop("saved_take_review", None)
-        _atomic_json(staged / "render.json", restored)
-        if any(shot_dir.iterdir()):
-            current = _saved_report(shot_dir) or {}
-            take = current.get("take", 1)
-            _archive_take(shot_dir, archive_dir, take if type(take) is int and take > 0 else 1)
-        shot_dir.rmdir()
-        staged.rename(shot_dir)
+def _restore_take(source: Path, shot_dir: Path, archive_dir: Path, saved: dict) -> None:
+    rust_engine.call("take_restore", source=str(Path(source).resolve()),
+        shot_dir=str(Path(shot_dir).resolve()), archive_dir=str(Path(archive_dir).resolve()), saved=saved)
 
 
 def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *,

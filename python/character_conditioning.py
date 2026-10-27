@@ -1,9 +1,7 @@
 """Inference-boundary adapters for Rust-owned saved-character production."""
 from __future__ import annotations
 
-import gc
 from pathlib import Path
-import sys
 
 import quality_backend
 import rust_engine
@@ -39,11 +37,6 @@ def prepare(plan: dict, profiles: list[dict], run_dir: Path, activity, *,
 
 def apply_voice(source: Path, clip: Path, voice: dict, run_dir: Path, seconds: int, *,
                 width: int, height: int) -> dict:
-    # Release Python/MLX buffers before Rust launches the isolated MPS worker.
-    gc.collect()
-    mlx = sys.modules.get("mlx.core")
-    if mlx is not None:
-        mlx.clear_cache()
     return _call("conditioning_apply_voice", source=str(Path(source).resolve()),
                  clip=str(Path(clip).resolve()), voice=voice,
                  run_dir=str(Path(run_dir).resolve()), seconds=seconds,

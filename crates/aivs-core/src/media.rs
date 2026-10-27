@@ -1,6 +1,8 @@
 //! Local FFmpeg execution, decoded-media validation and shot assembly.
 //! The caller publishes the assembled partial only after validation succeeds.
+mod animatic;
 mod audio;
+mod inference;
 mod review;
 mod source;
 use crate::continuity::Result;
@@ -325,6 +327,9 @@ fn validate(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
 
 pub fn dispatch(operation: &str, args: &Value, cancelled: &AtomicBool) -> Result<Value> {
     match operation {
+        "prepare_ltx_render" => inference::prepare(args, cancelled),
+        "finish_ltx_render" => inference::finish(args, cancelled),
+        "assemble_animatic" => animatic::assemble(args, cancelled),
         "prepare_source_image" => source::image(&path(args, "source")?),
         "prepare_source_audio" => source::audio(args),
         "prepare_image_anchors" => source::anchors(args),

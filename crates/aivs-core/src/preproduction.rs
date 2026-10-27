@@ -1,5 +1,6 @@
-//! Storyboard repair policy and journal transitions, independent of artifact I/O.
+//! Storyboard repair policy, journal transitions, and reuse of approved assets.
 //! Python supplies existing fingerprints; Rust never reserializes them for hashing.
+mod storage;
 use crate::continuity::{self, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -313,6 +314,8 @@ pub fn resume(args: &Value) -> Result<Value> {
 
 pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
     match operation {
+        "validate_storyboard_direction" => storage::direction(args),
+        "copy_final_preproduction" => storage::copy_final(args),
         "validate_storyboard_repairs" => {
             journal(&args["state"], &args["source_sha256"])?;
             Ok(args["state"].clone())

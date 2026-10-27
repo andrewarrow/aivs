@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 
@@ -58,46 +57,11 @@ def _snapshot() -> Path:
 
 
 def _worker(command: str, payload=None, *, on_activity=None, log_file=None) -> dict:
-    python = ROOT / ".venv-storyboard/bin/python"
-    if not python.is_file():
-        raise RuntimeError(f"Local storyboard generation requires MFLUX {MFLUX_VERSION}. {_SETUP}")
-    env = dict(os.environ, HF_HOME=str(CACHE), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
-               HF_HUB_DISABLE_TELEMETRY="1", TOKENIZERS_PARALLELISM="false")
-    # A file captures library progress without exposing it as the app's JSON protocol.
-    import tempfile
-    log = (Path(log_file).open("w+", encoding="utf-8") if log_file else
-           tempfile.TemporaryFile(mode="w+", encoding="utf-8"))
-    with log:
-        process = subprocess.Popen([str(python), "-u", str(Path(__file__).resolve()), "_" + command],
-                                   stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
-                                   text=True, env=env)
-        try:
-            process.stdin.write(json.dumps(payload or {}))
-            process.stdin.close()
-            while True:
-                try:
-                    code = process.wait(timeout=20)
-                    break
-                except subprocess.TimeoutExpired:
-                    if on_activity:
-                        on_activity("Generating the storyboard image locally")
-        except BaseException:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            raise
-        log.seek(0)
-        lines = log.read().splitlines()
-        if code:
-            detail = "\n".join(lines[-8:])[-1800:]
-            raise RuntimeError(f"Local storyboard generation failed: {detail}")
-        for line in reversed(lines):
-            if line.startswith("AIVS_STORYBOARD "):
-                return json.loads(line.removeprefix("AIVS_STORYBOARD "))
-    raise RuntimeError("The local storyboard worker returned no provenance record.")
+    """Rust owns process lifetime; this environment only supplies MFLUX inference."""
+    import rust_engine
+    return rust_engine.call("inference", root=str(ROOT), worker_operation="mflux_" + command,
+        payload=payload or {}, log_file=str(Path(log_file).resolve()) if log_file else None,
+        on_event=rust_engine.activity_events(on_activity))
 
 
 def check() -> dict:

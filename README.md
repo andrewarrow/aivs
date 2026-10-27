@@ -24,8 +24,8 @@ LTX-2.5 HQ → automatic visual review + media checks
 FFmpeg assembly → video.mp4
 ```
 
-The desktop app and core production rules are Rust. Python currently coordinates
-pipeline I/O and runs model inference using MLX on Apple's GPU.
+The desktop app and core production rules are Rust. Python still coordinates parts
+of the pipeline, while Rust launches isolated Python workers for MLX inference.
 Codex planning and automatic visual review use your configured Codex service and
 login. Planning sends saved cast portraits and storyboard images to Codex;
 visual review sends sampled rendered frames. Storyboard image generation also uses
@@ -492,6 +492,8 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [python/storyboard_backend.py](python/storyboard_backend.py) | Compatibility adapter to Rust ImageGen and optional Python MFLUX inference. |
 | [python/shot_renderer.py](python/shot_renderer.py) | Reuses saved takes, renders missing shots from storyboard frames, and assembles the result. |
 | [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
+| [crates/aivs-core/src/inference.rs](crates/aivs-core/src/inference.rs) | Versioned Python worker requests, progress, cancellation and process cleanup. |
+| [python/inference_worker.py](python/inference_worker.py) | Runs one LTX or MFLUX model request and exits. |
 | [python/validation.py](python/validation.py) | Compatibility adapter to Rust video and supplied-audio validation. |
 | [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration using the shared Rust transport. |
 | [src/main.rs](src/main.rs), [src/playback.rs](src/playback.rs) | Native egui/winit/wgpu window and macOS AVKit playback. |
@@ -562,7 +564,7 @@ the same request ID. A persistent worker serves the Python pipeline. Each Codex
 request creates its own app-server process and ephemeral thread; parent EOF or a
 deadline ends the session and reaps the child.
 
-Python still serializes screenplay artifacts and computes their JSON digests. Rust
+Python still computes legacy screenplay JSON digests. Rust publishes approved scripts,
 owns ImageGen artifacts and preserves the old sorted ASCII JSON fingerprint codec,
 including whitespace and Unicode escapes. Cache and
 review identities include the current Python source, bridge, and compiled Rust
@@ -575,7 +577,10 @@ bindings, compiles prompts with exact source dialogue, enforces scene boundaries
 action-part coverage and duration floors, and validates fidelity evidence and
 preproduction rehearsals. It also supplies planning schemas, capability context,
 readable script formatting and the fields used for approval fingerprints.
-Python still runs planning calls and checkpoint recovery and supplies the actual
+Rust validates complete motion-review batches and publishes scripts only with matching
+motion and independent fidelity receipts. `planning` owns isolated Codex attempts,
+persisted allowances, log files, and conservative time reservations across interruption.
+Python retains pass scheduling and checkpoint recovery and supplies the actual
 model tokenizer. Source identities and approval content are hashed with the
 existing Python JSON codec; cast lookups retain full Unicode case folding.
 
@@ -587,6 +592,8 @@ the published video. Rust also compares supplied PCM waveforms after AAC decodin
 including sample counts, correlation, gain and expected silence. Visual review
 sampling uses exact decoded frame numbers at 4fps, timestamped contact sheets,
 and both a sampled and full-resolution final frame.
+Rust also prepares LTX conditioning audio, trims and validates model output before
+publication, and assembles silent held-keyframe animatics without loading models.
 
 `characters` in Rust resolves explicit casting and saved names outside quoted
 dialogue, expands appearance/voice descriptions, validates profile and asset hashes,
@@ -609,8 +616,10 @@ existing output image is overwritten by generation.
 Continuity and motion contracts come from Rust through the lazy `schema` engine
 operation; importing Python modules does not launch the engine. Rust also builds
 storyboard review bindings, validates complete manifests, and compares independently
-loaded screenplay and cast snapshots. `storyboard.py` retains file reads, asset-byte
-checks, and the calls that compose those validations. The former Python continuity
+loaded screenplay and cast snapshots. `storyboard` resolves and hashes run-local
+images, validates decoded frames and reference libraries, selects shot references,
+and compiles visible opening-state prompts without exposing concealed facts.
+`storyboard.py` retains generation scheduling and legacy JSON fingerprints. The former Python continuity
 and render-format modules have been removed. Render dimensions and framing prompts
 now come from Rust through the same transport. The legacy JSON digest codec stays
 in `rust_engine.py`, preserving its serialization rules; the existing implementation
@@ -619,8 +628,9 @@ The unused transcription gate and its dedicated tests have also been removed;
 archived speech reports remain preserved by take recovery.
 
 `prop_reference` in Rust validates generation descriptions, observed component
-counts and connections, evidence, confidence, and structural acceptance. The
-Python module keeps inspection instructions, schemas, Codex calls and checkpoints.
+counts and connections, evidence, confidence, and structural acceptance. It also owns
+inspection instructions, schemas, Codex retries, and inspection checkpoints. Python
+keeps compatibility bindings and callbacks.
 `motion` in Rust validates frame timing, endpoint states, component inventories,
 hand ownership/support, docking, and source-backed interval transitions using the
 shared continuity rules. It also builds provisional intervals during incremental
@@ -636,8 +646,9 @@ source-preservation evidence, and reconciles scene status with shot reports.
 Fresh and cached scene reports use the same rules: recorded defects cannot be
 reported as a pass, and unavailable shot evidence prevents an overall pass.
 Review and adaptation cache keys include the Python, bridge, and compiled Rust
-implementation identity. Python retains review instructions, schemas,
-Codex calls, prompt compilation, and report storage. Visual reports
+implementation identity. Rust owns review instructions, schemas, shot and scene
+inspection retries, replacement-still inspections, and best-effort report storage.
+Python retains adaptation scheduling, model tokenization and legacy cache digests. Visual reports
 remain advisory and never request another video render.
 
 `preproduction` in Rust owns the two-round storyboard repair allowance, journal
@@ -653,17 +664,24 @@ preserves findings and prevents video inference.
 computes take seeds with the existing stride and modulus, and validates saved
 render reports. Resume eligibility checks cover planned and adapted storyboards,
 acceptance bindings, character/voice assets, render configuration, motion
-keyframes, planned directions, and predecessor provenance. Rust requests missing
-clip or legacy decoded-frame hashes from Python before accepting reuse. Changed
+keyframes, planned directions, and predecessor provenance. Rust computes missing
+clip or legacy decoded-frame hashes before accepting reuse and owns take archival
+and staged restoration. Changed
 matching clips remain errors, and native-picture recovery skips final soundtrack
 identity checks until voice conversion completes. Existing render report fields
 and JSON fingerprint serialization are unchanged. Advisory visual reviews map to
 production status in Rust and never authorize another video inference.
 
-Preproduction scheduling, repair execution, screenplay artifact I/O, take
-archival/restoration, and visual review orchestration remain in Python. Moving that
-state machine and narrowing Python to isolated inference workers are the next
-migration phases. LTX/MLX, Seed-VC, and optional MFLUX remain Python inference code.
+`inference` launches one versioned JSON request per Python process and streams progress
+back through the engine. LTX and MFLUX workers must exit successfully before Rust
+returns their results, releasing model resources before the next stage. `downloads`
+checks safetensors headers, cached blobs, pinned metadata and combined space requirements;
+Python supplies Hugging Face metadata and filesystem observations.
+
+Preproduction scheduling, repair execution, keyframe generation scheduling, shot
+execution, experiment tools and the CLI still contain Python application logic.
+Their remaining state machines are the next migration targets. LTX/MLX, Seed-VC,
+optional MFLUX, model tokenizers and pinned library setup remain Python code.
 
 ## Inspect and debug a run
 

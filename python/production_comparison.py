@@ -16,6 +16,7 @@ import premium_backend
 import quality_backend
 import shot_renderer
 import storyboard
+import rust_engine
 
 DIMENSIONS = (
     "physical_plausibility", "acting", "cinematography", "dramatic_storytelling",
@@ -29,6 +30,7 @@ ARMS = {
 CODE_FILES = (
     "production_comparison.py", "storyboard.py", "shot_renderer.py", "quality_backend.py",
     "premium_backend.py", "rust_engine.py", "validation.py",
+    "inference_worker.py",
     "quality_progress.py", "render_estimate.py", "requirements.txt",
 )
 
@@ -228,6 +230,7 @@ def prepare(request_file, run_dir):
         "requirements": requirements, "local_profile": profile,
         "premium_model": request.get("premium_model", "ltx-2-5-pro"),
         "backends": configs, "arms": ARMS,
+        "engine_sha256": rust_engine.implementation_sha256("production_comparison.py"),
         "audio_policy": "native generated audio in every arm; no saved voice conversion",
         "review_policy": "frozen prompts; full-scene audiovisual review remains pending",
         "publication": "experiment candidates only; no automatic quality acceptance",
@@ -248,6 +251,9 @@ def _load(run_dir, *, check_code=False):
         if not path.is_file() or _hash(path) != digest:
             raise ValueError(f"Frozen input changed or is missing: {relative}")
     if check_code:
+        if (manifest.get("engine_sha256") is not None
+                and manifest["engine_sha256"] != rust_engine.implementation_sha256("production_comparison.py")):
+            raise ValueError("Rust production engine changed; prepare a new experiment.")
         for name, digest in manifest["code"].items():
             if _hash(Path(__file__).with_name(name)) != digest:
                 raise ValueError(f"Renderer code changed ({name}); prepare a new experiment.")

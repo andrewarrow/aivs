@@ -1,10 +1,16 @@
 //! Deterministic acceptance of canonical prop pixel observations.
+mod production;
 use crate::continuity::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 pub const POLICY: &str = "prop-structure-v2";
+pub use production::review;
+
+pub fn failure_summary(report: &Value) -> Result<String> {
+    production::failure_summary(report)
+}
 
 #[derive(Deserialize)]
 struct Component {

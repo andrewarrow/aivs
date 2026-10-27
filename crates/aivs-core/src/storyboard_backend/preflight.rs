@@ -9,23 +9,7 @@ use std::{
 };
 
 fn executable() -> Result<PathBuf> {
-    let chosen = env::var_os("AIVS_CODEX_PATH").unwrap_or_else(|| "codex".into());
-    let path = PathBuf::from(&chosen);
-    let found = if path.is_absolute() {
-        Some(path)
-    } else {
-        env::var_os("PATH").and_then(|paths| {
-            env::split_paths(&paths)
-                .map(|directory| directory.join(&chosen))
-                .find(|candidate| candidate.is_file())
-        })
-    };
-    found.filter(|path| path.is_file()).ok_or_else(|| {
-        format!(
-            "Codex executable is unavailable: {}. {SETUP}",
-            chosen.to_string_lossy()
-        )
-    })
+    crate::codex::executable(None).map_err(|error| format!("{error} {SETUP}"))
 }
 
 pub(super) fn identity(root: &Path, cancelled: &AtomicBool) -> Result<Value> {

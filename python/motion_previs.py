@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import subprocess
 import time
 
 import quality_backend
@@ -311,40 +310,9 @@ def anchors(row, run_dir):
 def animatic(run_dir, *, on_activity=print):
     plan, boards = _base(run_dir)
     manifest = require_accepted(plan, boards, read(run_dir / "motion" / "keyframes.json"), run_dir)
-    folder = run_dir / "motion"
-    target, checkpoint = folder / "animatic.mp4", folder / "animatic.json"
-    binding = {"keyframes": rust_engine.digest(manifest), "fps": 24, "style": "held-keyframes-v1"}
-    if target.exists() and checkpoint.exists():
-        saved = read(checkpoint)
-        if saved.get("binding") == binding and saved.get("sha256") == _file_hash(target):
-            return target
-    # Use numbered hard copies instead of concat filenames: safe for arbitrary workspace paths.
-    import shutil
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix="animatic-", dir=folder) as temporary:
-        temp = Path(temporary)
-        concat = []
-        index = 0
-        for shot, row in zip(plan["shots"], manifest["shots"]):
-            end = shot["seconds"] * 24
-            for i, frame in enumerate(row["keyframes"]):
-                index += 1
-                name = f"{index:05d}.png"
-                shutil.copyfile(storyboard.resolve_image(frame, run_dir), temp / name)
-                next_frame = row["keyframes"][i + 1]["frame"] if i + 1 < len(row["keyframes"]) else end
-                concat += [f"file '{name}'", "option framerate 24", f"duration {(next_frame - frame['frame']) / 24:.12f}"]
-        concat += [f"file '{index:05d}.png'", "option framerate 24"]
-        (temp / "frames.txt").write_text("\n".join(concat) + "\n", encoding="utf-8")
-        partial = temp / "animatic.mp4"
-        on_activity("Assembling timed keyframe animatic without LTX weights")
-        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-f", "concat", "-safe", "0", "-i", str(temp / "frames.txt"), "-r", "24",
-            "-frames:v", str(sum(s["seconds"] * 24 for s in plan["shots"])),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(partial)], check=True)
-        partial.replace(target)
-    storyboard._save(checkpoint, {"binding": binding, "sha256": _file_hash(target),
-                                "audio": "silent", "preview": "held keyframes; no inferred human motion"})
-    return target
+    on_activity("Assembling timed keyframe animatic without LTX weights")
+    return Path(rust_engine.call("assemble_animatic", plan=plan, manifest=manifest,
+        run_dir=str(Path(run_dir).resolve()), manifest_sha256=rust_engine.digest(manifest)))
 
 
 def _file_hash(path):

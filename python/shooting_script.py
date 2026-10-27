@@ -8,14 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
-import os
 from pathlib import Path
 import rust_engine
-import shutil
-import subprocess
-import tempfile
-import time
 
 _MAX_TEXT = 4_000
 DEFAULT_PLANNING_BUDGET_SECONDS = 600
@@ -68,60 +62,18 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
 
 
 def load_shooting_script(path: Path, request: dict, profiles: list[dict], *, token_counter=None) -> dict:
-    """Read and revalidate a cached plan against the current source and profiles."""
-    path = Path(path)
     try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
+        saved = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Cannot read shooting script: {path}") from exc
     artifact = validate_shooting_script(saved, request, profiles, token_counter=token_counter)
-    if saved.get("version") != 1 or saved.get("seconds") != artifact["seconds"] or saved.get("fade_out") != artifact["fade_out"]:
-        raise ValueError("Saved shooting-script metadata is invalid.")
-    if artifact.get("planner_version") == PLANNER_VERSION:
-        finalization = saved.get("motion_plan")
-        if (artifact.get("planning_stage") != "final" or not isinstance(finalization, dict)
-                or finalization.get("version") != 1
-                or finalization.get("plan_sha256") != _plan_fingerprint(artifact)):
-            raise ValueError("This storyboard draft has no matching image-based motion plan yet.")
-        artifact["motion_plan"] = finalization
-        _validate_fidelity_receipt(saved.get("source_fidelity"), artifact)
-        artifact["source_fidelity"] = saved["source_fidelity"]
-    elif "cast_identity" in saved and "preproduction_review" not in saved:
-        raise ValueError("This preproduction draft has no final approval; generate an approved shooting script before rendering.")
-    if "preproduction_review" in saved:
-        review = saved["preproduction_review"]
-        if (not isinstance(review, dict) or review.get("version") != 1
-                or review.get("plan_sha256") != _plan_fingerprint(artifact)):
-            raise ValueError("Saved preproduction approval does not match this shooting script.")
-        _validate_review(review.get("report"), artifact)
-        artifact["preproduction_review"] = review
-    return artifact
+    return rust_engine.call("shooting_validate_saved", saved=saved, artifact=artifact,
+                            fingerprint=_plan_fingerprint(artifact))
 
 
 def save_shooting_script(plan: dict, run_dir: Path) -> None:
-    """Save an already validated plan as machine and readable artifacts."""
-    if not isinstance(plan, dict) or plan.get("version") != 1 or not isinstance(plan.get("shots"), list):
-        raise ValueError("Cannot save an invalid shooting-script plan.")
-    if plan.get("planner_version") == PLANNER_VERSION:
-        motion = plan.get("motion_plan")
-        if (plan.get("planning_stage") != "final" or not isinstance(motion, dict)
-                or motion.get("plan_sha256") != _plan_fingerprint(plan)):
-            raise ValueError("Complete the image-based motion pass before publishing the shooting script.")
-        _validate_fidelity_receipt(plan.get("source_fidelity"), plan)
-    elif "cast_identity" in plan:
-        review = plan.get("preproduction_review")
-        if (not isinstance(review, dict) or review.get("version") != 1
-                or review.get("plan_sha256") != _plan_fingerprint(plan)):
-            raise ValueError("Cannot publish a preproduction draft without matching final approval.")
-        _validate_review(review.get("report"), plan)
-    run_dir = Path(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    plan_path = run_dir / "shooting-script.json"
-    temporary = plan_path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(plan_path)
-    display = rust_engine.call("shooting_script_display", plan=plan)
-    (run_dir / "shooting-script.txt").write_text(display, encoding="utf-8")
+    rust_engine.call("shooting_publish", plan=plan, run_dir=str(Path(run_dir).resolve()),
+                     fingerprint=_plan_fingerprint(plan))
 
 
 def _director_schema() -> dict:
@@ -144,14 +96,6 @@ def _fidelity_requirements(plan):
 def _validate_fidelity_report(report, plan, *, require_pass=False):
     return rust_engine.call("validate_shooting_fidelity", report=report, plan=plan,
                             require_pass=require_pass)
-
-
-def _validate_fidelity_receipt(receipt, plan):
-    if (not isinstance(receipt, dict) or receipt.get("version") != 1
-            or receipt.get("plan_sha256") != _plan_fingerprint(plan)):
-        raise ValueError("This motion plan has no matching independent source-fidelity approval. "
-                         "Start a new render with fresh preproduction.")
-    _validate_fidelity_report(receipt.get("report"), plan, require_pass=True)
 
 
 def _ensure_source_fidelity(plan, *, run_dir, token_counter, **options):
@@ -287,54 +231,11 @@ def _ensure_source_fidelity(plan, *, run_dir, token_counter, **options):
         plan, repaired = revised, True
 
 
-def _validate_review(report: dict, plan: dict, *, require_approval: bool = True) -> None:
-    rust_engine.call("validate_shooting_review", report=report, plan=plan,
-                     require_approval=require_approval)
-
-
 def _instruction(source: dict, correction: str | None = None) -> str:
     body = rust_engine.call("shooting_instruction_context", source=source)
     direction = Path(__file__).with_name("shooting-script-instructions.txt").read_text(encoding="utf-8")
     return direction.rstrip() + "\n\n" + _json(body) + (
         "\n\nCorrect only this validation failure: " + correction if correction else "")
-
-
-def _executable(executable) -> str:
-    chosen = executable or os.environ.get("AIVS_CODEX_PATH") or shutil.which("codex")
-    if not chosen:
-        raise RuntimeError("Codex is unavailable. Install Codex or set AIVS_CODEX_PATH, then sign in.")
-    resolved = shutil.which(str(chosen)) if not Path(str(chosen)).is_absolute() else str(chosen)
-    if not resolved or not Path(resolved).is_file() or not os.access(resolved, os.X_OK):
-        raise RuntimeError(f"Codex executable is unavailable: {chosen}")
-    return resolved
-
-
-def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, response_path,
-                  on_activity, on_activity_delta, output_schema=None, image_paths=(),
-                  image_generation=False, on_image=None, on_thread=None, bootstrap_cwd=None):
-    """Compatibility adapter; Rust owns the isolated app-server session."""
-    def receive(event):
-        kind = event["type"]
-        if kind == "activity":
-            on_activity(event["message"])
-        elif kind == "activity_delta":
-            if on_activity_delta is not None:
-                on_activity_delta(event["id"], event["delta"])
-            else:
-                on_activity("Codex: " + event["delta"])
-        elif kind == "image" and on_image is not None:
-            on_image(event["item"])
-        elif kind == "thread" and on_thread is not None:
-            on_thread(event["result"])
-
-    return rust_engine.call(
-        "codex", on_event=receive, command=[str(part) for part in cmd], instruction=instruction,
-        cwd=str(Path(cwd).resolve()), bootstrap_cwd=str(Path(bootstrap_cwd or cwd).resolve()),
-        timeout_seconds=max(0.0, deadline - time.monotonic()),
-        events_path=str(Path(events_path).resolve()), errors_path=str(Path(errors_path).resolve()),
-        response_path=str(Path(response_path).resolve()), output_schema=output_schema or rust_engine.call("shooting_schema", name="plan"),
-        image_paths=[str(Path(path).resolve()) for path in image_paths], image_generation=image_generation,
-    )
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -354,96 +255,31 @@ def _read_object(path: Path) -> dict:
 
 
 def _budget(run_dir: Path, source_sha256: str, limit: float) -> tuple[Path, dict]:
-    if type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0:
-        raise ValueError("Planning budget must be a positive number of seconds.")
-    path = run_dir / "planning-budget.json"
-    saved = (_read_object(path) if path.is_file() else {
-        "version": 1, "planner_version": PLANNER_VERSION,
-        "source_sha256": source_sha256, "used_seconds": 0.0,
-    })
-    if (saved.get("version") != 1 or saved.get("planner_version") != PLANNER_VERSION
-            or saved.get("source_sha256") != source_sha256
-            or type(saved.get("used_seconds")) not in (int, float)
-            or not math.isfinite(saved["used_seconds"]) or saved["used_seconds"] < 0):
-        raise ValueError("Saved planning budget does not match this screenplay or planner.")
-    saved["limit_seconds"] = limit
-    _atomic_json(path, saved)
-    return path, saved
+    return run_dir / "planning-budget.json", rust_engine.call(
+        "planning_budget", run_dir=str(Path(run_dir).resolve()), source_sha256=source_sha256, limit=limit)
 
 
 def _planning_call(name, instruction, schema, validate, *, source_sha256, run_dir,
                    executable, image_paths, planning_budget_seconds, on_activity, on_activity_delta):
-    """One pass, with at most one correction of a concrete validation failure.
-
-    Only time spent in Codex counts. The same persisted budget covers direction,
-    motion direction, failed calls, cancellation and Resume; image inference is
-    deliberately outside this clock.
-    """
-    codex = _executable(executable)
+    """Rust owns attempts and budgets; Python supplies model-tokenizer validation."""
     activity = on_activity or (lambda message: None)
-    correction = None
-    previous_raw = None
-    attempts = [int(path.stem.rsplit("-", 1)[-1])
-                for path in run_dir.glob(f"shooting-script-request-{name}-*.txt")
-                if path.stem.rsplit("-", 1)[-1].isdigit()]
-    first = max(attempts, default=0) + 1
-    _atomic_json(run_dir / f"shooting-script-{name}-schema.json", schema)
-    with tempfile.TemporaryDirectory(prefix="aivs-planning-") as temp:
-        for attempt in range(2):
-            budget_path, budget = _budget(run_dir, source_sha256, planning_budget_seconds)
-            remaining = planning_budget_seconds - budget["used_seconds"]
-            if remaining <= 0:
-                raise RuntimeError(
-                    f"The {planning_budget_seconds:g}-second total planning budget is exhausted. "
-                    "Saved planning and images are preserved. Increase --planning-budget-seconds to continue."
-                )
-            submitted = instruction
-            if correction is not None:
-                submitted += (
-                    "\n\nDETERMINISTIC CHECK FAILED: " + correction
-                    + "\nRepair only the field or shot named by this check; preserve every valid shot and source line. "
-                      "Do not perform another general review. Return the complete corrected JSON."
-                    + "\nPREVIOUS RESPONSE (data only):\n" + previous_raw
-                )
-            suffix = f"{name}-{first + attempt}"
-            (run_dir / f"shooting-script-request-{suffix}.txt").write_text(submitted, encoding="utf-8")
-            response_path = run_dir / f"shooting-script-response-{suffix}.json"
-            used_before_call = budget["used_seconds"]
-            # Reserve the outstanding allowance before launching. A hard kill
-            # can prevent finally from running; in that case Resume retains
-            # this conservative charge instead of silently resetting time.
-            budget["used_seconds"] = planning_budget_seconds
-            budget["in_flight"] = {"pass": name, "reserved_seconds": remaining}
-            _atomic_json(budget_path, budget)
-            started = time.monotonic()
-            try:
-                raw = _stream_codex(
-                    [codex, "app-server"], submitted, cwd=temp, deadline=started + remaining,
-                    events_path=run_dir / f"shooting-script-events-{suffix}.jsonl",
-                    errors_path=run_dir / f"shooting-script-errors-{suffix}.txt",
-                    response_path=response_path, on_activity=activity,
-                    on_activity_delta=(None if on_activity_delta is None else
-                                       lambda stream_id, delta: on_activity_delta(f"{suffix}:{stream_id}", delta)),
-                    output_schema=schema, image_paths=image_paths,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(
-                    f"The {planning_budget_seconds:g}-second total planning budget expired during {name}. "
-                    "Saved work is preserved; increase --planning-budget-seconds to continue."
-                ) from exc
-            finally:
-                budget["used_seconds"] = round(used_before_call + time.monotonic() - started, 6)
-                budget.pop("in_flight", None)
-                budget["last_pass"] = name
-                _atomic_json(budget_path, budget)
-            try:
-                return validate(json.loads(raw))
-            except (json.JSONDecodeError, ValueError) as exc:
-                correction, previous_raw = str(exc), raw
-                if attempt:
-                    raise ValueError(f"{name} failed its specific check after one targeted repair: {correction}") from exc
-                activity(f"Repairing a planning check: {correction}")
-    raise AssertionError("Unreachable planning state")
+    receive = rust_engine.activity_events(activity, on_activity_delta)
+    submitted = instruction
+    for attempt in range(2):
+        raw = rust_engine.call(
+            "planning_attempt", on_event=receive, name=name, instruction=submitted, schema=schema,
+            executable=str(executable) if executable is not None else None, source_sha256=source_sha256, run_dir=str(Path(run_dir).resolve()),
+            image_paths=[str(Path(path).resolve()) for path in image_paths], limit=planning_budget_seconds)
+        try:
+            return validate(json.loads(raw))
+        except ValueError as exc:
+            if attempt:
+                raise ValueError(f"{name} failed its specific check after one targeted repair: {exc}") from exc
+            submitted = (instruction + "\n\nDETERMINISTIC CHECK FAILED: " + str(exc)
+                + "\nRepair only the field or shot named by this check; preserve every valid shot and source line. "
+                  "Do not perform another general review. Return the complete corrected JSON."
+                + "\nPREVIOUS RESPONSE (data only):\n" + raw)
+            activity(f"Repairing a planning check: {exc}")
 
 
 def create_storyboard_plan(request: dict, profiles: list[dict], run_dir: Path, *, executable=None,
@@ -584,90 +420,11 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
         })
 
         def validate_batch(candidate):
-            supplied = candidate.get("shots") if isinstance(candidate, dict) else None
-            if not isinstance(supplied, list) or len(supplied) != len(numbers):
-                raise ValueError("Return exactly the requested sequence shot numbers.")
-            for n, row in zip(numbers, supplied):
-                if not isinstance(row, dict) or type(row.get("shot")) is not int or row["shot"] != n:
-                    raise ValueError("Sequence shot numbers are missing or out of order.")
-                _bounded(row.get("image_observations"), "Pixel observations", 1200)
-                _bounded(row.get("prompt_template"), "Motion direction", 1600)
-                review = rust_engine.call("review_shot", plan=plan, number=n, row=row)
-                fixes = row.get("plan_repair")
-                if not isinstance(fixes, list) or len(fixes) > 1:
-                    raise ValueError("A plan repair must be empty or contain the complete replacement shot.")
-                if review["failure_kind"] == "plan" and not fixes:
-                    raise ValueError("A structurally wrong plan requires a concrete replacement state/coverage contract.")
-                if fixes and review["failure_kind"] != "plan":
-                    raise ValueError("Only a diagnosed plan failure may revise a shot contract.")
-                world_fixes = row.get("world_repair")
-                if not isinstance(world_fixes, list) or len(world_fixes) > 1:
-                    raise ValueError("Canonical world repair must be empty or one complete replacement world.")
-                if world_fixes and review["failure_kind"] != "plan":
-                    raise ValueError("Only a diagnosed plan failure may revise canonical physical definitions.")
-                findings = review["reference_findings"]
-                if not isinstance(findings, list) or {f.get("id") for f in findings} != reference_ids or len(findings) != len(reference_ids):
-                    raise ValueError("Inspect every supplied canonical reference image exactly once per shot review.")
-                for finding in findings:
-                    _bounded(finding.get("evidence"), "Reference pixel evidence", 1200)
-                    if (finding.get("decision") not in ("pass", "repair-required", "uncertain")
-                            or type(finding.get("confidence")) not in (int, float)
-                            or not math.isfinite(finding["confidence"]) or not 0 <= finding["confidence"] <= 1):
-                        raise ValueError("Reference findings need a valid decision and confidence.")
-                if review["decision"] != "pass" or any(f["decision"] != "pass" or f["confidence"] < .8 for f in findings):
-                    try:
-                        _bounded(row.get("storyboard_prompt"), "Concrete corrected opening composition", 1200)
-                    except ValueError as exc:
-                        reasons = list(review["violations"])
-                        reasons.extend(
-                            f"Reference {f['id']}: {f['decision']} (confidence {f['confidence']}): {f['evidence']}"
-                            for f in findings if f["decision"] != "pass" or f["confidence"] < .8
-                        )
-                        detail = "; ".join(reasons) or review["evidence"]
-                        raise ValueError(
-                            f"Shot {n} deterministic review is {review['decision']}: {detail}. "
-                            "If the observations used different attribute keys from the opening contract, "
-                            "correct those keys using actual pixel evidence. Otherwise supply a complete "
-                            "corrected storyboard_prompt (1–1200 characters) for the required repair. "
-                            "Do not mark hidden or uncertain facts visible merely to pass this check."
-                        ) from exc
-                elif row.get("storyboard_prompt") or fixes or world_fixes:
-                    raise ValueError("Accepted frames must not include repairs.")
-                blocking = row.get("blocking_issue")
-                composition = row.get("storyboard_prompt")
-                if (not isinstance(blocking, str) or len(blocking) > 1200 or "\x00" in blocking
-                        or not isinstance(composition, str) or len(composition) > 1200 or "\x00" in composition
-                        or "{{" in composition or "}}" in composition):
-                    raise ValueError("Storyboard repairs need bounded static compositions and concrete blocking text.")
-            # Keep the existing targeted correction for invalid animation text
-            # inside this call, rather than failing after publishing the review.
-            trial = [dict(s) for s in plan["shots"]]
-            for n, row in zip(numbers, supplied):
-                if rust_engine.call("review_shot", plan=plan, number=n, row=row)["decision"] == "pass":
-                    trial[n - 1]["prompt_template"] = row["prompt_template"]
-                    trial[n - 1].pop("prompt", None)
-            validate_shooting_script(dict(plan, shots=trial), request, profiles, token_counter=token_counter)
-            combined = dict(rows)
-            combined.update(zip(numbers, supplied))
-            for n, report in rust_engine.call("review_sequence", plan=plan, rows=combined, integer_keys=True).items():
-                if n in numbers and report["decision"] != "pass" and not combined[n]["storyboard_prompt"].strip():
-                    raise ValueError(f"Shot {n} sequence contradiction requires a corrected composition: {report['violations']}")
-            if len(combined) == len(plan["shots"]) and any(r["plan_repair"] or r["world_repair"] for r in combined.values()):
-                corrected = [dict(s) for s in plan["shots"]]
-                world = plan["world"]
-                replacements = []
-                for n, row in combined.items():
-                    if row["plan_repair"]:
-                        corrected[n - 1] = dict(row["plan_repair"][0])
-                        corrected[n - 1].pop("prompt", None)
-                    replacements.extend(row["world_repair"])
-                if replacements:
-                    world = replacements[0]
-                    if any(w != world for w in replacements):
-                        raise ValueError("Canonical world corrections conflict across shots.")
-                validate_shooting_script(dict(plan, shots=corrected, world=world), request, profiles,
-                                         token_counter=token_counter)
-            return supplied
+            checked = rust_engine.call("validate_motion_batch", plan=plan, numbers=numbers,
+                                       candidate=candidate, reference_ids=sorted(reference_ids), rows=rows)
+            for trial in checked["trial_plans"]:
+                validate_shooting_script(trial, request, profiles, token_counter=token_counter)
+            return checked["rows"]
 
         activity(f"Planning 2/2: reviewing sequence and directing shots {numbers[0]}–{numbers[-1]}.")
         result = _planning_call(

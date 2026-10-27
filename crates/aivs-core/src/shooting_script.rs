@@ -1,10 +1,12 @@
 //! Screenplay parsing, compiled shot contracts, and independent approval rules.
 //! Clients retain the historical artifact JSON digest codec and model tokenizer.
 mod approval;
+mod batch;
 mod compile;
 mod prompt;
 mod schemas;
 mod source;
+mod storage;
 mod unicode;
 
 use crate::continuity::Result;
@@ -60,6 +62,9 @@ pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
     match operation {
         "parse_shooting_request" => source::parse(&args["request"], &args["profiles"]),
         "shooting_schema" => schemas::schema(args["name"].as_str().unwrap_or_default()),
+        "shooting_validate_saved" => storage::validate_saved(args),
+        "shooting_publish" => storage::publish(args),
+        "validate_motion_batch" => batch::validate(args),
         "compile_shooting_script" => compile::compile(
             &args["candidate"],
             &args["source"],

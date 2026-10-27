@@ -23,10 +23,8 @@ def _backend():
 
 
 def _call(operation, *, on_activity=None, **args):
-    def receive(event):
-        if on_activity is not None and event["type"] == "activity":
-            on_activity(event["message"])
-    return rust_engine.call(operation, root=str(ROOT), on_event=receive, **args)
+    return rust_engine.call(operation, root=str(ROOT),
+                            on_event=rust_engine.activity_events(on_activity), **args)
 
 
 def configuration() -> dict:

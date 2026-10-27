@@ -60,64 +60,14 @@ def planned_shot_sha256(plan: dict, shot: dict) -> str:
 
 
 def resolve_image(binding: dict, run_dir: Path) -> Path:
-    """Resolve a snapshotted image and reject missing, replaced or escaping files."""
-    asset = binding.get("image")
-    if not isinstance(asset, dict):
-        raise ValueError("Each storyboard shot needs an image asset.")
-    filename, digest = asset.get("file"), asset.get("sha256")
-    if (not isinstance(filename, str) or not filename.strip() or "\x00" in filename
-            or Path(filename).is_absolute()):
-        raise ValueError("Storyboard image paths must be relative to the run directory.")
-    if (not isinstance(digest, str) or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)):
-        raise ValueError("Storyboard images need a lowercase SHA-256 digest.")
-    root = Path(run_dir).resolve()
-    path = (root / filename).resolve()
-    if not path.is_relative_to(root):
-        raise ValueError("Storyboard images must remain inside the run directory.")
-    if not path.is_file():
-        raise ValueError(f"Storyboard image is missing: {filename}")
-    with path.open("rb") as stream:
-        actual = hashlib.file_digest(stream, "sha256").hexdigest()
-    if actual != digest:
-        raise ValueError(f"Storyboard image changed: {filename}")
-    return path
+    return Path(rust_engine.call("storyboard_resolve_image", binding=binding,
+                                 run_dir=str(Path(run_dir).resolve())))
 
 
 def prepare(plan: dict, manifest: dict, run_dir: Path) -> list[dict]:
-    """Validate every frame before inference and return bindings in shot order.
-
-    The caller snapshots image bytes and the manifest into the run directory.
-    This module never reads live source images outside that snapshot. Extra
-    manifest metadata is allowed; only execution inputs enter take provenance.
-    """
-    if not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1:
-        raise ValueError("Storyboard manifests must use version 1.")
-    entries = manifest.get("shots")
-    if not isinstance(entries, list) or len(entries) != len(plan["shots"]):
-        raise ValueError("A storyboard must provide exactly one frame for every planned shot.")
-    bindings = {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise ValueError("Storyboard shots must be objects.")
-        number = entry.get("shot")
-        if type(number) is not int or not 1 <= number <= len(plan["shots"]) or number in bindings:
-            raise ValueError("Storyboard shot numbers must cover the plan once, starting at 1.")
-        fingerprint = planned_shot_sha256(plan, plan["shots"][number - 1])
-        if entry.get("planned_shot_sha256") != fingerprint:
-            raise ValueError(f"Storyboard frame {number} belongs to a different planned shot.")
-        path = resolve_image(entry, run_dir)
-        decoded = quality_backend.prepare_source_image(path)
-        if decoded["source_sha256"] != entry["image"]["sha256"]:
-            raise ValueError(f"Storyboard image changed while preparing shot {number}.")
-        bindings[number] = {
-            "shot": number,
-            "planned_shot_sha256": fingerprint,
-            "image": {"file": path.relative_to(Path(run_dir).resolve()).as_posix(),
-                      "sha256": decoded["source_sha256"],
-                      "width": decoded["width"], "height": decoded["height"]},
-        }
-    return [bindings[number] for number in range(1, len(plan["shots"]) + 1)]
+    return rust_engine.call("storyboard_prepare", plan=plan, manifest=manifest,
+        run_dir=str(Path(run_dir).resolve()),
+        fingerprints=[planned_shot_sha256(plan, shot) for shot in plan["shots"]])
 
 
 def _save(path: Path, value: dict) -> None:
@@ -132,39 +82,12 @@ def _fingerprint(value: dict) -> str:
 
 
 def reference_specs(plan):
-    world = plan["world"]
-    specs = []
-    for item in world["environments"]:
-        specs.append({"id": f"environment:{item['scene_id']}", "kind": "environment", "definition": item,
-                      "prompt": "One clean cinematic environment plate. No people, body parts, loose garments or movable story props. " + item["reference_prompt"]})
-    for item in world["props"]:
-        specs.append({"id": "prop:" + item["id"], "kind": "prop", "definition": item,
-                      "prompt": prop_reference.generation_prompt(item)})
-    for item in world["characters"]:
-        if item["morphology"]:
-            specs.append({"id": "body:" + item["role"], "kind": "body", "definition": item,
-                          "prompt": "Full body neutral character reference photograph. Preserve the attached performer's identity, plausible body proportions and neutral fitted clothing. " + item["reference_prompt"]})
-    return specs
+    return rust_engine.call("storyboard_reference_specs", plan=plan)
 
 
 def prepare_references(plan, boards, run_dir):
-    """Resolve exact physical references, including the actors' identity inputs."""
-    specs = {s["id"]: s for s in reference_specs(plan)}
-    expected = {key: _fingerprint(spec) for key, spec in specs.items()}
-    rows = boards.get("references")
-    if (not isinstance(rows, list) or {r.get("id") for r in rows} != set(expected)
-            or len(rows) != len(expected)):
-        raise ValueError("Storyboard references do not cover the canonical physical world.")
-    for row in rows:
-        spec = specs[row["id"]]
-        if row.get("definition_sha256") != expected[row["id"]] or row.get("kind") != spec["kind"]:
-            raise ValueError("Storyboard reference belongs to a different physical definition.")
-        resolve_image(row, run_dir)
-        if spec["kind"] == "prop":
-            prop_reference.require_accepted(spec, row)
-        for portrait in row.get("generation", {}).get("inputs", []):
-            resolve_image({"image": portrait}, run_dir)
-    return rows
+    return rust_engine.call("storyboard_prepare_references", plan=plan, boards=boards,
+        run_dir=str(Path(run_dir).resolve()), **_reference_contracts(plan, boards))
 
 
 def _reference_attempt(spec, request, run_dir, activity):
@@ -265,145 +188,34 @@ def generate_references(plan, profiles, run_dir, seed, *, repair_ids=(), round_n
 
 
 def visible_state_prompt(plan, shot):
-    """Compile drawable opening facts without disclosing concealed story facts."""
-    state = shot.get("continuity", {}).get("opening", {})
-    hidden = {"unknown", "not-visible", "concealed", "offscreen", "absent"}
-    concealed_reveals = {r["id"] for r in state.get("reveals", []) if r["value"] in hidden}
-    clauses = []
-    for character in state.get("characters", []):
-        if character["presence"] != "visible":
+    return rust_engine.call("storyboard_visible_state", plan=plan, shot=shot)
+
+
+def _reference_contracts(plan, boards):
+    """Retain the historical JSON codec; Rust owns reference selection and checks."""
+    specs = reference_specs(plan) if plan.get("world") else []
+    entries = {row["id"]: row for row in (boards or {}).get("references", [])}
+    bindings, shared = {}, {}
+    for spec in specs:
+        if spec["kind"] != "prop":
             continue
-        visibility = {a["key"]: a["value"] for a in character["visibility"]}
-        details = [f"{key} {character[key]}" for key in ("costume", "posture", "location")
-                   if character[key] not in hidden]
-        for category in ("appearance", "morphology"):
-            for attribute in character[category]:
-                key, value = attribute["key"], attribute["value"]
-                exposed = visibility.get(category + "." + key, visibility.get(key))
-                if value in hidden or key in concealed_reveals or exposed in hidden:
-                    continue
-                # Physical existence is not visibility. Body conditions/sizes
-                # enter photographic prose only when explicitly exposed.
-                if category == "morphology" and exposed != "visible":
-                    continue
-                details.append(f"{key} {value}")
-        clauses.append(character["role"] + ": " + "; ".join(details))
-    canonical = {}
-    for prop in plan.get("world", {}).get("props", []):
-        for entity in [prop, *prop["components"]]:
-            canonical[entity["id"]] = (entity, prop)
-    visible = {p["id"] for p in state.get("props", []) if p["visibility"] == "visible"}
-    for prop in state.get("props", []):
-        if prop["id"] not in visible:
-            continue
-        definition, parent = canonical.get(prop["id"], ({}, {}))
-        physical = {key: definition[key] for key in ("type", "shape", "size", "color") if key in definition}
-        if definition.get("features"):
-            physical["distinguishing_features"] = "; ".join(definition["features"])
-        physical.update({a["key"]: a["value"] for a in prop["physical"]})
-        details = [f"{key} {value}" for key, value in physical.items() if value not in hidden]
-        if parent and parent["id"] != prop["id"] and parent["id"] not in visible:
-            details.append("component of " + parent["type"])
-        details.extend(f"{key} {prop[key]}" for key in ("owner", "support", "location", "state")
-                       if prop[key] not in hidden)
-        clauses.append(prop["id"] + ": " + "; ".join(details))
-    for relation in state.get("relationships", []):
-        if relation["subject"] in visible and relation["object"] in visible and relation["value"] not in hidden:
-            clauses.append(f"{relation['subject']} {relation['relation']} {relation['object']}={relation['value']}")
-    return ". ".join(clauses)
+        if spec["id"] in entries:
+            bindings[spec["id"]] = prop_reference.binding(spec, entries[spec["id"]]["image"])
+        definition = spec["definition"]
+        if not definition["components"] and not definition["relationships"]:
+            shared[spec["id"]] = _fingerprint({key: definition[key] for key in
+                ("type", "shape", "size", "color", "features")})
+    return dict(specs=specs, spec_hashes={spec["id"]: _fingerprint(spec) for spec in specs},
+                prop_bindings=bindings, shared_designs=shared)
 
 
 def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, height):
-    by_id = {profile["id"]: profile for profile in profiles}
-    cast = {item["role"]: item["character"] for item in plan.get("source", {}).get("cast", [])}
-    visible = shot.get("opening_visible_roles")
-    if not isinstance(visible, list):
-        raise ValueError(f"Storyboard shot {number} needs explicit opening_visible_roles.")
-    references, instructions = [], []
-    if prior is not None:
-        # A repair targets these exact rejected pixels, never an unrelated prior scene.
-        resolve_image({"image": prior}, run_dir)
-        references.append(dict(prior, purpose="edit-target"))
-        instructions.append("Image 1: rejected image to edit; preserve all correct regions.")
-    for role in visible:
-        if role not in cast or cast[role] not in by_id:
-            raise ValueError(f"Storyboard shot {number} has an unknown visible performer: {role}")
-        profile = by_id[cast[role]]
-        asset = profile.get("image")
-        if not asset:
-            raise ValueError(f"{profile['name']} needs a saved portrait for storyboard generation.")
-        reference = {"file": f"characters/{profile['id']}/{asset['file']}",
-                     "sha256": asset["sha256"], "role": role, "character": profile["id"]}
-        resolve_image({"image": reference}, run_dir)
-        references.append(reference)
-        instructions.append(f"Image {len(references)}: {role}'s face identity.")
     library_path = Path(run_dir) / "storyboard-references.json"
-    if plan.get("world") and reference_specs(plan) and not library_path.is_file():
-        raise ValueError("The canonical shot-reference library is missing; regenerate references before image generation.")
-    if library_path.is_file():
-        library = json.loads(library_path.read_text())
-        specs = {spec["id"]: spec for spec in reference_specs(plan)}
-        shared_designs = {}
-        needed = {f"environment:{shot['scene_id']}"} | {"body:" + role for role in visible}
-        visible_props = {p["id"] for p in shot["continuity"]["opening"]["props"] if p["visibility"] == "visible"}
-        needed |= {"prop:" + p["id"] for p in plan["world"]["props"] if shot["scene_id"] in p["scene_ids"]
-                   and {p["id"], *(c["id"] for c in p["components"])} & visible_props}
-        missing = (needed & specs.keys()) - {r["id"] for r in library["references"]}
-        if missing:
-            raise ValueError(f"Missing essential shot references: {sorted(missing)}")
-        for reference in library["references"]:
-            if reference["id"] not in needed:
-                continue
-            resolve_image(reference, run_dir)
-            spec = specs[reference["id"]]
-            if reference.get("kind") != spec["kind"] or reference.get("definition_sha256") != _fingerprint(spec):
-                raise ValueError("Storyboard reference belongs to a different physical definition.")
-            if reference["kind"] == "prop":
-                prop_reference.require_accepted(spec, reference)
-                definition = spec["definition"]
-                shared = None
-                # Identical simple props share one design image, while their
-                # separate IDs and current owners/supports remain in the state.
-                if not definition["components"] and not definition["relationships"]:
-                    shared = _fingerprint({key: definition[key] for key in
-                                           ("type", "shape", "size", "color", "features")})
-                if shared in shared_designs:
-                    image_number = shared_designs[shared]
-                    asset = references[image_number - 1]
-                    asset.setdefault("reference_ids", [asset["reference_id"]]).append(reference["id"])
-                    instructions[image_number - 1] += f" Also the design for {definition['id']}."
-                    continue
-            references.append(dict(reference["image"], purpose=reference["kind"], reference_id=reference["id"]))
-            instructions.append(f"Image {len(references)}: {reference['id']} physical reference.")
-            if reference["kind"] == "prop" and shared is not None:
-                shared_designs[shared] = len(references)
-    # A previous frame is a scene full of people and mutable story facts, not a
-    # clean environment plate. Never feed it back as an authoritative set image.
-    # Independent frames share the director's scene description instead.
-    composition = shot.get("storyboard_prompt")
-    if not isinstance(composition, str) or not composition.strip():
-        # Compatibility for hand-authored plans: start state describes a still,
-        # unlike the video prompt, whose later action must not leak into frame 1.
-        composition = str(shot.get("start_state", "")).strip()
-        if not composition:
-            raise ValueError(f"Shot {number} needs a storyboard_prompt or a static start_state.")
-        if shot.get("scene"):
-            composition = str(shot["scene"]) + ". " + composition
-    presence = ("Visible people at time zero: " + (", ".join(visible) if visible else "none; an empty composition") + ". ")
-    absent = [role for role in cast if role not in visible]
-    if absent:
-        presence += "Do not depict " + ", ".join(absent) + "; their entrances occur later. "
-    prompt = ("One cinematic live-action starting frame, a single photograph, no panels or lettering. "
-              "One instance of each visible part; use current docking and placement. "
-              + presence + "Keep concealed features covered; references do not override current clothing or visibility. "
-              + " ".join(instructions) + "\nVisible opening state: " + visible_state_prompt(plan, shot) +
-              "\nKeep faces, active hands and essential props clear of frame edges.")
-    return {"policy": POLICY, "source_sha256": plan.get("source_sha256"), "shot": number,
-            "opening_state": shot.get("continuity", {}).get("opening"),
-            "world_sha256": _fingerprint(plan.get("world", {})),
-            "prompt": prompt, "composition": composition.strip(),
-            "references": references, "seed": (seed + number - 1) % (2**31),
-            "width": width, "height": height, "backend": storyboard_backend.configuration()}
+    library = json.loads(library_path.read_text()) if library_path.is_file() else None
+    return rust_engine.call("storyboard_frame_request", plan=plan, shot=shot, profiles=profiles,
+        run_dir=str(Path(run_dir).resolve()), prior=prior, number=number, seed=seed,
+        width=width, height=height, library=library, world_sha256=_fingerprint(plan.get("world", {})),
+        backend=storyboard_backend.configuration(), **_reference_contracts(plan, library))
 
 
 def regenerate_shot(plan: dict, profiles: list[dict], run_dir: Path, seed: int,

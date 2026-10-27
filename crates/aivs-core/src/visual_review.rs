@@ -1,5 +1,6 @@
 //! Rules for advisory frame observations and preservation of unrendered shots.
 //! These reports describe evidence; they never authorize another video render.
+mod production;
 use crate::continuity::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -296,6 +297,11 @@ pub fn validate_scene(value: &Value, plan: &Value, shot_reviews: &Value) -> Resu
 
 pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
     match operation {
+        "visual_schema" => production::schema(args["name"].as_str().unwrap_or_default()),
+        "visual_instruction" => {
+            production::instruction(args["name"].as_str().unwrap_or_default(), &args["context"])
+                .map(Value::String)
+        }
         "visual_contract" => contract(&args["shot"]).map(|items| json!(items)),
         "validate_visual_shot" => validate_shot(&args["value"], &args["shot"]),
         "validate_visual_preservation" => {
@@ -311,5 +317,19 @@ pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
             validate_scene(&args["value"], &args["plan"], &args["shot_reviews"])
         }
         _ => Err(format!("Unknown visual review operation: {operation}")),
+    }
+}
+
+pub fn run(
+    operation: &str,
+    args: &Value,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    emit: impl FnMut(Value) -> Result<()>,
+) -> Result<Value> {
+    match operation {
+        "visual_review_shot" => production::shot(args, cancelled, emit),
+        "visual_review_scene" => production::scene(args, cancelled, emit),
+        "visual_review_storyboard" => production::storyboard(args, cancelled, emit),
+        _ => Err(format!("Unknown visual inspection: {operation}")),
     }
 }

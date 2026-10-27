@@ -23,6 +23,37 @@ pub enum AppServerOutput {
     Closed,
 }
 
+/// Resolve once before entering an isolated production working directory.
+pub fn executable(override_path: Option<&str>) -> Result<PathBuf, String> {
+    let chosen = override_path
+        .filter(|s| !s.is_empty())
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("AIVS_CODEX_PATH"))
+        .unwrap_or_else(|| "codex".into());
+    let supplied = PathBuf::from(&chosen);
+    let candidates = if supplied.is_absolute() || supplied.components().count() > 1 {
+        vec![supplied]
+    } else {
+        std::env::var_os("PATH")
+            .map(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|p| p.join(&chosen))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    candidates.into_iter().find(|path| {
+        let Ok(metadata) = path.metadata() else { return false; };
+        if !metadata.is_file() { return false; }
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))] { true }
+    }).and_then(|path| path.canonicalize().ok()).ok_or_else(|| format!(
+        "Codex executable is unavailable: {}. Install Codex or set AIVS_CODEX_PATH, then sign in.", chosen.to_string_lossy()))
+}
+
 pub fn initialize_params() -> Value {
     json!({"clientInfo": {"name": "aivs", "title": "AIVS", "version": env!("CARGO_PKG_VERSION")}})
 }

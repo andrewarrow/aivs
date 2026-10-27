@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import shutil
 
 import quality_backend
 import rust_engine
@@ -83,14 +82,7 @@ def _prepare_director(request, profiles, run_dir, *, fresh, options):
 
 def rebind_storyboards(director, final, boards, run_dir):
     """Bind unchanged compositions to their image-informed motion directions."""
-    if (director.get("source_sha256") != final.get("source_sha256")
-            or len(director["shots"]) != len(final["shots"])):
-        raise ValueError("Shot direction changed the storyboard source or coverage.")
-    direction_fields = {"prompt", "prompt_template"}
-    for before, after in zip(director["shots"], final["shots"]):
-        if ({key: value for key, value in before.items() if key not in direction_fields}
-                != {key: value for key, value in after.items() if key not in direction_fields}):
-            raise ValueError("Shot direction changed a storyboard composition; regenerate preproduction.")
+    rust_engine.call("validate_storyboard_direction", director=director, final=final)
     # A crash after finalization may leave either the draft or final binding.
     try:
         storyboard.prepare(final, boards, run_dir)
@@ -126,24 +118,9 @@ def _load_final(directory, request, profiles, token_counter):
 
 
 def _copy_final(source, destination, plan, director, boards):
-    for entry in boards["shots"] + boards.get("references", []):
-        original = storyboard.resolve_image(entry, source)
-        relative = original.relative_to(source.resolve())
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            if target.read_bytes() != original.read_bytes():
-                raise ValueError(f"A different storyboard already exists: {relative}")
-        else:
-            shutil.copyfile(original, target)
-    _save(destination / "storyboard-plan.json", director)
-    if (source / "storyboard-plan.txt").is_file():
-        shutil.copyfile(source / "storyboard-plan.txt", destination / "storyboard-plan.txt")
-    _save(destination / "storyboards.json", boards)
-    _save(destination / "storyboard-references.json", {"version": 1, "source_sha256": plan["source_sha256"],
-                                                      "references": boards.get("references", [])})
-    _save(destination / "storyboard-review.json", _read(source / "storyboard-review.json"))
-    shooting_script.save_shooting_script(plan, destination)
+    rust_engine.call("copy_final_preproduction", source=str(Path(source).resolve()),
+        destination=str(Path(destination).resolve()), plan=plan, director=director, boards=boards,
+        fingerprint=shooting_script._plan_fingerprint(plan))
     storyboard.require_accepted(plan, boards, destination)
 
 

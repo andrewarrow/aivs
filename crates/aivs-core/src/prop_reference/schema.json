@@ -1,0 +1,114 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "parts",
+    "relationships",
+    "coherent_component_state",
+    "connections_clear",
+    "extra_parts",
+    "violations",
+    "confidence",
+    "evidence",
+    "regeneration_prompt"
+  ],
+  "properties": {
+    "parts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "count",
+          "matches_definition",
+          "clearly_visible",
+          "evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "matches_definition": {
+            "type": "boolean"
+          },
+          "clearly_visible": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "subject",
+          "relation",
+          "object",
+          "value",
+          "matches_definition",
+          "clearly_visible",
+          "evidence"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string"
+          },
+          "relation": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "matches_definition": {
+            "type": "boolean"
+          },
+          "clearly_visible": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "coherent_component_state": {
+      "type": "boolean"
+    },
+    "connections_clear": {
+      "type": "boolean"
+    },
+    "extra_parts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "evidence": {
+      "type": "string"
+    },
+    "regeneration_prompt": {
+      "type": "string"
+    }
+  }
+}

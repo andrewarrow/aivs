@@ -1,10 +1,19 @@
-//! Shot execution policy and saved-take provenance, without model or media I/O.
-//! The adapter supplies byte hashes; artifact JSON and fingerprints stay unchanged.
+//! Shot execution policy, saved-take provenance, and run-local recovery.
+//! Legacy artifact JSON fingerprints remain adapter-owned.
+mod storage;
 use crate::continuity::Result;
 use serde_json::{Value, json};
 
 const SEED_MODULUS: i128 = 1 << 31;
 const RETAKE_SEED_STRIDE: i128 = 1_000_003;
+
+pub fn storage(
+    operation: &str,
+    args: &Value,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Value> {
+    storage::dispatch(operation, args, cancelled)
+}
 
 fn take_number(saved: &Value) -> Option<u64> {
     match saved.get("take") {

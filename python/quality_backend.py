@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from pathlib import Path
-import subprocess
 import time
 import rust_engine
 
@@ -155,34 +153,40 @@ def doctor():
 def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
            audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False, profile="distilled",
            image_anchors=None):
+    """Rust launches one isolated model worker and waits for resource release."""
+    import sys
+
+    def receive(event):
+        if event["type"] == "inference_progress" and on_progress is not None:
+            on_progress(**event["data"])
+        elif event["type"] == "activity":
+            print(event["message"], file=sys.stderr, flush=True)
+
+    return rust_engine.call("inference", root=str(ROOT), python=sys.executable,
+        worker_operation="ltx_render", on_event=receive, payload={
+            "prompt": prompt, "seed": seed, "frames": frames, "output": str(Path(output).resolve()),
+            "image_file": str(Path(image_file).expanduser().resolve()) if image_file is not None else None,
+            "audio_file": str(Path(audio_file).expanduser().resolve()) if audio_file is not None else None,
+            "hold_image_framing": hold_image_framing, "width": width, "height": height,
+            "keep_native": keep_native, "profile": profile,
+            "image_anchors": [dict(a, file=str(Path(a["file"]).expanduser().resolve())) for a in image_anchors]
+                             if isinstance(image_anchors, list) else image_anchors})
+
+
+def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
+           audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False, profile="distilled",
+           image_anchors=None):
     from importlib.metadata import version
-    from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
+    from quality_progress import RenderProgress, pipeline_activity
     from render_estimate import RenderEstimate
-    from validation import validate_video, validate_supplied_audio
 
     config = profile_config(profile)
-    if profile == "hq" and audio_file is not None:
-        raise ValueError("The HQ profile generates native audio; fixed audio is unsupported.")
     output = Path(output)
-    if (type(frames) is not int or frames < 1
-            or any(type(value) is not int or value < 64 or value % 64 for value in (width, height))):
-        raise ValueError("Render frames must be positive and dimensions must be positive multiples of 64.")
-    image = prepare_source_image(image_file) if image_file is not None else None
-    anchors = prepare_image_anchors(image_anchors, frames, width, height) if image_anchors is not None else None
-    if anchors is not None and (hold_image_framing or audio_file is not None):
-        raise ValueError("Timed image anchors require the text/image video pipeline without held framing or fixed audio.")
-    if anchors is not None and image is not None and image["source_sha256"] != anchors[0]["source_sha256"]:
-        raise ValueError("The opening anchor must match the supplied starting image.")
-    audio = prepare_source_audio(audio_file, frames / FPS) if audio_file is not None else None
-    if image is not None and hold_image_framing:
-        image["conditioning"] = "whole-first-and-last-frame"
-        image["anchor_frames"] = [0] if frames <= 1 else [0, frames - 1]
-    native = output.with_name("video.native.mp4")
-    partial = output.with_name("video.partial.mp4")
-    # A failed encode or validation leaves its unpublished output behind. Each
-    # attempt must start with an empty path so FFmpeg cannot reuse stale media.
-    partial.unlink(missing_ok=True)
-    inference_frames = math.ceil((frames - 1) / 8) * 8 + 1
+    prepared = rust_engine.call("prepare_ltx_render", profile=profile, frames=frames,
+        width=width, height=height, output=str(output.resolve()), image_file=image_file,
+        audio_file=audio_file, image_anchors=image_anchors, hold_image_framing=hold_image_framing)
+    image, anchors, audio = (prepared[key] for key in ("image", "anchors", "audio"))
+    native, inference_frames = prepared["native"], prepared["inference_frames"]
     started = time.monotonic()
     # The installed progress hooks and timing history describe the distilled
     # architecture. HQ has different sampler calls; show phase heartbeats only.
@@ -215,15 +219,7 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
             generation_options.update(stage1_steps=15, stage2_steps=3, cfg_scale=3.0,
                                       stg_scale=0.0, enable_teacache=False)
         if audio is not None:
-            # The causal video grid needs up to eight extra inference frames.
-            # Pad its conditioning track; final muxing uses the original audio.
-            conditioning_audio = output.with_name("audio.conditioning.wav")
-            subprocess.run([
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                "-i", audio["source_file"], "-af", f"apad,atrim=duration={inference_frames / FPS}",
-                "-c:a", "pcm_s16le", str(conditioning_audio),
-            ], check=True, capture_output=True, text=True)
-            generation_options["audio_path"] = str(conditioning_audio)
+            generation_options["audio_path"] = prepared["conditioning_audio"]
         activity = (progress.phase("HQ generation and decode (15 + 3 steps)")
                     if profile == "hq" else pipeline_activity(pipeline, progress))
         with activity:
@@ -233,26 +229,9 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
                 **generation_options,
             )
         decode_peak = mx.get_peak_memory() / 1024**3
-        duration = frames / FPS
-        audio_inputs = ["-i", audio["source_file"]] if audio is not None else []
-        audio_map = "1:a:0" if audio is not None else "0:a:0"
-        with progress.phase(f"Trimming and encoding {frames} frames with FFmpeg", "encode"):
-            with ffmpeg_output([
-                "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostdin", "-n",
-                "-i", str(native), *audio_inputs, "-map", "0:v:0", "-frames:v", str(frames),
-                "-map", audio_map, "-af", f"apad,atrim=duration={duration},asetpts=PTS-STARTPTS",
-                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-t", str(duration),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart", str(partial),
-            ], progress, stdin=subprocess.DEVNULL):
-                pass
-        with progress.phase("Validating decoded frames and audio/video timing", "validate"):
-            info = validate_video(partial, frames, width, height, expect_audio=True)
-            if audio is not None:
-                info["supplied_audio"] = validate_supplied_audio(partial, Path(audio["source_file"]), duration)
-        partial.replace(output)
-        if not keep_native:
-            native.unlink()
+        with progress.phase(f"Encoding and validating {frames} frames with FFmpeg", "encode"):
+            info = rust_engine.call("finish_ltx_render", prepared=prepared, frames=frames,
+                width=width, height=height, output=str(output.resolve()), keep_native=keep_native)
     return {
         **config,
         "pipeline": "audio-driven-distilled-two-stage" if audio is not None else config["pipeline"],

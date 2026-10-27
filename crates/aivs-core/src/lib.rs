@@ -5,14 +5,18 @@ pub mod characters;
 pub mod codex;
 pub mod continuity;
 pub mod dialogue;
+pub mod downloads;
+pub mod inference;
 pub mod media;
 pub mod motion;
+pub mod planning;
 pub mod preproduction;
 pub mod prop_reference;
 pub mod render_estimate;
 pub mod render_formats;
 pub mod shooting_script;
 pub mod shot_renderer;
+pub mod storyboard;
 pub mod storyboard_backend;
 pub mod storyboard_images;
 pub mod visual_review;
@@ -50,12 +54,28 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                     if request["operation"] == "implementation" {
                         Ok(json!({
                             "crates/aivs-core/src/lib.rs": include_str!("lib.rs"),
+                            "crates/aivs-core/src/planning.rs": include_str!("planning.rs"),
+                            "crates/aivs-core/src/inference.rs": include_str!("inference.rs"),
+                            "crates/aivs-core/src/downloads.rs": include_str!("downloads.rs"),
+                            "crates/aivs-core/src/preproduction/storage.rs": include_str!("preproduction/storage.rs"),
+                            "crates/aivs-core/src/storyboard.rs": include_str!("storyboard.rs"),
+                            "crates/aivs-core/src/shot_renderer/storage.rs": include_str!("shot_renderer/storage.rs"),
+                            "crates/aivs-core/src/prop_reference/production.rs": include_str!("prop_reference/production.rs"),
+                            "crates/aivs-core/src/prop_reference/schema.json": include_str!("prop_reference/schema.json"),
+                            "crates/aivs-core/src/prop_reference/instructions.txt": include_str!("prop_reference/instructions.txt"),
+                            "crates/aivs-core/src/shooting_script/batch.rs": include_str!("shooting_script/batch.rs"),
+                            "crates/aivs-core/src/shooting_script/storage.rs": include_str!("shooting_script/storage.rs"),
+                            "crates/aivs-core/src/visual_review/production.rs": include_str!("visual_review/production.rs"),
+                            "crates/aivs-core/src/visual_review/schemas.json": include_str!("visual_review/schemas.json"),
+                            "crates/aivs-core/src/visual_review/prompts.json": include_str!("visual_review/prompts.json"),
                             "crates/aivs-core/src/artifacts.rs": include_str!("artifacts.rs"),
                             "crates/aivs-core/src/characters.rs": include_str!("characters.rs"),
                             "crates/aivs-core/src/character_conditioning.rs": include_str!("character_conditioning.rs"),
                             "crates/aivs-core/src/characters/prompt.rs": include_str!("characters/prompt.rs"),
                             "crates/aivs-core/src/dialogue.rs": include_str!("dialogue.rs"),
                             "crates/aivs-core/src/media/audio.rs": include_str!("media/audio.rs"),
+                            "crates/aivs-core/src/media/animatic.rs": include_str!("media/animatic.rs"),
+                            "crates/aivs-core/src/media/inference.rs": include_str!("media/inference.rs"),
                             "crates/aivs-core/src/media/source.rs": include_str!("media/source.rs"),
                             "crates/aivs-core/src/media/review.rs": include_str!("media/review.rs"),
                             "crates/aivs-core/src/storyboard_backend.rs": include_str!("storyboard_backend.rs"),
@@ -91,6 +111,110 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/shooting_script/unicode.rs": include_str!("shooting_script/unicode.rs"),
                             "crates/aivs-core/src/visual_review.rs": include_str!("visual_review.rs"),
                         }))
+                    } else if request["operation"] == "planning_budget" {
+                        planning::budget(&request["args"])
+                    } else if request["operation"] == "valid_cached_model_file" {
+                        Ok(downloads::cached_file(&request["args"]))
+                    } else if request["operation"] == "preflight_downloads" {
+                        error_kind = "inference";
+                        downloads::preflight(&request["args"])
+                    } else if request["operation"]
+                        .as_str()
+                        .is_some_and(|op| op.starts_with("take_") && op != "take_seed")
+                    {
+                        shot_renderer::storage(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                            &cancelled,
+                        )
+                    } else if request["operation"] == "inference" {
+                        error_kind = "inference";
+                        inference::run(&request["args"], cancelled.clone(), |event| {
+                            let envelope = json!({"version": PROTOCOL_VERSION, "id": request["id"], "event": event});
+                            serde_json::to_writer(&mut writer, &envelope)
+                                .map_err(|e| e.to_string())?;
+                            writer
+                                .write_all(b"\n")
+                                .and_then(|_| writer.flush())
+                                .map_err(|e| e.to_string())
+                        })
+                    } else if request["operation"] == "prop_failure_summary" {
+                        prop_reference::failure_summary(&request["args"]["report"])
+                            .map(Value::String)
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some(
+                            "storyboard_reference_specs"
+                                | "storyboard_visible_state"
+                                | "storyboard_resolve_image"
+                                | "storyboard_prepare"
+                                | "storyboard_prepare_references"
+                                | "storyboard_frame_request"
+                        )
+                    ) {
+                        storyboard::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                        )
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some(
+                            "planning_attempt"
+                                | "visual_review_attempt"
+                                | "visual_review_shot"
+                                | "visual_review_scene"
+                                | "visual_review_storyboard"
+                                | "prop_review"
+                        )
+                    ) {
+                        let operation = request["operation"].as_str().unwrap_or_default();
+                        let mut emit = |event| {
+                            let envelope = json!({"version": PROTOCOL_VERSION, "id": request["id"], "event": event});
+                            serde_json::to_writer(&mut writer, &envelope)
+                                .map_err(|e| e.to_string())?;
+                            writer
+                                .write_all(b"\n")
+                                .and_then(|_| writer.flush())
+                                .map_err(|e| e.to_string())
+                        };
+                        match operation {
+                            "prop_review" => {
+                                error_kind = "codex";
+                                prop_reference::review(
+                                    &request["args"],
+                                    cancelled.clone(),
+                                    &mut emit,
+                                )
+                            }
+                            "planning_attempt" | "visual_review_attempt" => {
+                                let result = if operation == "planning_attempt" {
+                                    planning::attempt(
+                                        &request["args"],
+                                        cancelled.clone(),
+                                        &mut emit,
+                                    )
+                                } else {
+                                    planning::review_attempt(
+                                        &request["args"],
+                                        cancelled.clone(),
+                                        &mut emit,
+                                    )
+                                };
+                                result.map_err(|failure| {
+                                    error_kind = failure.kind;
+                                    failure.message
+                                })
+                            }
+                            _ => {
+                                error_kind = "codex";
+                                visual_review::run(
+                                    operation,
+                                    &request["args"],
+                                    cancelled.clone(),
+                                    &mut emit,
+                                )
+                            }
+                        }
                     } else if request["operation"]
                         .as_str()
                         .is_some_and(|op| op.starts_with("character_"))
@@ -121,6 +245,7 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         request["operation"].as_str(),
                         Some(
                             "prepare_source_image"
+                                | "prepare_ltx_render"
                                 | "prepare_source_audio"
                                 | "prepare_image_anchors"
                         )
@@ -172,6 +297,9 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         request["operation"].as_str(),
                         Some(
                             "parse_shooting_request"
+                                | "shooting_validate_saved"
+                                | "shooting_publish"
+                                | "validate_motion_batch"
                                 | "shooting_schema"
                                 | "compile_shooting_script"
                                 | "shooting_fingerprint_content"
@@ -190,6 +318,8 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         request["operation"].as_str(),
                         Some(
                             "extract_last_frame"
+                                | "finish_ltx_render"
+                                | "assemble_animatic"
                                 | "assemble_shots"
                                 | "validate_video"
                                 | "validate_supplied_audio"
@@ -235,6 +365,8 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         request["operation"].as_str(),
                         Some(
                             "validate_storyboard_repairs"
+                                | "validate_storyboard_direction"
+                                | "copy_final_preproduction"
                                 | "storyboard_repair_candidate"
                                 | "reserve_storyboard_repair"
                                 | "resume_storyboard_repair"
@@ -249,6 +381,8 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         request["operation"].as_str(),
                         Some(
                             "visual_contract"
+                                | "visual_schema"
+                                | "visual_instruction"
                                 | "validate_visual_shot"
                                 | "validate_visual_preservation"
                                 | "validate_visual_adaptation"
