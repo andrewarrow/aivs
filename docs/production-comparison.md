@@ -40,16 +40,16 @@ From the repository root, freeze the example into a new directory:
 Preparation copies inputs and records their hashes. It does not render video or
 submit cloud jobs. Use a different output directory for a changed experiment.
 
-For B with `"local_profile": "hq"`, explicitly download the additional full-model
-transformer before rendering:
+App setup downloads the required HQ full-model transformer alongside the distilled
+weights. To download or repair these weights manually before rendering:
 
 ```sh
 .venv/bin/python python/quality_backend.py --download-hq
 ```
 
-This adds roughly 19 GB to the existing model cache and uses the Hugging Face
-credentials from normal setup. HQ uses the full transformer for guided stage 1
-and the distilled transformer for stage 2. It takes more work than the default
+This reuses cached files, adds roughly 19 GB if only the distilled weights are
+present, and uses the Hugging Face credentials from normal setup. HQ uses the full
+transformer for guided stage 1 and the distilled transformer for stage 2. It takes more work than the default
 distilled path; the experiment determines whether that improves this scene.
 To compare storyboard conditioning on the existing local configuration first,
 set `"local_profile": "distilled"` in a copy of the request before preparation.

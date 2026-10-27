@@ -180,7 +180,9 @@ impl Worker {
         let mut command = Command::new("uv");
         command.args(["pip", "sync", "--python", ".venv/bin/python", REQUIREMENTS]);
         self.run(command)?;
-        self.progress("Downloading the video model, text encoder, and audio weights");
+        self.progress(
+            "Downloading the distilled and HQ video models, text encoder, and audio weights",
+        );
         let output = self.run(self.python("download"))?;
         if output.needs_token {
             self.send(Event::NeedsToken);
@@ -675,7 +677,7 @@ impl VideoWorkspace {
                             ui.add(egui::ProgressBar::new(self.fraction.unwrap_or(0.0))
                                 .animate(self.fraction.is_none())
                                 .desired_width(width));
-                            ui.label("First setup downloads about 43 GB and needs 50 GiB free. Keep AIVS open.");
+                            ui.label("First setup includes the required HQ weights, downloads about 62 GB, and needs 70 GiB free. Keep AIVS open.");
                         }
                         self.error_ui(ui);
                         self.activity_ui(ui, 120.0);

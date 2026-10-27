@@ -59,8 +59,8 @@ def check():
     check_environment()
     emit("progress", label="Checking Python packages and Apple GPU")
     doctor()
-    emit("progress", label="Checking cached model, text encoder, and audio weights")
-    model_path()
+    emit("progress", label="Checking cached distilled and HQ models, text encoder, and audio weights")
+    model_path(profile="hq")
     emit("ready")
 
 
@@ -88,8 +88,8 @@ def download():
                  fraction=min(self.n / self.total, 1) if self.total else None)
 
     with project_lock(".setup.lock"):
-        emit("progress", label="Downloading LTX-2.5 with audio (about 43 GB; cached files are reused)")
-        model_path(download=True, progress_class=DownloadProgress)
+        emit("progress", label="Downloading LTX-2.5 distilled and HQ models with audio (about 62 GB; cached files are reused)")
+        model_path(download=True, progress_class=DownloadProgress, profile="hq")
     check()
 
 

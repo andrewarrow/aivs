@@ -175,8 +175,8 @@ The planner still preserves source dialogue in its prompts.
 - A **Hugging Face access token** for downloading models.
 - The **Codex CLI**, signed in and available on `PATH` (or set `AIVS_CODEX_PATH`).
   Codex provides screenplay planning and automatic visual review; the chat panel is optional.
-- **50 GiB of free disk space** for first setup. Video model downloads are about
-  **43 GB**.
+- **70 GiB of free disk space** for first setup. Required distilled and HQ video
+  model downloads are about **62 GB**.
 
 From this checkout:
 
@@ -189,8 +189,9 @@ From this checkout:
    ```
 
 3. Let setup prepare Python 3.12 in `.venv`, install the pinned packages, download
-   models, and verify the GPU. Downloads reuse the cache. Use **Check again**
-   after adding a token, or **Retry setup** after fixing a setup error.
+   the required distilled and HQ models, and verify the GPU. Downloads reuse the
+   cache. Use **Check again** after adding a token, or **Retry setup** after fixing
+   a setup error.
 4. If needed, choose **Codex → Sign in with ChatGPT** and finish in your browser.
    An existing Codex login is reused.
 5. Edit the screenplay and cast each role in the scene. Drag a gallery character

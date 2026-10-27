@@ -109,7 +109,7 @@ def validate_snapshot(snapshot, *, profile="distilled"):
     if missing:
         hint = " Run .venv/bin/python python/quality_backend.py --download-hq first." if profile == "hq" else ""
         raise RuntimeError("Model cache is incomplete: " + ", ".join(missing) + hint)
-    # Check safetensors lengths without reading 43 GB on every startup. This
+    # Check safetensors lengths without reading all weights on every startup. This
     # rejects truncated blobs, including a partial snapshot returned offline.
     for name in weights:
         path = snapshot / name
@@ -328,7 +328,7 @@ def _image_generation_options(source_file, frames, hold_image_framing):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Download the optional pinned LTX HQ weights.")
+    parser = argparse.ArgumentParser(description="Download the required pinned LTX distilled and HQ weights.")
     parser.add_argument("--download-hq", action="store_true", required=True,
                         help="Download the dev transformer; adds about 19.2 GB to a complete default cache.")
     parser.parse_args()
