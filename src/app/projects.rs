@@ -70,8 +70,8 @@ impl App {
                 screenplay.set_project(project.root(), project.is_untitled());
                 self.screenplay = screenplay;
                 self.video.set_project(project.root(), true);
-                self.characters = crate::characters::CharacterGallery::new(project.root());
-                self.sets = crate::sets::SetGallery::new(project.root());
+                self.characters = crate::characters::CharacterGallery::new(&self.root);
+                self.sets = crate::sets::SetGallery::new(&self.root);
                 self.project = project;
                 self.import_error = None;
                 if self.codex_started {
@@ -96,8 +96,6 @@ impl App {
                 self.project.save_as(&destination, &document)?;
                 self.screenplay.set_project(self.project.root(), false);
                 self.video.relocate_project(&old, self.project.root());
-                self.characters = crate::characters::CharacterGallery::new(self.project.root());
-                self.sets = crate::sets::SetGallery::new(self.project.root());
                 if self.codex_started {
                     self.reconnect();
                 }

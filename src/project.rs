@@ -28,17 +28,6 @@ impl Project {
             root: temporary.path().canonicalize().map_err(|e| e.to_string())?,
             temporary: Some(temporary),
         };
-        // Give each project its own editable library, independent of the checkout.
-        for name in ["characters", "sets"] {
-            let source = if workspace.join(name).is_dir() {
-                workspace.join(name)
-            } else {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
-            };
-            if source.is_dir() {
-                copy_directory(&source, &project.root.join(name))?;
-            }
-        }
         for name in ["settings.json", "screenplay.json"] {
             if (name != "screenplay.json" || import_legacy) && workspace.join(name).is_file() {
                 fs::copy(workspace.join(name), project.root.join(name))
@@ -101,7 +90,7 @@ impl Project {
 
     fn manifest(&self) -> Value {
         json!({"kind":"aivs-project", "version":1, "name":self.name(),
-            "screenplay":"screenplay.json", "characters":"characters", "sets":"sets",
+            "screenplay":"screenplay.json",
             "references":"references", "runs":"runs", "settings":"settings.json",
             "preproduction":"preproduction"})
     }
@@ -127,12 +116,12 @@ impl Project {
         if parent.starts_with(&source) {
             return Err("Save the project outside its current directory.".into());
         }
-        // Stage the whole project first. Failed copies leave the original intact.
+        // Stage project data, excluding global libraries. Failed copies leave the original intact.
         let staging = tempfile::Builder::new()
             .prefix(".aivs-save-")
             .tempdir_in(&parent)
             .map_err(|e| format!("Could not prepare project save: {e}"))?;
-        copy_directory(&source, staging.path())?;
+        copy_directory(&source, staging.path(), true)?;
         aivs_core::artifacts::atomic_json(&staging.path().join("screenplay.json"), screenplay)?;
         let mut manifest = self.manifest();
         manifest["name"] = json!(
@@ -150,10 +139,14 @@ impl Project {
     }
 }
 
-fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_directory(source: &Path, destination: &Path, is_project_root: bool) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
+        // Older projects may contain library copies; keep only run-local snapshots.
+        if is_project_root && (entry.file_name() == "characters" || entry.file_name() == "sets") {
+            continue;
+        }
         let kind = entry.file_type().map_err(|e| e.to_string())?;
         let target = destination.join(entry.file_name());
         if kind.is_symlink() {
@@ -162,7 +155,7 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
                 entry.path().display()
             ));
         } else if kind.is_dir() {
-            copy_directory(&entry.path(), &target)?;
+            copy_directory(&entry.path(), &target, false)?;
         } else if kind.is_file() {
             fs::copy(entry.path(), target)
                 .map_err(|e| format!("Could not copy {}: {e}", entry.path().display()))?;

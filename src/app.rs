@@ -87,9 +87,9 @@ impl App {
         let mut video = crate::video::VideoWorkspace::new(root.clone());
         video.set_project(project.root(), true);
         startup.mark("video workspace initialized and setup worker started");
-        let characters = crate::characters::CharacterGallery::new(project.root());
+        let characters = crate::characters::CharacterGallery::new(&root);
         startup.mark("character gallery deferred until opened");
-        let sets = crate::sets::SetGallery::new(project.root());
+        let sets = crate::sets::SetGallery::new(&root);
         startup.mark("set gallery deferred until opened");
         let screenplay = if project.root().join("screenplay.json").is_file() {
             crate::screenplay::Screenplay::load(project.root())

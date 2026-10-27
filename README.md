@@ -314,19 +314,20 @@ My Film.aivs/
   project.json       Project format and layout
   screenplay.json    Screenplay, casting, and scene assignments
   settings.json      Render format, quality, and planning allowance
-  characters/        Portraits, character profiles, and saved voices
-  sets/              Set profiles and reference images
   references/        Reusable generated references and their provenance
   preproduction/     Project planning and completed-preproduction indexes
   runs/              Individual runs, storyboards, logs, shots, and videos
 ```
 
 **File → Open Project…** (⌘/Ctrl+O) accepts the directory or its `project.json`.
-**Save As…** (⌘/Ctrl+Shift+S) copies the complete project to a new directory and
+**Save As…** (⌘/Ctrl+Shift+S) copies the project data to a new directory and
 switches to that copy. It preserves the original project. Project assets and
 preproduction indexes use relative paths, so the directory can be moved together.
-Model environments, model downloads, and credentials stay in the shared runtime
-workspace and are not copied into projects.
+Character and set libraries are global: projects use the shared runtime
+workspace's `characters/` and `sets/` libraries, falling back to the checkout's
+libraries when absent. Save As skips library copies left in older projects.
+Model environments, model downloads, and credentials also stay in the shared
+runtime workspace and are not copied into projects.
 
 Untitled projects use temporary storage until saved. New, Open, Close, and Quit
 ask whether to save unsaved work. Save or stop a current generation before moving

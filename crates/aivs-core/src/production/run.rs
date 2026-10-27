@@ -15,9 +15,7 @@ fn lock(root: &Path, name: &str) -> Result<File> {
     Ok(file)
 }
 fn character_root(ctx: &Context<'_>) -> PathBuf {
-    if let Some(project) = ctx.project_root() {
-        project
-    } else if ctx.root.join("characters").is_dir() {
+    if ctx.root.join("characters").is_dir() {
         ctx.root.clone()
     } else {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -210,10 +208,7 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         "character_resolve",
         &json!({"prompt":"","explicit":cast,"root":root,"references_only":true}),
     )?;
-    let assigned_set = crate::sets::resolve(
-        &ctx.project_root().unwrap_or_else(|| ctx.root.clone()),
-        &request["set"],
-    )?;
+    let assigned_set = crate::sets::resolve(&ctx.root, &request["set"])?;
     if let Some((set, _)) = &assigned_set {
         request["set"] = set.clone();
     }
