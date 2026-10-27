@@ -615,7 +615,22 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
                             or not math.isfinite(finding["confidence"]) or not 0 <= finding["confidence"] <= 1):
                         raise ValueError("Reference findings need a valid decision and confidence.")
                 if review["decision"] != "pass" or any(f["decision"] != "pass" or f["confidence"] < .8 for f in findings):
-                    _bounded(row.get("storyboard_prompt"), "Concrete corrected opening composition", 1200)
+                    try:
+                        _bounded(row.get("storyboard_prompt"), "Concrete corrected opening composition", 1200)
+                    except ValueError as exc:
+                        reasons = list(review["violations"])
+                        reasons.extend(
+                            f"Reference {f['id']}: {f['decision']} (confidence {f['confidence']}): {f['evidence']}"
+                            for f in findings if f["decision"] != "pass" or f["confidence"] < .8
+                        )
+                        detail = "; ".join(reasons) or review["evidence"]
+                        raise ValueError(
+                            f"Shot {n} deterministic review is {review['decision']}: {detail}. "
+                            "If the observations used different attribute keys from the opening contract, "
+                            "correct those keys using actual pixel evidence. Otherwise supply a complete "
+                            "corrected storyboard_prompt (1–1200 characters) for the required repair. "
+                            "Do not mark hidden or uncertain facts visible merely to pass this check."
+                        ) from exc
                 elif row.get("storyboard_prompt") or fixes or world_fixes:
                     raise ValueError("Accepted frames must not include repairs.")
                 blocking = row.get("blocking_issue")
