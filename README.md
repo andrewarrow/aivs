@@ -520,10 +520,10 @@ Change story direction in the director instructions. Continuity rules belong in
 ### Rust engine migration
 
 Deterministic continuity, canonical prop acceptance, motion keyframe timing and
-hand-object constraints, visual review validation, and production Codex sessions
-run in Rust. `aivs-core` has no desktop or model dependencies. The desktop
-launches itself with `--engine` before initializing the UI and passes that path
-to Python as `AIVS_ENGINE_PATH`.
+hand-object constraints, visual review validation, storyboard repair policy,
+and production Codex sessions run in Rust. `aivs-core` has no desktop or model
+dependencies. The desktop launches itself with `--engine` before initializing the
+UI and passes that path to Python as `AIVS_ENGINE_PATH`.
 
 For standalone Python commands, first build the headless engine:
 
@@ -576,7 +576,16 @@ implementation identity. Python retains review instructions, schemas, frame
 sampling, Codex calls, prompt compilation, and artifact storage. Visual reports
 remain advisory and never request another video render.
 
-Preproduction scheduling, repair orchestration, artifact I/O, take recovery,
+`preproduction` in Rust owns the two-round storyboard repair allowance, journal
+validation, replacement compositions and canonical-world changes, dependent-image
+selection, repair seeds, and pending/complete transitions. Python still compiles
+prompts and supplies fingerprints using the existing JSON codec. The version 1
+repair journal keeps its existing fields. Python publishes the image manifest
+and revised director plan before asking Rust to mark the round complete, so an
+interrupted publication resumes the same reserved attempt. Repair exhaustion
+preserves findings and prevents video inference.
+
+Preproduction scheduling, repair execution, artifact I/O, take recovery,
 visual review orchestration, and FFmpeg assembly remain in Python. Moving that
 state machine and narrowing Python to isolated inference workers are the next
 migration phases. LTX/MLX, Seed-VC, and optional MFLUX remain Python inference code.

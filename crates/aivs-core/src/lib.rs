@@ -2,6 +2,7 @@
 pub mod codex;
 pub mod continuity;
 pub mod motion;
+pub mod preproduction;
 pub mod prop_reference;
 pub mod visual_review;
 
@@ -51,6 +52,7 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/motion/planning.rs": include_str!("motion/planning.rs"),
                             "crates/aivs-core/src/motion/review.rs": include_str!("motion/review.rs"),
                             "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
+                            "crates/aivs-core/src/preproduction.rs": include_str!("preproduction.rs"),
                             "crates/aivs-core/src/visual_review.rs": include_str!("visual_review.rs"),
                         }))
                     } else if request["operation"] == "codex" {
@@ -63,6 +65,20 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             }).map_err(|failure| { error_kind = failure.kind; failure.message }),
                             Err(error) => Err(format!("Invalid Codex request: {error}")),
                         }
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some(
+                            "validate_storyboard_repairs"
+                                | "storyboard_repair_candidate"
+                                | "reserve_storyboard_repair"
+                                | "resume_storyboard_repair"
+                                | "complete_storyboard_repair"
+                        )
+                    ) {
+                        preproduction::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                        )
                     } else if matches!(
                         request["operation"].as_str(),
                         Some(

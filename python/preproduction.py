@@ -13,8 +13,6 @@ import shooting_script
 import storyboard
 import storyboard_continuity as continuity
 
-MAX_STORYBOARD_REPAIR_ROUNDS = 2
-
 
 def _save(path, value):
     path = Path(path)
@@ -155,14 +153,7 @@ def _repair_state(run_dir, source_sha256):
     path = run_dir / "storyboard-repairs.json"
     state = (_read(path) if path.exists() else
              {"version": 1, "source_sha256": source_sha256, "rounds": []})
-    if (state.get("version") != 1 or state.get("source_sha256") != source_sha256
-            or not isinstance(state.get("rounds"), list)
-            or len(state["rounds"]) > MAX_STORYBOARD_REPAIR_ROUNDS
-            or any(not isinstance(item, dict) or item.get("status") not in ("pending", "complete")
-                   for item in state["rounds"])
-            or any(item["status"] != "complete" for item in state["rounds"][:-1])):
-        raise ValueError("Saved storyboard repairs do not match this run.")
-    return state
+    return rust_engine.call("validate_storyboard_repairs", state=state, source_sha256=source_sha256)
 
 
 def _finish_storyboard_repair(director, boards, state, request, profiles, run_dir, *,
@@ -177,12 +168,13 @@ def _finish_storyboard_repair(director, boards, state, request, profiles, run_di
     repair = state["rounds"][-1]
     revised = shooting_script.validate_shooting_script(
         repair["plan"], request, profiles, token_counter=token_counter)
-    if shooting_script._plan_fingerprint(director) not in (
-            repair["before_plan_sha256"], shooting_script._plan_fingerprint(revised)):
-        raise ValueError("Storyboard direction changed during its saved repair.")
+    context_args = dict(state=state, source_sha256=director["source_sha256"],
+                        director_sha256=shooting_script._plan_fingerprint(director),
+                        revised_sha256=shooting_script._plan_fingerprint(revised))
+    context = rust_engine.call("resume_storyboard_repair", **context_args)
     entries = list(boards["shots"])
-    round_number = len(state["rounds"])
-    reference_ids = sorted({r for issue in repair["issues"] for r in issue.get("reference_ids", [])})
+    round_number = context["round_number"]
+    reference_ids = context["reference_ids"]
     library = storyboard.generate_references(revised, profiles, run_dir, repair["reference_seed"],
                                             repair_ids=reference_ids, round_number=round_number,
                                             on_activity=on_activity,
@@ -205,82 +197,39 @@ def _finish_storyboard_repair(director, boards, state, request, profiles, run_di
     display = [f"SHOT {index} | {shot['seconds']}s\n{shot['storyboard_prompt']}\n"
                for index, shot in enumerate(revised["shots"], 1)]
     (run_dir / "storyboard-plan.txt").write_text("\n".join(display), encoding="utf-8")
-    repair["status"] = "complete"
+    state.update(rust_engine.call("complete_storyboard_repair", **context_args))
     _save(run_dir / "storyboard-repairs.json", state)
     return revised, boards
 
 
 def _reserve_storyboard_repair(director, issues, state, seed, run_dir, *, boards=None,
                                request=None, profiles=None, token_counter=None):
-    if len(state["rounds"]) >= MAX_STORYBOARD_REPAIR_ROUNDS:
-        detail = "; ".join(f"shot {issue['shot']}: {issue['issue']}" for issue in issues)
-        _save(run_dir / "storyboard-diagnostic.json", {
-            "policy": continuity.POLICY, "status": "rejected", "reason": "repair-allowance-exhausted",
-            "repair_rounds": len(state["rounds"]), "source_sha256": director.get("source_sha256"),
-            "issues": issues, "video_inference_allowed": False,
-        })
+    decision = rust_engine.call("storyboard_repair_candidate", director=director, issues=issues, state=state)
+    if decision["status"] == "exhausted":
+        diagnostic = decision["diagnostic"]
+        _save(run_dir / "storyboard-diagnostic.json", diagnostic)
         review_path = run_dir / "storyboard-review.json"
         if review_path.is_file():
             report = _read(review_path)
-            report.update(status="rejected", reason="repair-allowance-exhausted")
+            report.update(status=diagnostic["status"], reason=diagnostic["reason"])
             _save(review_path, report)
-        raise RuntimeError(
-            f"Storyboards still cannot support the source after {MAX_STORYBOARD_REPAIR_ROUNDS} "
-            f"automatic repair rounds: {detail}. Saved images and findings are preserved."
-        )
-    if not isinstance(issues, list) or not issues:
-        raise ValueError("Storyboard repair needs specific shot findings.")
-    shots = [dict(shot) for shot in director["shots"]]
-    world = director.get("world")
-    seen = set()
-    for issue in issues:
-        number = issue.get("shot")
-        prompt = issue.get("storyboard_prompt")
-        if (type(number) is not int or not 1 <= number <= len(shots) or number in seen
-                or not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 1200
-                or "\x00" in prompt or "{{" in prompt or "}}" in prompt
-                or not isinstance(issue.get("issue"), str) or not issue["issue"].strip()):
-            raise ValueError("Storyboard repair needs unique shots and valid replacement compositions.")
-        seen.add(number)
-        if issue.get("plan_repair"):
-            shots[number - 1] = dict(issue["plan_repair"][0])
-        if issue.get("world_repair"):
-            replacement = issue["world_repair"][0]
-            if world != director.get("world") and world != replacement:
-                raise ValueError("Sequence review proposed conflicting canonical world repairs.")
-            world = replacement
-        shots[number - 1]["storyboard_prompt"] = prompt.strip()
-        shots[number - 1].pop("prompt", None)
-    revised = dict(director, shots=shots, world=world)
+        raise RuntimeError(decision["message"])
+    revised = decision["plan"]
     if request is not None:
         revised = shooting_script.validate_shooting_script(revised, request, profiles, token_counter=token_counter)
-    # Repair every image that depended on a changed frame/reference, as well as
-    # every composition affected by a structural correction. Keep other bytes.
-    if boards is not None:
-        changed = seen | {n for n, (a, b) in enumerate(zip(director["shots"], revised["shots"]), 1)
-                          if storyboard.planned_shot_sha256(director, a) != storyboard.planned_shot_sha256(revised, b)}
-        bad_refs = {r for issue in issues for r in issue.get("reference_ids", [])}
-        changed |= {e["shot"] for e in boards["shots"] if any(
-                    set(r.get("reference_ids", [r.get("reference_id")])) & bad_refs
-                    for r in e.get("generation", {}).get("references", []))}
-        affected = continuity.dependent_shots(boards, changed)
-        issues = list(issues) + [{"shot": n, "issue": "Regenerate dependent image after upstream physical/composition repair.",
-                                 "storyboard_prompt": revised["shots"][n - 1]["storyboard_prompt"]}
-                                for n in sorted(affected - seen)]
-        issues.sort(key=lambda issue: issue["shot"])
+    # Keep the legacy JSON fingerprint codec while Rust selects all affected images.
+    changed = [n for n, (before, after) in enumerate(zip(director["shots"], revised["shots"]), 1)
+               if storyboard.planned_shot_sha256(director, before) != storyboard.planned_shot_sha256(revised, after)]
+    reserved = rust_engine.call("reserve_storyboard_repair", state=state, director=director,
+                                revised=revised, issues=issues, boards=boards, changed_shots=changed,
+                                before_plan_sha256=shooting_script._plan_fingerprint(director), seed=seed)
     # Preserve every review, including failed evidence, before the next round.
     review_path = run_dir / "storyboard-review.json"
     if review_path.is_file():
         _save(run_dir / f"storyboard-review-before-repair-{len(state['rounds']) + 1}.json", _read(review_path))
-    state["rounds"].append({
-        "status": "pending", "before_plan_sha256": shooting_script._plan_fingerprint(director),
-        "plan": revised, "issues": issues,
-        "prior_images": {str(issue["shot"]): boards["shots"][issue["shot"] - 1]["image"]
-                         for issue in issues} if boards is not None else {},
-        "reference_seed": seed,
-        "seed": (seed + len(state["rounds"]) + 1) % (2**31),
-    })
-    _save(run_dir / "storyboard-repairs.json", state)
+    _save(run_dir / "storyboard-repairs.json", reserved)
+    state.update(reserved)
+    return decision["limit"]
 
 
 def prepare(request, profiles, run_dir, seed, *, token_counter=None,
@@ -364,10 +313,11 @@ def prepare(request, profiles, run_dir, seed, *, token_counter=None,
             if budget["used_seconds"] >= planning_budget_seconds:
                 raise RuntimeError("The planning budget is exhausted before storyboard repair; "
                                    "increase --planning-budget-seconds to continue.") from exc
-            _reserve_storyboard_repair(director, exc.issues, repairs, seed, run_dir,
-                                       boards=boards, request=request, profiles=profiles, token_counter=token_counter)
+            repair_limit = _reserve_storyboard_repair(director, exc.issues, repairs, seed, run_dir,
+                                                      boards=boards, request=request, profiles=profiles,
+                                                      token_counter=token_counter)
             activity(f"Repairing {len(exc.issues)} storyboard(s), round "
-                     f"{len(repairs['rounds'])}/{MAX_STORYBOARD_REPAIR_ROUNDS}")
+                     f"{len(repairs['rounds'])}/{repair_limit}")
             started = time.monotonic()
             director, boards = _finish_storyboard_repair(
                 director, boards, repairs, request, profiles, run_dir,
