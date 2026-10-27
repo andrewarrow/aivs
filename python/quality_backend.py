@@ -40,7 +40,7 @@ class InvalidCache(RuntimeError):
 
 
 def profile_config(profile="distilled"):
-    """Identity for experiment manifests; changing profile never happens implicitly."""
+    """Identity for render manifests; changing profile never happens implicitly."""
     if profile not in ("distilled", "hq"):
         raise ValueError("Local render profile must be distilled or hq.")
     return {
@@ -164,7 +164,7 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
 
     config = profile_config(profile)
     if profile == "hq" and audio_file is not None:
-        raise ValueError("The HQ comparison profile generates native audio; fixed audio is unsupported.")
+        raise ValueError("The HQ profile generates native audio; fixed audio is unsupported.")
     output = Path(output)
     if (type(frames) is not int or frames < 1
             or any(type(value) is not int or value < 64 or value % 64 for value in (width, height))):

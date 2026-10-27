@@ -177,6 +177,8 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
         return False
     if saved.get("storyboard") != report.get("storyboard"):
         return False
+    if saved.get("render_config") != report.get("render_config"):
+        return False
     voice = (report.get("character_assets") or {}).get("voice", {})
     if "file" in voice and clip.name == "video.mp4" and clip.is_file():
         converted = saved.get("voice_conversion")
@@ -302,6 +304,7 @@ def render_shooting_script(
     character_profiles=None,
     storyboard=None,
     review_enabled=True,
+    render_config=None,
 ) -> dict:
     """Render plan shots in order and publish only a validated assembled video.
 
@@ -327,6 +330,9 @@ def render_shooting_script(
         raise ValueError("seed must be an integer.")
     if type(review_enabled) is not bool:
         raise ValueError("review_enabled must be a boolean.")
+    if (plan.get("storyboard_policy") == "per-shot-first-frame-v1"
+            or plan.get("source", {}).get("storyboard_policy") == "per-shot-first-frame-v1") and storyboard is None:
+        raise ValueError("This plan requires its validated first-frame storyboard for every shot.")
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     shots_dir = output.parent / "shots"
@@ -350,6 +356,7 @@ def render_shooting_script(
         import character_conditioning
         asset_bindings = character_conditioning.prepare(
             plan, character_profiles, output.parent, activity,
+            **({"storyboard_conditioned": True} if storyboard_bindings is not None else {}),
         )
     review_backend = None
     if automatic_review:
@@ -425,6 +432,7 @@ def render_shooting_script(
                 "continuity": continuity,
                 **({"character_assets": assets} if assets is not None else {}),
                 **({"storyboard": frame_binding} if frame_binding is not None else {}),
+                **({"render_config": render_config} if render_config is not None else {}),
             }
             if automatic_review:
                 report.update(planned_prompt=planned_shot["prompt"],
@@ -663,7 +671,7 @@ def render_shooting_script(
                     "runtime": runtime,
                     "continuity": continuity,
                     "sha256": report["sha256"],
-                    **({key: report[key] for key in ("character_assets", "storyboard", "native_sha256", "voice_conversion")
+                    **({key: report[key] for key in ("character_assets", "storyboard", "render_config", "native_sha256", "voice_conversion")
                         if key in report}),
                     **({key: report[key] for key in (
                         "planned_prompt", "planned_shot_sha256", "prompt_template", "adaptation",
@@ -717,6 +725,7 @@ def render_shooting_script(
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "shots": summaries,
         "video": video_info,
+        **({"render_config": render_config} if render_config is not None else {}),
         **({"image_conditioning": "storyboard-first-frame"} if storyboard_bindings is not None else {}),
         **({"character_conditioning": "saved-character-assets-v1",
             "identity_review": "pending: compare portraits, voices, spoken words, and lip sync"}

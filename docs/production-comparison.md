@@ -4,6 +4,12 @@ The comparison CLI renders complete scenes through three paths, keeping the
 screenplay, dramatic requirements, reference images, and candidate schedule in a
 saved experiment. It is separate from **Generate video** in the desktop app.
 
+Normal **Generate video** now uses B's production approach: independent
+storyboard first frames and local HQ inference. It adds automatic still-image
+generation between two Codex planning passes. **Preview (distilled)** keeps the
+same storyboard workflow. The experiment below remains useful for frozen
+comparisons; running the optional paid C arm is unnecessary.
+
 | Arm | Plan and visual input | Renderer |
 | --- | --- | --- |
 | A | Baseline plan, with the existing previous-frame handoffs | Local LTX distilled |
@@ -17,8 +23,9 @@ it does not reproduce every operation in the desktop workflow.
 
 Storyboard frames override previous-shot frames. Each frame is bound to its shot
 and recorded by checksum; changing a frame cannot silently reuse an old take.
-This workflow consumes prepared images. It does not generate or artistically
-approve storyboards for you.
+This experimental CLI consumes prepared images. The desktop production workflow
+generates them automatically, but neither workflow proves their artistic quality.
+See the [production workflow and setup](../README.md#3-validate-render-and-assemble).
 
 ## Start with the included scene
 
@@ -49,8 +56,10 @@ weights. To download or repair these weights manually before rendering:
 
 This reuses cached files, adds roughly 19 GB if only the distilled weights are
 present, and uses the Hugging Face credentials from normal setup. HQ uses the full
-transformer for guided stage 1 and the distilled transformer for stage 2. It takes more work than the default
-distilled path; the experiment determines whether that improves this scene.
+transformer for guided stage 1 and the distilled transformer for stage 2, using
+15+3 inference steps. Distilled uses 8+3 steps. HQ is now the production default;
+the comparison still matters because coverage, storyboard conditioning, and
+inference can each affect quality.
 To compare storyboard conditioning on the existing local configuration first,
 set `"local_profile": "distilled"` in a copy of the request before preparation.
 
@@ -63,7 +72,9 @@ Render one complete candidate at a time:
   outputs/production-comparison --arm B --candidate 1
 ```
 
-For C, set `LTX_API_KEY` in the shell environment, then run:
+Stop at A and B for an entirely local video comparison. C remains optional. To
+explicitly compare the paid service, set `LTX_API_KEY` in the shell environment,
+then run:
 
 ```sh
 .venv/bin/python python/production_comparison.py render \
@@ -76,7 +87,7 @@ paid video jobs. The adapter uses the
 resumes polling after interruption. If submission has an uncertain outcome, it
 stops instead of automatically submitting another paid generation.
 
-Repeat each arm with `--candidate 2` and `--candidate 3`. Rerunning the same command
+Repeat the selected arms with `--candidate 2` and `--candidate 3`. Rerunning the same command
 resumes that candidate and reuses matching completed shots. The local seeds are
 fixed in the request. Cloud candidate numbers identify separate takes; the API
 does not provide the same seed control, so they are not deterministic matches to
@@ -84,7 +95,9 @@ local takes.
 
 ## Use your own scene
 
-Start from a saved baseline shooting script:
+Start from a saved baseline shooting script. Use a historical continuation-based
+plan if A should reproduce the earlier renderer; a new production plan already
+uses independent storyboard shots.
 
 ```sh
 .venv/bin/python python/production_comparison.py init \
@@ -112,8 +125,8 @@ The controlled plan can change framing and coverage while preserving the ordered
 source beats. Its prompts must describe action from the supplied starting image;
 do not retain an instruction to begin on an unrelated inherited frame or portrait.
 These are experiment execution plans. The comparison checks their structure and
-source binding; it does not grant production approval or treat copied approval
-metadata as approval of an edited plan. Source fidelity remains part of the
+source binding; it does not run the production planner or treat copied planning
+metadata as validation of an edited plan. Source fidelity remains part of the
 finished-scene review.
 
 Make each storyboard a single shot composition using the intended cast, costume,
@@ -153,3 +166,17 @@ and frames but B set to `distilled`. B versus C keeps the controlled inputs fixe
 while comparing local and cloud generation. Strong shots with a weak assembled
 scene point toward further direction and editing work rather than another
 increase in prompt detail.
+
+For an HQ/distilled comparison through the normal renderer, generate the scene
+once, then select the other Quality option and generate it again. Matching
+screenplay, cast assets, format, and planning code reuse completed preproduction
+from `.cache/preproduction/`; video profile and seed do not change that cache key.
+The CLI equivalents are `--profile hq` and `--profile distilled`. Keep the same
+`--seed` when comparing inference profiles. `--fresh-preproduction` deliberately
+bypasses this reuse, so omit it when holding storyboard conditioning fixed.
+
+Record motion and acting separately from faces, sharpness, and composition.
+An overall preference for B cannot identify how much each change contributed.
+The more difficult Will/Josephine scene still needs its own rendered review;
+the shorter Sue/Joe example does not establish its physical-action or continuity
+quality.

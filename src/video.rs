@@ -14,6 +14,10 @@ use std::{
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/video.py");
 const REQUIREMENTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/requirements.txt");
+const STORYBOARD_REQUIREMENTS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/python/requirements-storyboard.txt"
+);
 
 #[derive(Debug, PartialEq)]
 enum Setup {
@@ -127,6 +131,9 @@ impl Worker {
     fn python(&self, action: &str) -> Command {
         let mut command = Command::new(self.root.join(".venv/bin/python"));
         command.args(["-u", SCRIPT, action]);
+        if matches!(action, "check" | "download") {
+            command.args(["--profile", "hq"]);
+        }
         command
     }
 
@@ -180,9 +187,28 @@ impl Worker {
         let mut command = Command::new("uv");
         command.args(["pip", "sync", "--python", ".venv/bin/python", REQUIREMENTS]);
         self.run(command)?;
-        self.progress(
-            "Downloading the distilled and HQ video models, text encoder, and audio weights",
-        );
+        self.progress("Preparing Python 3.12 for local storyboard images");
+        let mut command = Command::new("uv");
+        command.args([
+            "venv",
+            "--python",
+            "3.12",
+            "--allow-existing",
+            ".venv-storyboard",
+        ]);
+        self.run(command)?;
+        self.progress("Installing the local storyboard image packages");
+        let mut command = Command::new("uv");
+        command.args([
+            "pip",
+            "install",
+            "--python",
+            ".venv-storyboard/bin/python",
+            "-r",
+            STORYBOARD_REQUIREMENTS,
+        ]);
+        self.run(command)?;
+        self.progress("Downloading the storyboard, distilled, and HQ video models");
         let output = self.run(self.python("download"))?;
         if output.needs_token {
             self.send(Event::NeedsToken);
@@ -196,6 +222,9 @@ impl Worker {
 
     fn render(&self, request: &str) -> Result<(), String> {
         self.progress("Preparing shooting script…");
+        let value: serde_json::Value = serde_json::from_str(request)
+            .map_err(|error| format!("Cannot read screenplay request: {error}"))?;
+        let profile = value["render_profile"].as_str().unwrap_or("hq");
         let mut request_file = tempfile::NamedTempFile::new()
             .map_err(|error| format!("Cannot create screenplay request file: {error}"))?;
         request_file
@@ -203,6 +232,7 @@ impl Worker {
             .map_err(|error| format!("Cannot write screenplay request file: {error}"))?;
         let mut command = self.python("render");
         command.arg("--screenplay-file").arg(request_file.path());
+        command.args(["--profile", profile]);
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
@@ -214,8 +244,24 @@ impl Worker {
 
     fn resume(&self, directory: &Path) -> Result<(), String> {
         self.progress("Resuming video…");
+        let mut planning_budget = crate::settings::load_planning_budget(&self.root);
+        for (filename, key) in [
+            ("screenplay-request.json", "planning_budget_seconds"),
+            ("planning-budget.json", "limit_seconds"),
+        ] {
+            if let Some(saved) = std::fs::read(directory.join(filename))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|value| value[key].as_u64())
+            {
+                planning_budget = planning_budget.max(saved);
+            }
+        }
         let mut command = self.python("resume");
         command.arg("--output-dir").arg(directory);
+        command
+            .arg("--planning-budget-seconds")
+            .arg(planning_budget.to_string());
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
@@ -415,6 +461,8 @@ fn read_output(
 pub struct VideoWorkspace {
     root: PathBuf,
     pub render_format: crate::settings::RenderFormat,
+    pub render_profile: crate::settings::RenderProfile,
+    pub planning_budget_seconds: u64,
     setup: Setup,
     job: Option<Job>,
     selected_scene: Option<u64>,
@@ -445,6 +493,8 @@ impl VideoWorkspace {
     fn idle(root: PathBuf) -> Self {
         Self {
             render_format: crate::settings::RenderFormat::load(&root),
+            render_profile: crate::settings::RenderProfile::load(&root),
+            planning_budget_seconds: crate::settings::load_planning_budget(&root),
             root,
             setup: Setup::Checking,
             job: None,
@@ -677,7 +727,7 @@ impl VideoWorkspace {
                             ui.add(egui::ProgressBar::new(self.fraction.unwrap_or(0.0))
                                 .animate(self.fraction.is_none())
                                 .desired_width(width));
-                            ui.label("First setup includes the required HQ weights, downloads about 62 GB, and needs 70 GiB free. Keep AIVS open.");
+                            ui.label("First video setup downloads about 62 GB and needs 70 GiB free; storyboard models need additional space. Cached files are reused. Keep AIVS open.");
                         }
                         self.error_ui(ui);
                         self.activity_ui(ui, 120.0);
@@ -741,6 +791,33 @@ impl VideoWorkspace {
                         .response
                         .labelled_by(scene_label.id)
                         .on_hover_text(&selected_text);
+                });
+                ui.add_space(8.0);
+                ui.add_enabled_ui(self.job.is_none(), |ui| {
+                    let mut profile = self.render_profile;
+                    ui.horizontal_wrapped(|ui| {
+                        let label = ui.label("Quality");
+                        ui.spacing_mut().interact_size.y = 44.0;
+                        egui::ComboBox::from_id_salt("render_profile")
+                            .selected_text(profile.label())
+                            .show_ui(ui, |ui| {
+                                for option in [
+                                    crate::settings::RenderProfile::Hq,
+                                    crate::settings::RenderProfile::Distilled,
+                                ] {
+                                    ui.selectable_value(&mut profile, option, option.label());
+                                }
+                            })
+                            .response
+                            .labelled_by(label.id)
+                            .on_hover_text("Both options generate a storyboard image for every shot.");
+                    });
+                    if profile != self.render_profile {
+                        match profile.save(&self.root) {
+                            Ok(()) => self.render_profile = profile,
+                            Err(error) => self.error = Some(error),
+                        }
+                    }
                 });
                 ui.add_space(8.0);
                 let request = self
@@ -862,6 +939,8 @@ impl VideoWorkspace {
         let mut value: serde_json::Value =
             serde_json::from_str(&request).map_err(|error| error.to_string())?;
         value["render_format"] = self.render_format.id().into();
+        value["render_profile"] = self.render_profile.id().into();
+        value["planning_budget_seconds"] = self.planning_budget_seconds.into();
         serde_json::to_string(&value).map_err(|error| error.to_string())
     }
 

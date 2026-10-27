@@ -30,9 +30,10 @@ _MAX_SCRIPT = 100_000
 _MAX_TEXT = 4_000
 _PROFILE_FIELDS = ("id", "name", "description", "voice_description", "voice_id",
                    "image", "scene_image", "voice_sample")
-_CODEX_TIMEOUT_SECONDS = 36000
-_MAX_REPAIRS_PER_RUN = 3
+DEFAULT_PLANNING_BUDGET_SECONDS = 600
+PLANNER_VERSION = "storyboard-two-pass-v1"
 _PLANNING_POLICY = "single-render-v1"
+STORYBOARD_POLICY = "per-shot-first-frame-v1"
 _CHARACTER_ASSET_CAPABILITIES = {
     "new_scene_opening": (
         "When exactly one saved performer is visible, the actual first frame is their canonical portrait, "
@@ -49,6 +50,18 @@ _CHARACTER_ASSET_CAPABILITIES = {
     "limits": "Portrait anchoring and voice conversion do not guarantee identity or lip sync.",
     "portrait_inputs": "Attached portraits follow the unique source character order, omitting characters without portraits.",
 }
+
+
+def _asset_capabilities(source: dict) -> dict:
+    if source.get("storyboard_policy") != STORYBOARD_POLICY:
+        return _CHARACTER_ASSET_CAPABILITIES
+    return dict(_CHARACTER_ASSET_CAPABILITIES, new_scene_opening=(
+        "Every segment starts on its own locally generated storyboard image, including reverse angles "
+        "and later segments in the same scene. Saved portraits guide actor identity during still-image "
+        "generation; they are not themselves video opening frames. The storyboard_prompt establishes "
+        "the intended opening composition, costumes, prop ownership and story state. Animate that "
+        "composition directly; do not begin on a portrait or inherit the prior video's final frame."
+    ), limits="Generated storyboards and voice conversion do not guarantee identity, continuity or lip sync.")
 
 
 def _json(value: object) -> str:
@@ -96,6 +109,9 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
     conditioning = request.get("character_conditioning")
     if conditioning not in (None, "saved-character-assets-v1"):
         raise ValueError("Unrecognized saved character conditioning policy.")
+    storyboard_policy = request.get("storyboard_policy")
+    if storyboard_policy not in (None, STORYBOARD_POLICY):
+        raise ValueError("Unrecognized storyboard planning policy.")
     script = request.get("script")
     if not isinstance(script, str) or not script.strip() or len(script) > _MAX_SCRIPT or "\x00" in script:
         raise ValueError(f"Screenplay must be nonempty text of at most {_MAX_SCRIPT} characters.")
@@ -209,9 +225,12 @@ def parse_request(request: dict, profiles: list[dict]) -> dict:
         identity["render_format"] = render_format
     if conditioning is not None:
         identity["character_conditioning"] = conditioning
+    if storyboard_policy is not None:
+        identity["storyboard_policy"] = storyboard_policy
     digest = hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
     return {"version": 1, "script": script, "cast": bindings, "characters": relevant,
             **({"character_conditioning": conditioning} if conditioning is not None else {}),
+            **({"storyboard_policy": storyboard_policy} if storyboard_policy is not None else {}),
             **({"render_format": render_format} if render_format is not None else {}),
             "beats": beats, "fade_out": fade_out, "source_sha256": digest}
 
@@ -277,16 +296,25 @@ def _timing_estimate(beats: list[dict]) -> dict:
 def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict], *, token_counter=None) -> dict:
     """Reject invented/reordered content and fill dialogue from the source of truth."""
     source = parse_request(request, profiles)
+    storyboard_enabled = source.get("storyboard_policy") == STORYBOARD_POLICY
     if not isinstance(candidate, dict) or not isinstance(candidate.get("shots"), list):
         raise ValueError("Codex response must contain a shots list.")
     if candidate.get("source_sha256", source["source_sha256"]) != source["source_sha256"]:
         raise ValueError("Shooting script was made for a different screenplay or cast profile, or render format.")
     if candidate.get("render_format") != request.get("render_format") and "source_sha256" in candidate:
         raise ValueError("Saved shooting script has a different render format; generate a new plan.")
+    if candidate.get("storyboard_policy") != source.get("storyboard_policy"):
+        raise ValueError("Shooting script has a different storyboard policy; generate a new plan.")
+    if candidate.get("planner_version") not in (None, PLANNER_VERSION):
+        raise ValueError("Shooting script uses a different planner version.")
+    if candidate.get("planning_stage") not in (None, "storyboard", "final"):
+        raise ValueError("Shooting script has an invalid planning stage.")
     proposed = candidate["shots"]
     planning_policy = candidate.get("planning_policy")
     if planning_policy is not None and planning_policy != _PLANNING_POLICY:
         raise ValueError("Unrecognized shooting-script planning policy.")
+    if storyboard_enabled and planning_policy != _PLANNING_POLICY:
+        raise ValueError("Storyboard planning requires the first-render production contract.")
     cast_identity = candidate.get("cast_identity")
     if planning_policy == _PLANNING_POLICY and not isinstance(cast_identity, list):
         raise ValueError("First-render planning requires stable cast_identity.")
@@ -332,11 +360,13 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
         continue_previous = item.get("continue_previous")
         if type(continue_previous) is not bool:
             raise ValueError(f"Shot {index} continue_previous must be true or false.")
+        if storyboard_enabled and continue_previous:
+            raise ValueError(f"Shot {index} must use its own storyboard first frame, with continue_previous false.")
         if index == 1 and continue_previous:
             raise ValueError("The first shot cannot continue a previous shot.")
         if index > 1 and scene_ids[0] != shots[-1]["scene_id"] and continue_previous:
             raise ValueError(f"Shot {index} cannot continue across scenes.")
-        if index > 1 and scene_ids[0] == shots[-1]["scene_id"] and not continue_previous:
+        if not storyboard_enabled and index > 1 and scene_ids[0] == shots[-1]["scene_id"] and not continue_previous:
             raise ValueError(
                 f"Shot {index} must continue the previous shot within the same scene: "
                 "use continue_previous true and preserve its ending composition in the opening frame."
@@ -351,6 +381,10 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
         template = _bounded(item.get("prompt_template"), f"Shot {index} prompt template")
         start = _bounded(item.get("start_state"), f"Shot {index} start state", 1200)
         end = _bounded(item.get("end_state"), f"Shot {index} end state", 1200)
+        storyboard_prompt = (_bounded(item.get("storyboard_prompt"), f"Shot {index} storyboard prompt", 1200)
+                             if storyboard_enabled else None)
+        if storyboard_prompt is not None and ("{{" in storyboard_prompt or "}}" in storyboard_prompt):
+            raise ValueError(f"Shot {index} storyboard must describe a still image without dialogue placeholders.")
         production = {}
         if planning_policy == _PLANNING_POLICY:
             coverage = item.get("coverage")
@@ -411,17 +445,19 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             )
         framing = framing_prompt(request["render_format"]) if "render_format" in request else ""
         cast = _cast_context(source, cast_identity,
-                             visible_roles=visible_roles if cast_identity is not None else None,
+                             visible_roles=[] if storyboard_enabled else visible_roles if cast_identity is not None else None,
                              speaking_roles={by_id[n]["speaker"] for n in required} if cast_identity is not None else None)
-        prompt = (action_prompt + " " + framing + cast + speech_direction
+        image_direction = ("Animate the supplied storyboard first frame, preserving its cast, composition, "
+                           "costumes and prop state as the action begins. " if storyboard_enabled else "")
+        prompt = (image_direction + action_prompt + " " + framing + cast + speech_direction
                   + "No subtitles, captions, or text overlays.")
         if _token_count(prompt, token_counter) > 1024:
             raise ValueError(f"Shot {index} prompt exceeds 1024 Gemma tokens.")
         timing = _timing_estimate([by_id[n] for n in ids])
         if planning_policy == _PLANNING_POLICY:
             # A source paragraph can span segments. Charge only this segment's
-            # share of the structural floor; the independent rehearsal budgets
-            # the actual sub-actions and must still reject rushed staging.
+            # share of the structural floor; directing still has to leave time
+            # for the actual sub-actions and meaningful pauses.
             action_weight = sum(1 / part["parts"] for part in production["action_coverage"])
             minimum = max(4, math.ceil(timing["speech_seconds_at_160_wpm"] + action_weight + 0.5))
         else:
@@ -430,6 +466,7 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
             raise ValueError(f"Shot {index} needs at least {minimum} seconds for its dialogue and action.")
         shots.append({"seconds": seconds, "beat_ids": ids, "prompt_template": template,
                       "prompt": prompt, "start_state": start, "end_state": end,
+                      **({"storyboard_prompt": storyboard_prompt} if storyboard_enabled else {}),
                       **({"visible_roles": visible_roles} if cast_identity is not None else {}),
                       **production,
                       "continue_previous": continue_previous, "scene": scene_markers[0],
@@ -446,6 +483,9 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
                 raise ValueError("Saved shot prompt does not match the source dialogue.")
     return {"version": 1, "source_sha256": source["source_sha256"],
             **({"planning_policy": planning_policy} if planning_policy is not None else {}),
+            **({"storyboard_policy": STORYBOARD_POLICY} if storyboard_enabled else {}),
+            **({"planner_version": candidate["planner_version"]} if "planner_version" in candidate else {}),
+            **({"planning_stage": candidate["planning_stage"]} if "planning_stage" in candidate else {}),
             **({"cast_identity": cast_identity} if cast_identity is not None else {}),
             **({"render_format": request["render_format"]} if "render_format" in request else {}),
             "seconds": sum(shot["seconds"] for shot in shots), "fade_out": source["fade_out"],
@@ -462,7 +502,14 @@ def load_shooting_script(path: Path, request: dict, profiles: list[dict], *, tok
     artifact = validate_shooting_script(saved, request, profiles, token_counter=token_counter)
     if saved.get("version") != 1 or saved.get("seconds") != artifact["seconds"] or saved.get("fade_out") != artifact["fade_out"]:
         raise ValueError("Saved shooting-script metadata is invalid.")
-    if "cast_identity" in saved and "preproduction_review" not in saved:
+    if artifact.get("planner_version") == PLANNER_VERSION:
+        finalization = saved.get("motion_plan")
+        if (artifact.get("planning_stage") != "final" or not isinstance(finalization, dict)
+                or finalization.get("version") != 1
+                or finalization.get("plan_sha256") != _plan_fingerprint(artifact)):
+            raise ValueError("This storyboard draft has no matching image-based motion plan yet.")
+        artifact["motion_plan"] = finalization
+    elif "cast_identity" in saved and "preproduction_review" not in saved:
         raise ValueError("This preproduction draft has no final approval; generate an approved shooting script before rendering.")
     if "preproduction_review" in saved:
         review = saved["preproduction_review"]
@@ -478,7 +525,12 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
     """Save an already validated plan as machine and readable artifacts."""
     if not isinstance(plan, dict) or plan.get("version") != 1 or not isinstance(plan.get("shots"), list):
         raise ValueError("Cannot save an invalid shooting-script plan.")
-    if "cast_identity" in plan:
+    if plan.get("planner_version") == PLANNER_VERSION:
+        motion = plan.get("motion_plan")
+        if (plan.get("planning_stage") != "final" or not isinstance(motion, dict)
+                or motion.get("plan_sha256") != _plan_fingerprint(plan)):
+            raise ValueError("Complete the image-based motion pass before publishing the shooting script.")
+    elif "cast_identity" in plan:
         review = plan.get("preproduction_review")
         if (not isinstance(review, dict) or review.get("version") != 1
                 or review.get("plan_sha256") != _plan_fingerprint(plan)):
@@ -491,6 +543,8 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
     temporary.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(plan_path)
     display = []
+    if plan.get("planner_version") == PLANNER_VERSION:
+        display.extend(("Planning: storyboard direction and image-based motion direction completed.", ""))
     if "preproduction_review" in plan:
         stages = ("draft, intent revision, physical rehearsal, render feasibility, final approval"
                   if plan.get("planning_policy") == _PLANNING_POLICY
@@ -501,6 +555,8 @@ def save_shooting_script(plan: dict, run_dir: Path) -> None:
         display.extend((f"Render: {spec['width']} × {spec['height']} | {spec['aspect_ratio']} | {spec['name']}", ""))
     for index, shot in enumerate(plan["shots"], 1):
         display.append(f"SHOT {index} | {shot['seconds']}s | beats {', '.join(map(str, shot['beat_ids']))}")
+        if "storyboard_prompt" in shot:
+            display.append(f"Storyboard: {shot['storyboard_prompt']}")
         if "dramatic_purpose" in shot:
             display.extend((f"Purpose: {shot['dramatic_purpose']}", f"Coverage: {shot['coverage']}"))
             display.extend(f"Must show: {requirement}" for requirement in shot["visual_contract"])
@@ -541,79 +597,33 @@ _SCHEMA = _object_schema({
 })
 
 
-_REVIEW_SCHEMA = _object_schema({
-    "approved": {"type": "boolean"},
-    "summary": {"type": "string"},
-    "beat_reviews": {"type": "array", "items": _object_schema({
-        "beat_id": {"type": "integer"}, "shot_numbers": {"type": "array", "items": {"type": "integer"}},
-        "intent": {"type": "string"}, "evidence": {"type": "string"},
+_MOTION_SCHEMA = _object_schema({
+    "shots": {"type": "array", "items": _object_schema({
+        "shot": {"type": "integer"},
+        "prompt_template": {"type": "string"},
+        "image_observations": {"type": "string"},
+        "blocking_issue": {"type": "string"},
     })},
-    "shot_reviews": {"type": "array", "items": _object_schema({
-        "shot_number": {"type": "integer"}, "staging": {"type": "string"},
-        "identity_and_state": {"type": "string"},
-        "render_risk": {"type": "string", "enum": ["low", "medium", "high"]},
-        "risk_factors": {"type": "array", "items": {"type": "string"}},
-        "risk_mitigation": {"type": "string"},
-        "contract_evidence": {"type": "array", "items": {"type": "string"}},
-        "timeline": {"type": "array", "items": _object_schema({
-            "start_seconds": {"type": "number"}, "end_seconds": {"type": "number"},
-            "action": {"type": "string"},
-        })},
-    })},
-    "issues": {"type": "array", "items": {"type": "string"}},
 })
 
-_PLANNING_PASSES = (
-    ("draft", "Draft source-faithful coverage",
-     "Read the whole screenplay first. Identify the purpose, motivation, addressee and "
-     "audience reveal of every beat before drafting. Return cast_identity, shots, and "
-     "revision_notes recording the important interpretation and staging decisions."),
-    ("intent", "Revise against screenplay intent",
-     "Treat the previous draft as fallible. Compare every source clause, subtext, cause, "
-     "reaction, reveal and line addressee against the FULLY ASSEMBLED prompts. Fix lost "
-     "intent and source order, not just missing words. Check that normal human behavior "
-     "has its correct purpose (for example, a covered phone microphone makes a private "
-     "aside to someone in the room, with the actor's own mouth clear). Remove mutable "
-     "costume or emotion from cast_identity; put these in the chronological staging. "
-     "Return the complete revised plan and specific revision_notes describing defects "
-     "and fixes, with beat/shot references. Do not merely endorse the draft."),
-    ("rehearsal", "Revise physical staging and timing",
-     "Rehearse the previous draft second by second as actors, camera operator and script "
-     "supervisor. Check what is visible at the actual first frame, thresholds, free hands, "
-     "prop contact, garment mechanics, wetness, body reveals, dialogue recipients, and "
-     "listening intervals. Budget individual serial movements, not one second per source "
-     "paragraph. A dialogue line's speech estimate is not its listening/pause allowance. "
-     "Simplify overloaded takes with motivated internal cuts or consecutive action parts, "
-     "keeping source order and the inherited opening. Read the FULLY ASSEMBLED prompts "
-     "for contradictions, including identity "
-     "and voice defaults. Use concise chronological positive descriptions of filmable "
-     "action. Return the entire repaired plan and specific revision_notes. Leave no "
-     "known defect for the final approval reviewer to fix."),
-    ("feasibility", "Revise for a usable first render",
-     "Act as an independent LTX production engineer. Rendering is expensive and the "
-     "default is one generation per segment, without human shot approval. A physically "
-     "possible performance is not sufficient. Audit the complete previous plan for "
-     "object persistence, garment topology, contact/release, entrances, body reveals, "
-     "multiple simultaneous actions, and fragile hand/prop details. Redesign difficult "
-     "blocking before rendering. Use focused action, established stable states, and "
-     "explicit cuts to cause, reaction, and result inside a generation when they improve "
-     "reliability. Preserve the inherited opening frame and continuous dialogue audio "
-     "across such cuts. Do not hide a source-essential reveal or delete meaning. Split "
-     "an action beat into consecutive source-linked parts only when needed; avoid "
-     "inflating shot count or runtime to escape thoughtful staging. Keep generation "
-     "prompts concise. Return the complete improved plan, observable visual_contract "
-     "requirements and concrete revision_notes explaining each risk removed. Never "
-     "plan on repeated expensive retakes, post-hoc human approval, or an unspecified "
-     "future correction to make a shot usable."),
-)
+
+def _director_schema() -> dict:
+    schema = json.loads(json.dumps(_SCHEMA))
+    schema["properties"]["storyboard_policy"] = {"type": "string", "enum": [STORYBOARD_POLICY]}
+    schema["required"].append("storyboard_policy")
+    shot = schema["properties"]["shots"]["items"]
+    shot["properties"]["storyboard_prompt"] = {"type": "string"}
+    shot["required"].append("storyboard_prompt")
+    return schema
 
 
 def _plan_fingerprint(plan: dict) -> str:
     # Approval belongs to these exact compiled prompts, durations and continuity
     # states, not merely to the unchanged screenplay.
     content = {key: plan.get(key) for key in ("source_sha256", "cast_identity", "shots", "fade_out")}
-    if "planning_policy" in plan:
-        content["planning_policy"] = plan["planning_policy"]
+    for key in ("planning_policy", "storyboard_policy", "planner_version"):
+        if key in plan:
+            content[key] = plan[key]
     return hashlib.sha256(_json(content).encode("utf-8")).hexdigest()
 
 
@@ -693,37 +703,24 @@ def _validate_review(report: dict, plan: dict, *, require_approval: bool = True)
         raise ValueError(f"Preproduction review blocked rendering: {detail}")
 
 
-def _instruction(source: dict, correction: str | None) -> str:
-    character_conditioning = source.get("character_conditioning") == "saved-character-assets-v1"
-    speech_estimates = []
-    for beat in source["beats"]:
-        if beat["kind"] == "dialogue":
-            timing = _timing_estimate([beat])
-            speech_estimates.append({
-                "beat_id": beat["id"], "spoken_words": timing["spoken_words"],
-                "speech_seconds_at_160_wpm": timing["speech_seconds_at_160_wpm"],
-            })
+def _instruction(source: dict, correction: str | None = None) -> str:
     body = {
         "script": source["script"], "cast": source["cast"], "characters": source["characters"],
+        "storyboard_policy": STORYBOARD_POLICY,
         **({"render_format": source["render_format"]} if "render_format" in source else {}),
         "beats": source["beats"], "fade_out_at_end": source["fade_out"],
         "generation_capabilities": {
-            "planning_policy": _PLANNING_POLICY, "default_video_attempts_per_segment": 1,
-            "joint_picture_and_audio": True, "explicit_cuts_inside_generation": True,
-            "audio_continues_across_internal_cuts": True,
+            "planning_policy": _PLANNING_POLICY,
+            "independent_storyboard_first_frame_per_shot": True,
+            "joint_picture_and_audio": True,
             "audio_moves_between_generations": False,
-            "same_scene_opening": "Actual previous final frame; an explicit cut may follow it.",
-            "human_shot_approval": False,
-            **({"saved_character_assets": _CHARACTER_ASSET_CAPABILITIES} if character_conditioning else {}),
+            "saved_character_assets": _asset_capabilities(source),
         },
-        "timing_guidance": {
-            "words_per_minute": 160, "settling_seconds": 0.5,
-            "speech_estimates": speech_estimates,
-        },
+        "timing_guidance": {"words_per_minute": 160, "settling_seconds": 0.5},
     }
     direction = Path(__file__).with_name("shooting-script-instructions.txt").read_text(encoding="utf-8")
-    return (direction.rstrip() + "\n\n" + _json(body)
-            + ("\n\nCorrect this validation error: " + correction if correction else ""))
+    return direction.rstrip() + "\n\n" + _json(body) + (
+        "\n\nCorrect only this validation failure: " + correction if correction else "")
 
 
 def _executable(executable) -> str:
@@ -922,304 +919,248 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
         return raw
 
 
-def _save_planning_progress(run_dir: Path, progress: dict) -> None:
-    """Commit a completed pass atomically, including its exact plan and review."""
-    path = run_dir / "shooting-script-progress.json"
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(progress, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+def _atomic_json(path: Path, value: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
-def _load_planning_progress(run_dir, source, request, profiles, token_counter, activity):
-    def read_json(path):
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"Cannot resume planning: {path.name} is unreadable.") from exc
-
-    def validated_plan(saved):
-        if (not isinstance(saved, dict) or saved.get("version") != 1
-                or saved.get("source_sha256") != source["source_sha256"]
-                or not isinstance(saved.get("cast_identity"), list)):
-            raise ValueError("Saved planning draft does not match this screenplay, cast, or render format.")
-        plan = validate_shooting_script(saved, request, profiles, token_counter=token_counter)
-        if saved.get("seconds") != plan["seconds"] or saved.get("fade_out") != plan["fade_out"]:
-            raise ValueError("Saved planning draft has invalid duration or ending metadata.")
-        return plan
-
-    path = run_dir / "shooting-script-progress.json"
-    if path.is_file():
-        progress = read_json(path)
-        previous_policy = progress.get("planning_policy") if isinstance(progress, dict) else None
-        stage_count = 3 if previous_policy is None else len(_PLANNING_PASSES)
-        if (not isinstance(progress, dict) or progress.get("version") != 1
-                or previous_policy not in (None, _PLANNING_POLICY)
-                or progress.get("source_sha256") != source["source_sha256"]
-                or type(progress.get("completed_passes")) is not int
-                or not 1 <= progress["completed_passes"] <= stage_count
-                or type(progress.get("repair_round")) is not int or progress["repair_round"] < 0
-                or (progress["repair_round"] and progress["completed_passes"] != stage_count)):
-            raise ValueError("Saved planning checkpoint does not match this run or has invalid progress.")
-        plan = validated_plan(progress.get("plan"))
-        if (previous_policy == _PLANNING_POLICY
-                and progress["completed_passes"] == len(_PLANNING_PASSES)
-                and plan.get("planning_policy") != _PLANNING_POLICY):
-            raise ValueError("Saved render-feasibility checkpoint still contains a legacy plan.")
-        if progress.get("plan_sha256") != _plan_fingerprint(plan):
-            raise ValueError("Saved planning checkpoint does not match its compiled draft.")
-        review = progress.get("review")
-        if review is not None:
-            if progress["completed_passes"] != stage_count:
-                raise ValueError("Saved planning checkpoint reviews an unfinished draft.")
-            _validate_review(review, plan, require_approval=False)
-        progress.update(plan=plan, review=review)
-        if previous_policy is None:
-            # Preserve expensive completed writing, but never let an old three-
-            # stage approval skip the new render-feasibility pass and reviewer.
-            progress.update(planning_policy=_PLANNING_POLICY, review=None)
-            if review is not None:
-                progress["repair_findings"] = review
-            activity("Resuming the saved draft with render-feasibility planning and a fresh automatic review.")
-        activity(f"Resuming saved preproduction: {progress['completed_passes']} drafting stages complete, "
-                 f"{progress['repair_round']} repair revisions complete.")
-        return progress
-
-    progress = {"version": 1, "planning_policy": _PLANNING_POLICY,
-                "source_sha256": source["source_sha256"],
-                "completed_passes": 0, "repair_round": 0, "plan": None,
-                "plan_sha256": None, "review": None}
-    # Import checkpoints from the original four-pass implementation. Its final
-    # review had no fingerprint, so bind it using the actual request/response pair.
-    draft_errors = []
-    for number in range(len(_PLANNING_PASSES), 0, -1):
-        name = _PLANNING_PASSES[number - 1][0]
-        draft_path = run_dir / f"shooting-script-draft-{number}-{name}.json"
-        if not draft_path.is_file():
-            continue
-        try:
-            plan = validated_plan(read_json(draft_path))
-            if number == len(_PLANNING_PASSES) and plan.get("planning_policy") != _PLANNING_POLICY:
-                raise ValueError("Saved render-feasibility draft still contains a legacy plan.")
-        except ValueError as exc:
-            draft_errors.append(f"{draft_path.name}: {exc}")
-            activity(f"Cannot reuse {draft_path.name}; checking the preceding completed stage.")
-            continue
-        progress.update(completed_passes=number, plan=plan, plan_sha256=_plan_fingerprint(plan))
-        activity(f"Resuming saved preproduction draft after stage {number}/{len(_PLANNING_PASSES)}; completed stages will be reused.")
-        break
-    if progress["plan"] is None and draft_errors:
-        raise ValueError("No valid saved planning draft could be recovered: " + "; ".join(draft_errors))
-    review_path = run_dir / "shooting-script-review.json"
-    if progress["completed_passes"] == len(_PLANNING_PASSES) and review_path.is_file():
-        try:
-            review = read_json(review_path)
-        except ValueError:
-            review = None
-            activity("Saved review is incomplete; only the final review will be repeated from the saved draft.")
-        for request_path in sorted(run_dir.glob("shooting-script-request-approval-*.txt")):
-            response_path = run_dir / request_path.name.replace("request-", "response-", 1).replace(".txt", ".json")
-            try:
-                submitted = request_path.read_text(encoding="utf-8").split("\nSOURCE AND PLAN\n", 1)[1]
-                reviewed_plan, _ = json.JSONDecoder().raw_decode(submitted.lstrip())
-                returned = json.loads(response_path.read_text(encoding="utf-8"))
-                if (_plan_fingerprint(reviewed_plan) != progress["plan_sha256"]
-                        or returned != review):
-                    continue
-                _validate_review(review, progress["plan"], require_approval=False)
-            except (OSError, ValueError, IndexError, AttributeError, TypeError):
-                continue
-            progress["review"] = review
-            activity("Reusing the completed final review and its findings; completed planning stages will not repeat.")
-            break
-    if progress["plan"] is not None:
-        _save_planning_progress(run_dir, progress)
-    return progress
+def _read_object(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read saved planning artifact: {path.name}.") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"Saved planning artifact must be an object: {path.name}.")
+    return value
 
 
-def create_shooting_script(request: dict, profiles: list[dict], run_dir: Path, *, executable=None,
-                           token_counter=None, on_activity=None, on_activity_delta=None) -> dict:
-    """Resume preproduction, repair review findings, and publish only an approved plan."""
-    source = parse_request(request, profiles)
-    character_conditioning = source.get("character_conditioning") == "saved-character-assets-v1"
+def _budget(run_dir: Path, source_sha256: str, limit: float) -> tuple[Path, dict]:
+    if type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0:
+        raise ValueError("Planning budget must be a positive number of seconds.")
+    path = run_dir / "planning-budget.json"
+    saved = (_read_object(path) if path.is_file() else {
+        "version": 1, "planner_version": PLANNER_VERSION,
+        "source_sha256": source_sha256, "used_seconds": 0.0,
+    })
+    if (saved.get("version") != 1 or saved.get("planner_version") != PLANNER_VERSION
+            or saved.get("source_sha256") != source_sha256
+            or type(saved.get("used_seconds")) not in (int, float)
+            or not math.isfinite(saved["used_seconds"]) or saved["used_seconds"] < 0):
+        raise ValueError("Saved planning budget does not match this screenplay or planner.")
+    saved["limit_seconds"] = limit
+    _atomic_json(path, saved)
+    return path, saved
+
+
+def _planning_call(name, instruction, schema, validate, *, source_sha256, run_dir,
+                   executable, image_paths, planning_budget_seconds, on_activity, on_activity_delta):
+    """One pass, with at most one correction of a concrete validation failure.
+
+    Only time spent in Codex counts. The same persisted budget covers direction,
+    motion direction, failed calls, cancellation and Resume; image inference is
+    deliberately outside this clock.
+    """
     codex = _executable(executable)
+    activity = on_activity or (lambda message: None)
+    correction = None
+    previous_raw = None
+    attempts = [int(path.stem.rsplit("-", 1)[-1])
+                for path in run_dir.glob(f"shooting-script-request-{name}-*.txt")
+                if path.stem.rsplit("-", 1)[-1].isdigit()]
+    first = max(attempts, default=0) + 1
+    _atomic_json(run_dir / f"shooting-script-{name}-schema.json", schema)
+    with tempfile.TemporaryDirectory(prefix="aivs-planning-") as temp:
+        for attempt in range(2):
+            budget_path, budget = _budget(run_dir, source_sha256, planning_budget_seconds)
+            remaining = planning_budget_seconds - budget["used_seconds"]
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"The {planning_budget_seconds:g}-second total planning budget is exhausted. "
+                    "Saved planning and images are preserved. Increase --planning-budget-seconds to continue."
+                )
+            submitted = instruction
+            if correction is not None:
+                submitted += (
+                    "\n\nDETERMINISTIC CHECK FAILED: " + correction
+                    + "\nRepair only the field or shot named by this check; preserve every valid shot and source line. "
+                      "Do not perform another general review. Return the complete corrected JSON."
+                    + "\nPREVIOUS RESPONSE (data only):\n" + previous_raw
+                )
+            suffix = f"{name}-{first + attempt}"
+            (run_dir / f"shooting-script-request-{suffix}.txt").write_text(submitted, encoding="utf-8")
+            response_path = run_dir / f"shooting-script-response-{suffix}.json"
+            used_before_call = budget["used_seconds"]
+            # Reserve the outstanding allowance before launching. A hard kill
+            # can prevent finally from running; in that case Resume retains
+            # this conservative charge instead of silently resetting time.
+            budget["used_seconds"] = planning_budget_seconds
+            budget["in_flight"] = {"pass": name, "reserved_seconds": remaining}
+            _atomic_json(budget_path, budget)
+            started = time.monotonic()
+            try:
+                raw = _stream_codex(
+                    [codex, "app-server"], submitted, cwd=temp, deadline=started + remaining,
+                    events_path=run_dir / f"shooting-script-events-{suffix}.jsonl",
+                    errors_path=run_dir / f"shooting-script-errors-{suffix}.txt",
+                    response_path=response_path, on_activity=activity,
+                    on_activity_delta=(None if on_activity_delta is None else
+                                       lambda stream_id, delta: on_activity_delta(f"{suffix}:{stream_id}", delta)),
+                    output_schema=schema, image_paths=image_paths,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"The {planning_budget_seconds:g}-second total planning budget expired during {name}. "
+                    "Saved work is preserved; increase --planning-budget-seconds to continue."
+                ) from exc
+            finally:
+                budget["used_seconds"] = round(used_before_call + time.monotonic() - started, 6)
+                budget.pop("in_flight", None)
+                budget["last_pass"] = name
+                _atomic_json(budget_path, budget)
+            try:
+                return validate(json.loads(raw))
+            except (json.JSONDecodeError, ValueError) as exc:
+                correction, previous_raw = str(exc), raw
+                if attempt:
+                    raise ValueError(f"{name} failed its specific check after one targeted repair: {correction}") from exc
+                activity(f"Repairing a planning check: {correction}")
+    raise AssertionError("Unreachable planning state")
+
+
+def create_storyboard_plan(request: dict, profiles: list[dict], run_dir: Path, *, executable=None,
+                           token_counter=None, on_activity=None, on_activity_delta=None,
+                           planning_budget_seconds=DEFAULT_PLANNING_BUDGET_SECONDS) -> dict:
+    """Pass 1: direct independent shot compositions and preserve exact source beats."""
+    source = parse_request(request, profiles)
+    if source.get("storyboard_policy") != STORYBOARD_POLICY:
+        raise ValueError("New planning requires per-shot storyboard first frames.")
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     activity = on_activity or (lambda message: None)
-    progress = _load_planning_progress(run_dir, source, request, profiles, token_counter, activity)
+    _budget(run_dir, source["source_sha256"], planning_budget_seconds)
+    draft_path = run_dir / "storyboard-plan.json"
+
+    def validate(candidate):
+        if not isinstance(candidate, dict) or candidate.get("planning_policy") != _PLANNING_POLICY:
+            raise ValueError("The director plan needs the source-bound production contract.")
+        plan = validate_shooting_script(candidate, request, profiles, token_counter=token_counter)
+        plan.update(planner_version=PLANNER_VERSION, planning_stage="storyboard")
+        return plan
+
+    if draft_path.is_file():
+        saved = _read_object(draft_path)
+        if saved.get("planner_version") != PLANNER_VERSION or saved.get("planning_stage") != "storyboard":
+            raise ValueError("Saved storyboard direction belongs to a different planner.")
+        plan = validate(saved)
+        activity("Reusing saved storyboard direction.")
+        return plan
     portrait_paths = []
-    if character_conditioning and profiles:
+    if profiles:
         import characters
         characters.verify_snapshots(profiles, run_dir)
         portrait_paths = [(run_dir / "characters" / profile["id"] / profile["image"]["file"]).resolve()
                           for profile in profiles if profile.get("image")]
-    with tempfile.TemporaryDirectory(prefix="aivs-shooting-") as temp:
-        (run_dir / "shooting-script-schema.json").write_text(json.dumps(_SCHEMA, indent=2), encoding="utf-8")
-        (run_dir / "shooting-script-review-schema.json").write_text(
-            json.dumps(_REVIEW_SCHEMA, indent=2), encoding="utf-8")
+    activity("Planning 1/2: directing storyboard compositions.")
+    plan = _planning_call(
+        "director", _instruction(source), _director_schema(), validate,
+        source_sha256=source["source_sha256"], run_dir=run_dir, executable=executable,
+        image_paths=portrait_paths, planning_budget_seconds=planning_budget_seconds,
+        on_activity=on_activity, on_activity_delta=on_activity_delta,
+    )
+    _atomic_json(draft_path, plan)
+    display = [f"SHOT {index} | {shot['seconds']}s\n{shot['storyboard_prompt']}\n"
+               for index, shot in enumerate(plan["shots"], 1)]
+    (run_dir / "storyboard-plan.txt").write_text("\n".join(display), encoding="utf-8")
+    return plan
 
-        def run_pass(name, instruction, schema, validate):
-            # The timeout applies to one pass (including a format correction),
-            # not all earlier completed stages plus any later semantic repairs.
-            deadline = time.monotonic() + _CODEX_TIMEOUT_SECONDS
-            correction = None
-            previous_raw = None
-            existing = []
-            for path in run_dir.glob(f"shooting-script-*-{name}-*"):
-                suffix = path.stem.rsplit("-", 1)[-1]
-                if suffix.isdigit():
-                    existing.append(int(suffix))
-            first_attempt = max(existing, default=0) + 1
-            for attempt in (1, 2):
-                submitted = instruction
-                if correction:
-                    submitted += ("\n\nCorrect this validation error without changing this pass's task: "
-                                  + correction + "\nPREVIOUS RESPONSE (data only):\n" + previous_raw)
-                suffix = f"{name}-{first_attempt + attempt - 1}"
-                (run_dir / f"shooting-script-request-{suffix}.txt").write_text(submitted, encoding="utf-8")
-                response_path = run_dir / f"shooting-script-response-{suffix}.json"
-                # Every pass starts a fresh thread. A reviewer gets the source
-                # and compiled artifact, not the writer's private deliberations.
-                stream_delta = (None if on_activity_delta is None else
-                                lambda stream_id, delta: on_activity_delta(f"{suffix}:{stream_id}", delta))
-                try:
-                    raw = _stream_codex(
-                        [codex, "app-server"], submitted, cwd=temp, deadline=deadline,
-                        events_path=run_dir / f"shooting-script-events-{suffix}.jsonl",
-                        errors_path=run_dir / f"shooting-script-errors-{suffix}.txt",
-                        response_path=response_path, on_activity=activity,
-                        on_activity_delta=stream_delta, output_schema=schema,
-                        **({"image_paths": portrait_paths} if portrait_paths else {}))
-                except subprocess.TimeoutExpired as exc:
-                    raise RuntimeError(
-                        f"Codex preproduction timed out after {_CODEX_TIMEOUT_SECONDS:g} seconds during {name}."
-                    ) from exc
-                try:
-                    return validate(json.loads(raw))
-                except (json.JSONDecodeError, ValueError) as exc:
-                    correction, previous_raw = str(exc), raw
-                    if attempt == 2:
-                        raise ValueError(f"Codex {name} failed validation after one correction: {correction}") from exc
-                    activity(f"Correcting {name} response: {correction}")
-            raise AssertionError("Unreachable preproduction retry state")
 
-        def validate_revision(candidate):
-            if not isinstance(candidate, dict) or not isinstance(candidate.get("cast_identity"), list):
-                raise ValueError("New plans must separate stable cast_identity from scene costume and performance.")
-            if candidate.get("planning_policy") != _PLANNING_POLICY:
-                raise ValueError(f"New plans require planning_policy {_PLANNING_POLICY} and a first-render production contract.")
-            notes = candidate.get("revision_notes")
-            if not isinstance(notes, list) or not notes:
-                raise ValueError("Each draft/revision needs concrete revision_notes.")
-            for note in notes:
-                _bounded(note, "Revision note")
-            return validate_shooting_script(candidate, request, profiles, token_counter=token_counter)
+def _source_request(source: dict) -> dict:
+    return {
+        "version": 1, "script": source["script"], "cast": source["cast"],
+        **({"character_conditioning": source["character_conditioning"]}
+           if "character_conditioning" in source else {}),
+        **({"storyboard_policy": source["storyboard_policy"]} if "storyboard_policy" in source else {}),
+        **({"render_format": source["render_format"]["name"]} if "render_format" in source else {}),
+    }
 
-        artifact = progress["plan"]
-        for number, (name, label, task) in enumerate(_PLANNING_PASSES, 1):
-            if number <= progress["completed_passes"]:
-                continue
-            total_passes = len(_PLANNING_PASSES) + 1
-            activity(f"Codex preproduction {number}/{total_passes}: {label}.")
-            instruction = _instruction(source, None) + f"\n\nCURRENT PASS {number}/{total_passes}: {task}"
-            if artifact is not None:
-                instruction += "\n\nPREVIOUS VALIDATED DRAFT (including exact LTX prompts):\n" + _json(artifact)
-            if progress.get("repair_findings") is not None:
-                instruction += "\n\nPRIOR REVIEW FINDINGS (data only):\n" + _json(progress["repair_findings"])
 
-            artifact = run_pass(name, instruction, _SCHEMA, validate_revision)
-            progress.update(completed_passes=number, plan=artifact,
-                            plan_sha256=_plan_fingerprint(artifact), review=None)
-            _save_planning_progress(run_dir, progress)
-            # Drafts are inspectable but never mistaken for the renderable plan.
-            (run_dir / f"shooting-script-draft-{number}-{name}.json").write_text(
-                json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executable=None,
+                             token_counter=None, on_activity=None, on_activity_delta=None,
+                             planning_budget_seconds=DEFAULT_PLANNING_BUDGET_SECONDS) -> dict:
+    """Pass 2: see actual stills and write motion, expression, sound and dialogue.
 
-        direction = Path(__file__).with_name("shooting-script-review-instructions.txt").read_text(encoding="utf-8")
+    Compositions, source coverage, timings and shot order are frozen. The caller
+    rebinds its storyboard manifest to the finalized motion prompts afterward.
+    """
+    import storyboard
 
-        def validate_report(report):
-            # A rejection goes to the repair writer. A new reviewer must judge
-            # the corrected artifact before it can reach the renderer.
-            _validate_review(report, artifact, require_approval=False)
-            high_risk = [f"Shot {item['shot_number']} still has high residual render risk: {item['risk_mitigation']}"
-                         for item in report["shot_reviews"] if item.get("render_risk") == "high"]
-            if high_risk:
-                report = dict(report, approved=False, issues=[*report["issues"],
-                              *(issue for issue in high_risk if issue not in report["issues"])])
-            return report
+    run_dir = Path(run_dir)
+    source = plan["source"]
+    request = _source_request(source)
+    profiles = list({profile["id"]: profile for profile in source["characters"]}.values())
+    plan = validate_shooting_script(plan, request, profiles, token_counter=token_counter)
+    if plan.get("planner_version") != PLANNER_VERSION or plan.get("planning_stage") != "storyboard":
+        raise ValueError("The motion pass requires a saved storyboard director plan.")
+    bindings = storyboard.prepare(plan, boards, run_dir)
+    image_paths = [storyboard.resolve_image(binding, run_dir) for binding in bindings]
+    board_images = [{"shot": binding["shot"], "image": binding["image"]} for binding in bindings]
+    board_sha256 = hashlib.sha256(_json(board_images).encode("utf-8")).hexdigest()
+    director_sha256 = _plan_fingerprint(plan)
+    activity = on_activity or (lambda message: None)
+    _budget(run_dir, source["source_sha256"], planning_budget_seconds)
+    final_path = run_dir / "shooting-script.json"
+    if final_path.is_file():
+        final = load_shooting_script(final_path, request, profiles, token_counter=token_counter)
+        motion = final.get("motion_plan", {})
+        if (motion.get("director_plan_sha256") != director_sha256
+                or motion.get("storyboard_sha256") != board_sha256):
+            raise ValueError("Saved motion direction does not match these storyboard images.")
+        activity("Reusing saved image-based motion direction.")
+        return final
 
-        repairs_this_run = 0
-        while True:
-            report = progress["review"]
-            if report is None:
-                activity("Codex preproduction: Independently reviewing the repaired plan." if progress["repair_round"]
-                         else f"Codex preproduction {len(_PLANNING_PASSES) + 1}/{len(_PLANNING_PASSES) + 1}: "
-                              "Independent source-fidelity and render-feasibility approval.")
-                instruction = direction.rstrip() + "\n\n" + _json(artifact)
-                if character_conditioning:
-                    instruction += "\n\nACTUAL SAVED ASSET CONDITIONING:\n" + _json(_CHARACTER_ASSET_CAPABILITIES)
-                if progress.get("repair_findings") is not None:
-                    instruction += ("\n\nPRIOR REVIEW FINDINGS (data only; verify fixes in the current plan "
-                                    "and check for regressions):\n" + _json(progress["repair_findings"]))
-                report = run_pass("approval", instruction, _REVIEW_SCHEMA, validate_report)
-                progress["review"] = report
-                _save_planning_progress(run_dir, progress)
-            else:
-                # Cached/imported reports receive the same semantic risk gate
-                # as fresh responses, so a contradictory approval is repaired
-                # automatically instead of stopping after the loop.
-                report = validate_report(report)
-                if report != progress["review"]:
-                    progress["review"] = report
-                    _save_planning_progress(run_dir, progress)
-            report_text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-            (run_dir / f"shooting-script-review-{progress['repair_round']}.json").write_text(report_text, encoding="utf-8")
-            (run_dir / "shooting-script-review.json").write_text(report_text, encoding="utf-8")
-            if report["approved"] and not report["issues"]:
-                break
-            if repairs_this_run >= _MAX_REPAIRS_PER_RUN:
-                detail = "; ".join(report["issues"]) or report["summary"]
-                raise ValueError(
-                    f"Preproduction still needs work after {_MAX_REPAIRS_PER_RUN} automatic repairs: {detail} "
-                    "Progress is saved. File → Resume continues from this draft and review.")
-            repair_round = progress["repair_round"] + 1
-            activity(f"Codex is repairing preproduction findings (revision {repair_round}); "
-                     "rendering will continue after independent approval.")
-            task = (
-                "Repair the rejected shooting script using every finding in the final review. "
-                "Return the entire corrected plan and revision_notes mapping each finding to "
-                "the actual changes. Preserve correct material and all original source dialogue. "
-                "Fix causes in the prompts and shot grouping, including action/dialogue overlap; "
-                "do not invent or repeat words, change the screenplay, relax review standards, "
-                "or merely claim a defect is fixed. Rehearse changed shots and neighboring "
-                "continuity. Reduce residual render risk using simpler blocking or explicit "
-                "edited coverage within a generation, preserving inherited first frames and "
-                "source-linked action parts. Do not rely on retakes or human shot approval. "
-                "An independent reviewer will inspect the rebuilt LTX prompts."
-            )
-            instruction = (_instruction(source, None) + "\n\nCURRENT PASS: " + task
-                           + "\n\nREJECTED PLAN (exact compiled prompts):\n" + _json(artifact)
-                           + "\n\nREVIEW FINDINGS TO FIX:\n" + _json(report))
-
-            def validate_repair(candidate):
-                repaired_plan = validate_revision(candidate)
-                if _plan_fingerprint(repaired_plan) == _plan_fingerprint(artifact):
-                    raise ValueError("Repair returned the unchanged rejected plan. Fix the reported defects in the actual shots.")
-                return repaired_plan
-
-            repaired = run_pass(f"repair-{repair_round}", instruction, _SCHEMA, validate_repair)
-            progress.update(repair_round=repair_round, plan=repaired,
-                            plan_sha256=_plan_fingerprint(repaired), review=None, repair_findings=report)
-            _save_planning_progress(run_dir, progress)
-            (run_dir / f"shooting-script-draft-repair-{repair_round}.json").write_text(
-                json.dumps(repaired, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            artifact = repaired
-            repairs_this_run += 1
-
-        _validate_review(report, artifact)
-        artifact["preproduction_review"] = {
-            "version": 1, "plan_sha256": _plan_fingerprint(artifact), "report": report,
+    def validate(candidate):
+        rows = candidate.get("shots") if isinstance(candidate, dict) else None
+        if not isinstance(rows, list) or len(rows) != len(plan["shots"]):
+            raise ValueError("The motion pass must return exactly one entry for every storyboard shot.")
+        shots = []
+        observations = []
+        for number, (shot, row) in enumerate(zip(plan["shots"], rows), 1):
+            if not isinstance(row, dict) or type(row.get("shot")) is not int or row["shot"] != number:
+                raise ValueError(f"Motion shot {number} is missing or out of order.")
+            template = _bounded(row.get("prompt_template"), f"Shot {number} motion prompt", 1600)
+            observations.append(_bounded(row.get("image_observations"), f"Shot {number} image observations", 1200))
+            issue = row.get("blocking_issue")
+            if not isinstance(issue, str) or len(issue) > 1200 or "\x00" in issue:
+                raise ValueError(f"Shot {number} blocking_issue must be text of at most 1200 characters, empty when none.")
+            if issue.strip():
+                raise RuntimeError(
+                    f"Storyboard shot {number} cannot support its source action: {issue.strip()} "
+                    f"Observed: {observations[-1]} The image and response are saved. "
+                    "Revise the scene direction or use --fresh-preproduction to create new storyboards."
+                )
+            revised = dict(shot, prompt_template=template)
+            revised.pop("prompt", None)
+            shots.append(revised)
+        candidate_plan = dict(plan, shots=shots, planning_stage="final")
+        final = validate_shooting_script(candidate_plan, request, profiles, token_counter=token_counter)
+        final["motion_plan"] = {
+            "version": 1, "director_plan_sha256": director_sha256,
+            "storyboard_sha256": board_sha256, "images": board_images,
+            "image_observations": observations, "plan_sha256": _plan_fingerprint(final),
         }
-        save_shooting_script(artifact, run_dir)
-        activity(f"Shooting script approved: {len(artifact['shots'])} shots, {artifact['seconds']} seconds; "
-                 f"preproduction complete with {progress['repair_round']} repair revisions.")
-        return artifact
+        return final
+
+    direction = Path(__file__).with_name("shooting-script-review-instructions.txt").read_text(encoding="utf-8")
+    instruction = direction.rstrip() + "\n\n" + _json({"plan": plan, "images_in_shot_order": board_images})
+    activity("Planning 2/2: directing motion from the actual storyboard images.")
+    final = _planning_call(
+        "motion", instruction, _MOTION_SCHEMA, validate,
+        source_sha256=source["source_sha256"], run_dir=run_dir, executable=executable,
+        image_paths=image_paths, planning_budget_seconds=planning_budget_seconds,
+        on_activity=on_activity, on_activity_delta=on_activity_delta,
+    )
+    save_shooting_script(final, run_dir)
+    return final
+
+

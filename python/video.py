@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -15,13 +16,15 @@ import shutil
 import sys
 import time
 
-from quality_backend import ROOT, CACHE, FPS, WIDTH, HEIGHT, doctor, model_path, render
+from quality_backend import ROOT, CACHE, FPS, WIDTH, HEIGHT, doctor, model_path, render, profile_config
 from dialogue_helpers import duration_estimate
 import characters
 from character_conditioning import POLICY as CHARACTER_CONDITIONING_POLICY
-from shooting_script import create_shooting_script, load_shooting_script, parse_request, save_shooting_script
+from shooting_script import load_shooting_script, parse_request, STORYBOARD_POLICY
 from shot_renderer import render_shooting_script
 from render_formats import resolve_format
+import preproduction
+import storyboard_backend
 
 DEFAULT_PROMPT = Path(__file__).with_name("default-prompt.txt").read_text().strip()
 _token = ""
@@ -55,16 +58,19 @@ def check_environment():
             raise RuntimeError(f"{name} is missing. Install FFmpeg and retry setup.")
 
 
-def check():
+def check(profile="hq"):
     check_environment()
     emit("progress", label="Checking Python packages and Apple GPU")
     doctor()
-    emit("progress", label="Checking cached distilled and HQ models, text encoder, and audio weights")
-    model_path(profile="hq")
+    models = "distilled and HQ" if profile == "hq" else "distilled"
+    emit("progress", label=f"Checking cached {models} models, text encoder, and audio weights")
+    model_path(profile=profile)
+    emit("progress", label="Checking local storyboard renderer and cached image weights")
+    storyboard_backend.check()
     emit("ready")
 
 
-def download():
+def download(profile="hq"):
     check_environment()
     from tqdm.auto import tqdm
     import time
@@ -88,9 +94,13 @@ def download():
                  fraction=min(self.n / self.total, 1) if self.total else None)
 
     with project_lock(".setup.lock"):
-        emit("progress", label="Downloading LTX-2.5 distilled and HQ models with audio (about 62 GB; cached files are reused)")
-        model_path(download=True, progress_class=DownloadProgress, profile="hq")
-    check()
+        models = "distilled and HQ models" if profile == "hq" else "distilled model"
+        size = "about 62 GB; " if profile == "hq" else ""
+        emit("progress", label=f"Downloading LTX-2.5 {models} with audio ({size}cached files are reused)")
+        model_path(download=True, progress_class=DownloadProgress, profile=profile)
+        emit("progress", label="Downloading local storyboard image model (cached files are reused)")
+        storyboard_backend.download()
+    check(profile)
 
 
 def generate(seed=None, prompt=DEFAULT_PROMPT, *, character=(), character_text_only=False,
@@ -157,13 +167,20 @@ def prompt_token_counter():
     return lambda prompt: len(tokenizer.encode(prompt.strip()).ids)
 
 
-def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=False):
+def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=False,
+                        profile=None, planning_budget_seconds=None, fresh_preproduction=False):
     """Translate arbitrary human screenplay text and its cast, then film the plan."""
     if not isinstance(request, dict) or request.get("version") != 1:
         raise ValueError("Screenplay requests must use version 1.")
     if request.get("character_conditioning", CHARACTER_CONDITIONING_POLICY) != CHARACTER_CONDITIONING_POLICY:
         raise ValueError("New screenplay renders require saved-character-assets-v1 conditioning.")
-    request = dict(request, character_conditioning=CHARACTER_CONDITIONING_POLICY)
+    profile = profile if profile is not None else request.get("render_profile", "hq")
+    config = profile_config(profile)
+    budget = planning_budget_seconds if planning_budget_seconds is not None else request.get("planning_budget_seconds", 600)
+    if type(budget) is not int or not 60 <= budget <= 86400:
+        raise ValueError("Planning budget must be an integer between 60 and 86400 seconds.")
+    request = dict(request, character_conditioning=CHARACTER_CONDITIONING_POLICY,
+                   storyboard_policy=STORYBOARD_POLICY, render_profile=profile, planning_budget_seconds=budget)
     spec = resolve_format(request["render_format"]) if "render_format" in request else None
     cast = request.get("cast")
     if not isinstance(cast, list) or any(not isinstance(binding, dict) or not isinstance(binding.get("character"), str)
@@ -193,6 +210,9 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
             "audio": "native-with-saved-voice-conversion",
             "characters": profiles, "shooting_script": "shooting-script.json",
             "character_conditioning": CHARACTER_CONDITIONING_POLICY,
+            "render_profile": profile, "render_config": config,
+            "storyboard_policy": STORYBOARD_POLICY, "storyboards": "storyboards.json",
+            "planning_budget_seconds": budget,
         }
 
         def save():
@@ -203,24 +223,25 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
         save()
         try:
             started = time.monotonic()
-            emit("progress", label="Preparing shooting script with Codex")
+            emit("progress", label="Preparing shots and storyboards with Codex")
             count_tokens = prompt_token_counter()
-            if shooting_script is not None:
-                plan = load_shooting_script(shooting_script, request, profiles, token_counter=count_tokens)
-            else:
-                plan = create_shooting_script(request, profiles, run_dir, token_counter=count_tokens,
-                                              on_activity=lambda message: emit("activity", message=message),
-                                              on_activity_delta=lambda stream_id, delta: emit(
-                                                  "activity_delta", id=stream_id, delta=delta))
-            save_shooting_script(plan, run_dir)
+            if not plan_only:
+                model_path(profile=profile)
+            plan, boards = preproduction.prepare(
+                request, profiles, run_dir, seed, token_counter=count_tokens,
+                planning_budget_seconds=budget, plan_only=plan_only,
+                shooting_script_path=shooting_script, fresh=fresh_preproduction,
+                on_activity=lambda message: emit("activity", message=message),
+                on_activity_delta=lambda stream_id, delta: emit("activity_delta", id=stream_id, delta=delta),
+            )
             report.update(seconds=plan["seconds"],
                           planning_seconds=round(time.monotonic() - started, 3),
                           shots=[dict(shot, status="pending") for shot in plan["shots"]])
             if plan_only:
                 report["status"] = "planned"
                 save()
-                emit("planned", output=str(run_dir / "shooting-script.txt"),
-                     shooting_script=str(run_dir / "shooting-script.json"))
+                planned_path = run_dir / ("shooting-script.json" if boards is not None else "storyboard-plan.json")
+                emit("planned", output=str(planned_path), shooting_script=str(planned_path))
                 return
             report["status"] = "rendering"
             save()
@@ -233,6 +254,8 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
             report["runtime"] = render_shooting_script(
                 plan, seed, output, on_progress=lambda **data: emit("render_progress", **data),
                 character_profiles=profiles,
+                storyboard=boards, render_config=config,
+                render_fn=functools.partial(render, profile=profile),
                 on_shot=shot_update,
                 token_counter=count_tokens,
                 on_activity=lambda message: emit("activity", message=message),
@@ -248,7 +271,7 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
         emit("complete", output=str(output))
 
 
-def resume_screenplay(directory):
+def resume_screenplay(directory, *, planning_budget_seconds=None):
     """Continue a saved run in place using its original source, cast, and seed."""
     run_dir = Path(directory).expanduser().resolve()
     if not run_dir.is_dir():
@@ -280,6 +303,16 @@ def resume_screenplay(directory):
         parse_request(request, profiles)
         if report.get("character_conditioning") != request.get("character_conditioning"):
             raise ValueError("Cannot resume a run with a different character conditioning policy.")
+        profile = report.get("render_profile", "distilled")
+        config = profile_config(profile)
+        if request.get("render_profile", "distilled") != profile:
+            raise ValueError("Cannot resume a run with a different render profile.")
+        if report.get("render_config", config) != config:
+            raise ValueError("This run uses a different renderer configuration; start a new render.")
+        budget = planning_budget_seconds if planning_budget_seconds is not None else request.get("planning_budget_seconds", 600)
+        if type(budget) is not int or not 60 <= budget <= 86400:
+            raise ValueError("Planning budget must be an integer between 60 and 86400 seconds.")
+        uses_storyboards = request.get("storyboard_policy") == STORYBOARD_POLICY
         output = run_dir / "video.mp4"
         if (report.get("status") == "complete" and output.is_file()
                 and report.get("sha256") == hashlib.sha256(output.read_bytes()).hexdigest()):
@@ -290,7 +323,7 @@ def resume_screenplay(directory):
         os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", TQDM_DISABLE="1")
         plan_file = run_dir / "shooting-script.json"
         count_tokens = prompt_token_counter()
-        if plan_file.is_file():
+        if plan_file.is_file() and not uses_storyboards:
             emit("progress", label="Loading saved shooting script; planning is already complete")
             plan = load_shooting_script(plan_file, request, profiles, token_counter=count_tokens)
         else:
@@ -305,19 +338,27 @@ def resume_screenplay(directory):
         report.pop("sha256", None)
         report.pop("runtime", None)
         report["status"] = "planning" if plan is None else "rendering"
+        report["planning_budget_seconds"] = budget
+        if planning_budget_seconds is not None:
+            request["planning_budget_seconds"] = budget
+            preproduction._save(run_dir / "screenplay-request.json", request)
         save()
         try:
-            if plan is None:
-                emit("progress", label="Resuming unfinished shooting script with Codex")
+            boards = None
+            if uses_storyboards:
+                model_path(profile=profile)
+                emit("progress", label="Resuming shots and storyboards")
                 started = time.monotonic()
-                plan = create_shooting_script(
-                    request, profiles, run_dir, token_counter=count_tokens,
+                plan, boards = preproduction.prepare(
+                    request, profiles, run_dir, seed, token_counter=count_tokens,
+                    planning_budget_seconds=budget,
                     on_activity=lambda message: emit("activity", message=message),
                     on_activity_delta=lambda stream_id, delta: emit(
                         "activity_delta", id=stream_id, delta=delta),
                 )
-                save_shooting_script(plan, run_dir)
                 report["planning_seconds"] = round(time.monotonic() - started, 3)
+            elif plan is None:
+                raise ValueError("The old planner has been removed. Start Generate video again to create storyboards for this scene.")
             report.update(status="rendering", seconds=plan["seconds"],
                           shots=[dict(shot, status="pending") for shot in plan["shots"]])
             save()
@@ -331,6 +372,9 @@ def resume_screenplay(directory):
                 plan, seed, output, resume=True,
                 character_profiles=(profiles if report.get("character_conditioning") == CHARACTER_CONDITIONING_POLICY
                                     else None),
+                storyboard=boards,
+                render_config=config if uses_storyboards else None,
+                render_fn=functools.partial(render, profile=profile),
                 on_progress=lambda **data: emit("render_progress", **data),
                 on_shot=shot_update,
                 token_counter=count_tokens,
@@ -352,6 +396,12 @@ def main():
     parser.add_argument("command", choices=("check", "download", "render", "resume"))
     parser.add_argument("--output-dir", type=Path, help="Existing screenplay output directory to resume in place")
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--profile", choices=("hq", "distilled"),
+                        help="Screenplay video profile (default: hq); both profiles use storyboards")
+    parser.add_argument("--planning-budget-seconds", type=int,
+                        help="Total Codex preproduction allowance (default: 600); Resume keeps time already used")
+    parser.add_argument("--fresh-preproduction", action="store_true",
+                        help="Design new shots and boards instead of reusing the shared preproduction cache")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--character", action="append", default=[], metavar="NAME")
     parser.add_argument("--character-text-only", action="store_true")
@@ -365,24 +415,28 @@ def main():
     screenplay.add_argument("--script-file", type=Path, help="Human screenplay text to translate and film")
     parser.add_argument("--cast", action="append", default=[], metavar="ROLE=CHARACTER",
                         help="Bind a role in --script-file to a saved character; repeat for each role")
-    parser.add_argument("--plan-only", action="store_true", help="Save the shooting script without running video inference")
-    parser.add_argument("--shooting-script", type=Path, help="Reuse a shooting script matching this source and cast")
+    parser.add_argument("--plan-only", action="store_true",
+                        help="Save director shot briefs without image or video generation; a matching completed cache may be reused")
+    parser.add_argument("--shooting-script", type=Path,
+                        help="Import a finalized shooting-script.json with its neighboring storyboard plan and images")
     parser.add_argument("--render-format", choices=("landscape", "portrait"),
                         help="Screenplay delivery format: landscape 1280×720 or portrait 1080×1920")
     args = parser.parse_args()
     try:
         if args.command == "resume":
+            if args.profile is not None or args.fresh_preproduction:
+                raise ValueError("Resume uses saved shots and render profile; start a new render to change them.")
             if args.render_format is not None:
                 raise ValueError("Resume uses the run's saved render format; omit --render-format.")
             if args.output_dir is None:
                 raise ValueError("Resume requires --output-dir pointing to an existing AIVS output directory.")
-            resume_screenplay(args.output_dir)
+            resume_screenplay(args.output_dir, planning_budget_seconds=args.planning_budget_seconds)
         elif args.output_dir is not None:
             raise ValueError("--output-dir is only used with resume.")
         elif args.command == "check":
-            check()
+            check(args.profile or "hq")
         elif args.command == "download":
-            download()
+            download(args.profile or "hq")
         else:
             request = args.screenplay_json
             if args.screenplay_file is not None:
@@ -404,8 +458,12 @@ def main():
                     request = dict(request, render_format=args.render_format)
                 elif args.script_file is not None:
                     request["render_format"] = "landscape"
-                generate_screenplay(request, args.seed, shooting_script=args.shooting_script, plan_only=args.plan_only)
+                generate_screenplay(request, args.seed, shooting_script=args.shooting_script, plan_only=args.plan_only,
+                                    profile=args.profile, planning_budget_seconds=args.planning_budget_seconds,
+                                    fresh_preproduction=args.fresh_preproduction)
             else:
+                if args.profile is not None or args.planning_budget_seconds is not None or args.fresh_preproduction:
+                    raise ValueError("Profile and preproduction options require a screenplay request.")
                 if args.render_format is not None:
                     raise ValueError("--render-format requires --screenplay-file, --screenplay-json, or --script-file.")
                 if args.plan_only or args.shooting_script is not None:

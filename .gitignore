@@ -3,6 +3,7 @@ big.fountain
 .DS_Store
 .venv/
 .venv-voice/
+.venv-storyboard/
 .env
 .cache/
 outputs/

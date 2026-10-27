@@ -351,6 +351,28 @@ impl App {
                     self.video.render_format = format;
                 }
             }
+            ui.add_space(8.0);
+            let mut budget_minutes = self.video.planning_budget_seconds as f64 / 60.0;
+            ui.horizontal_wrapped(|ui| {
+                let label = ui.label("Planning budget");
+                ui.add(
+                    egui::DragValue::new(&mut budget_minutes)
+                        .range(1.0..=30.0)
+                        .speed(1.0)
+                        .max_decimals(1)
+                        .suffix(" min"),
+                )
+                .labelled_by(label.id)
+                .on_hover_text("Total time allowed to plan the scene.");
+            });
+            let budget_seconds = (budget_minutes * 60.0).round() as u64;
+            if budget_seconds != self.video.planning_budget_seconds {
+                self.settings_error =
+                    crate::settings::save_planning_budget(&self.root, budget_seconds).err();
+                if self.settings_error.is_none() {
+                    self.video.planning_budget_seconds = budget_seconds;
+                }
+            }
             if self.video.is_rendering() {
                 ui.label("Changes apply to the next generation.");
             }

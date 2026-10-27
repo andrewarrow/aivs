@@ -6,34 +6,41 @@ https://github.com/user-attachments/assets/4e372e6e-2cd9-4b2f-ac84-19e1252cea96
 
 AIVS turns a human-readable screenplay into an AI-generated video with speech.
 Write a scene, cast its characters, select its heading, and choose **Generate
-video**. The app uses **Codex through its app-server protocol to turn the scene
-into a shooting script**, then uses **LTX-2.5 to render each shot's video and audio locally** on
-an Apple Silicon Mac.
+video**. Codex designs the shots, a local image model creates their starting
+compositions, and Codex directs motion from those actual images. **LTX-2.5 HQ
+renders each shot's video and audio locally** on an Apple Silicon Mac.
 
 ```text
 Screenplay + cast
        ↓
-Codex app-server → shooting script (timing, staging, dialogue, camera, sound)
+Codex pass 1 → shot design + storyboard prompts
        ↓
-Python validates the plan → LTX-2.5 renders each missing shot once
+Local reference-image generation → one composed first frame per shot
        ↓
-Automatic visual review + media checks → FFmpeg assembly → video.mp4
+Codex pass 2 → motion, acting, camera and sound from the actual images
+       ↓
+LTX-2.5 HQ → automatic visual review + media checks
+       ↓
+FFmpeg assembly → video.mp4
 ```
 
 The desktop app is Rust; the video pipeline is Python using MLX on Apple's GPU.
 Codex planning and automatic visual review use your configured Codex service and
-login. Visual review sends sampled rendered frames to Codex. Video inference and
-media checks run locally; generated dialogue is trusted without transcription.
+login. Planning sends saved cast portraits and storyboard images to Codex;
+visual review sends sampled rendered frames. Image generation, video inference,
+and media checks run locally; generated dialogue is trusted without transcription.
 
 For a repeatable visual-quality experiment, see
-[Compare production paths](docs/production-comparison.md): baseline local
-rendering, per-shot storyboards with optional local HQ inference, and the same
-storyboards rendered through LTX Pro. This separate CLI compares complete scenes
-with sound and leaves artistic judgments unassigned until review.
+[Compare production paths](docs/production-comparison.md): the earlier baseline
+and prepared-storyboard experiment. Its local B approach is now the foundation
+of **Generate video**, with automatic storyboards added. The optional paid C arm
+remains separate; it is unnecessary for normal generation or an HQ/distilled
+comparison.
 
 ## The core workflow, with a real example
 
-These files come from run `2026-10-26_04-12-06-092171_1035559519`.
+These historical files come from run `2026-10-26_04-12-06-092171_1035559519`,
+before automatic storyboards and the two-pass planner.
 Copies live in the repository so you can read them without a local render:
 [screenplay.txt](docs/examples/desert-road/screenplay.txt) →
 [shooting-script.txt](docs/examples/desert-road/shooting-script.txt).
@@ -91,72 +98,68 @@ exact dialogue, appearance and voice descriptions, and start/end continuity note
 for each shot. This translation is the core of AIVS: turning a short human scene
 into explicit, timed instructions for a video model.
 
-This saved example is a historical planning artifact, not a guarantee of visual
-quality or a template for every current rule. Current plans preserve the inherited
-opening image and can explicitly cut to a new view within the generation.
+This saved example illustrates screenplay translation, not the current shot
+design or a guarantee of visual quality. Current plans give every shot its own
+composed storyboard image instead of inheriting the previous shot's final frame.
 
 ### 3. Validate, render, and assemble
 
-Before rendering, Codex completes five separate preproduction turns:
+Preproduction has two Codex passes, with local image generation between them:
 
-1. Draft coverage from the screenplay's actions, motivations, reveals, and dialogue recipients.
-2. Compare the assembled prompts against the screenplay and revise lost or conflicting intent.
-3. Rehearse the physical action and timing; revise overloaded takes, prop handling, and continuity.
-4. Assess model feasibility: simplify risky state changes, use motivated coverage, and preserve the scene's meaning without depending on difficult continuous mechanics.
-5. Independently approve or reject the exact final prompts, with evidence for every beat and a timed rehearsal of every shot.
+1. Design independent shots and their starting images: cast, location, costume,
+   props, camera composition, ordered story beats, and exact dialogue.
+2. Inspect the generated images and write motion, acting, camera, and sound
+   directions that animate those compositions.
 
-Each turn starts a fresh read-only thread. Revisions receive the original source
-and previous compiled plan; final approval cannot silently rewrite the plan it
-reviews. Python checks ordered beat coverage, exact dialogue, duration and token
-limits after each draft. Each malformed response gets one correction attempt.
-A completed rejection sends the draft and findings back to Codex for repair,
-then an independent reviewer checks the rebuilt prompts. These are automatic
-model reviews; no human approves individual shots. The renderer starts once the
-revised plan is approved. Unchanged repairs are rejected.
-Each planning invocation permits up to three repair/review rounds; unresolved
-findings then stop video inference with progress saved. Resume continues from
-that latest draft and review, with another repair allowance. Each Codex pass has
-its own one-hour timeout rather than sharing the initial stages' elapsed budget.
+FLUX.2 Klein generates one still per shot using the snapshotted cast portraits
+as reference images. It runs through MFLUX in its own Python environment and
+exits before LTX loads. Python validates source coverage, exact dialogue, timing,
+and prompt limits. The final shooting script and storyboard checksums are bound
+together; a draft without its completed image-based motion pass is not a render
+input. The former five-pass planning and repair loop is removed.
 
-New plans separate stable performer appearance and voice from costume, wetness,
-body reveals, expression, and emotional delivery. Appearance is appended only
-for roles visible in that shot; voice identity only for its dialogue speakers.
-The reviewers see these complete prompts, including appended text. Approved
-plans are saved as `shooting-script.json` and `shooting-script.txt`, with approval
-bound to the exact prompts, durations and continuity states. Drafts and review
-reports remain available separately. Review establishes script readiness, not a
-guarantee that the video model will execute every instruction.
+Both Codex passes share a **10-minute planning budget** by default. Change
+**File → Settings… → Planning budget** to allow 1–30 minutes, or use
+`--planning-budget-seconds` from the CLI. The budget measures Codex planning time,
+including validation corrections; local image and video generation are outside
+it. Usage is cumulative across Resume. If the allowance is exhausted, increase
+Planning budget in Settings or use `--planning-budget-seconds` when resuming;
+completed work remains available.
+If a process is forcibly killed before it can record elapsed time, its remaining
+allowance stays charged conservatively; increase the budget to continue.
 
-The director guidance follows the official
-[LTX-2.5 prompt guide](https://docs.ltx.io/open-source-model/usage-guides/prompting-guide):
-focused, chronological action, visible emotional cues, explicit sound, and named
-cuts when coverage makes an action more reliable. The
-[image-to-video guide](https://docs.ltx.io/open-source-model/usage-guides/image-to-video)
-explains why continued shots must work from their actual inherited image.
+Unchanged scenes reuse their completed preproduction from `.cache/preproduction/`.
+The cache binds the screenplay, cast assets, render format, and planning code.
+Video seed and HQ/preview selection are excluded, so comparing those options
+reuses the same plan and storyboard images. Use `--fresh-preproduction` to bypass
+shared reuse for a new run. Cache reuse does not establish image or acting quality.
+
+The final directions are saved as `shooting-script.json` and
+`shooting-script.txt`. Stable performer identity remains separate from costume,
+body state, expression, and emotional delivery. Rendering still needs visual
+review: a valid plan does not guarantee that the model executes every action.
 
 LTX-2.5 generates video and speech together in **4–12 second shots at 24 fps**.
 Choose **File → Settings…** for **1280×720 (16:9)** or **1080×1920 (9:16)** delivery.
 The model requires dimensions divisible by 64, so it generates at 1280×768 or
 1088×1920 respectively. Final assembly crops 24 pixels from the top and bottom,
-or 4 pixels from each side; it does not stretch the picture. Within a scene,
-each shot after the first starts from the previous
-shot's final decoded frame to carry forward faces, clothing, positions, and props.
-A handoff uses the full model frame, before the delivery crop. Portrait planning
-uses the narrow frame from the outset: people staged in depth, readable faces,
-and enough room for essential actions. A planned cut happens after the inherited
-opening; it does not silently replace the model's reference image. Within a
-generation, dialogue and ambience can continue across that cut.
-A new scene resets that frame reference. New saved-character renders use the
-canonical portrait as the opening frame when exactly one performer is visible;
-the planner directs a cut from that portrait into the scripted location and costume.
-The model receives each shot's complete
-prompt; the separate start/end notes support continuity review.
+or 4 pixels from each side; it does not stretch the picture. Every new production
+shot starts from its own generated image, including reverse angles in the same
+scene. Canonical portraits guide still generation; the video model starts in the
+scripted location and costume. Portrait planning uses the narrow frame from the
+outset, leaving room for essential actions. The model receives each shot's full
+motion prompt; separate start/end notes support continuity review.
+
+**Final (HQ)** is the default Quality setting beside **Generate video**. It uses
+the full transformer for 15 stage-one steps, then the distilled transformer for
+3 stage-two steps. **Preview (distilled)** uses 8+3 steps with the same storyboard
+workflow. Neither option submits a paid video API generation.
 
 New plans use the `single-render-v1` policy to spend planning effort before expensive
 video inference. Each missing shot receives one generation, with no automatic rerender
 loop. Codex reviews sampled frames for causal continuity, completed actions,
 reveals, and tone, recording observed state separately from the intended state.
-It can adapt upcoming directions to the footage already produced. Review findings
+Storyboard plans remain fixed during rendering. Review findings
 or an unavailable visual reviewer do not block assembly or trigger another render;
 quality findings remain separate from technical success.
 
@@ -175,8 +178,10 @@ The planner still preserves source dialogue in its prompts.
 - A **Hugging Face access token** for downloading models.
 - The **Codex CLI**, signed in and available on `PATH` (or set `AIVS_CODEX_PATH`).
   Codex provides screenplay planning and automatic visual review; the chat panel is optional.
-- **70 GiB of free disk space** for first setup. Required distilled and HQ video
-  model downloads are about **62 GB**.
+- Disk space for both model caches and output footage. HQ video setup checks for
+  **70 GiB free** on a fresh install, or **22 GiB** when the distilled cache is
+  already complete. Required distilled and HQ video model downloads are about
+  **62 GB**. The separate FLUX.2 storyboard model requires additional space.
 
 From this checkout:
 
@@ -188,8 +193,9 @@ From this checkout:
    cargo run
    ```
 
-3. Let setup prepare Python 3.12 in `.venv`, install the pinned packages, download
-   the required distilled and HQ models, and verify the GPU. Downloads reuse the
+3. Let setup prepare Python 3.12 in `.venv` for video and `.venv-storyboard` for
+   still images, install their separate pinned packages, download the required
+   distilled, HQ, and storyboard models, and verify the GPU. Downloads reuse the
    cache. Use **Check again** after adding a token, or **Retry setup** after fixing
    a setup error.
 4. If needed, choose **Codex → Sign in with ChatGPT** and finish in your browser.
@@ -197,11 +203,14 @@ From this checkout:
 5. Edit the screenplay and cast each role in the scene. Drag a gallery character
    onto a role, or use its **Uncast / played by** control. For the sample, try **Ava as Sue**
    and **Eli as Joe**. Casting keeps the script's role names and dialogue intact.
-6. Choose **File → Settings…** to select landscape or portrait. Landscape is the
-   default; the selection saves to `settings.json` in the workspace.
+6. Choose **File → Settings…** to select landscape or portrait and adjust the
+   planning budget if needed. Landscape and 10 minutes are the defaults.
+   These settings save to `settings.json` in the workspace.
 7. Select a scene by its heading above **Generate video**, then choose
-   **Generate video**. Only that scene and its cast are sent for generation.
-   **Activity** shows planning and rendering progress.
+   **Generate video**. Choose **Preview (distilled)** under Quality for faster
+   video inference; **Final (HQ)** is the default. Only the selected scene and
+   its cast are sent for generation. **Activity** shows planning, storyboard,
+   and rendering progress.
    When complete, play the result in the app or choose **Show files**.
 
 **Stop** interrupts the render and its child processes; closing AIVS also stops
@@ -218,17 +227,16 @@ not appear. Focus settings and system sound volume still apply.
 
 Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
 directory to continue that run in place. Resume uses its saved screenplay, cast,
-seed, render format, and shooting script. Codex resumes unfinished planning and,
-for `single-render-v1` plans, can supply missing visual reviews or adapt upcoming
-directions.
-Unfinished planning resumes after its last completed stage, repair, or review.
-A rejected review resumes with its repair; an already repaired draft resumes at
-review; a saved approval can publish the plan without another Codex call.
-Saved legacy runs retain their footage and planning artifacts; they do not acquire
-new visual-review requirements on Resume.
+seed, render format, inference profile, and shooting script. It reuses completed
+planning passes and storyboard images before continuing missing work. New
+storyboard plans do not rewrite upcoming shots after video generation begins.
+Saved legacy runs retain their footage and historical artifacts; Resume does not
+silently switch their inference or image-conditioning policy.
 Checkpoints are saved atomically and existing Codex logs are preserved. An
 interrupted, incomplete Codex turn is restarted, while completed stages are reused.
-Current settings do not change a resumed run, including older 1280×704 runs. Existing
+Current format and Quality selections do not change a resumed run, including
+older 1280×704 runs. Resume uses the higher of its saved planning allowance and
+the current Planning budget setting; it retains time already consumed. Existing
 shots and compatible archived takes are checked for playable media and matching
 provenance, then reused without video inference. Cached visual reviews are reused
 when they match the take. A saved take previously rejected only for speech
@@ -236,8 +244,8 @@ when they match the take. A saved take previously rejected only for speech
 does not affect acceptance. Missing shots are rendered only after checking saved
 candidates. Invalid saved footage remains an error when no usable saved
 alternative is available; Resume does not silently spend a rerender.
-Continuation shots are reused only when their
-recorded input matches the preceding take, including across interruptions.
+Storyboard-conditioned shots are reused only when their recorded frame and plan
+still match. Legacy continuation shots also require the same preceding take.
 
 By default, the current directory is the workspace. To keep scripts, caches,
 and outputs elsewhere, pass an existing directory:
@@ -283,18 +291,34 @@ and render scene by scene.
   removes it. One blank scene heading remains when the script is cleared.
 - **⌘/Ctrl+Z** and **⌘/Ctrl+Shift+Z** undo and redo edits, including casting.
 
-New GUI screenplay renders use the gallery's actual saved assets. A scene opening
-with one visible performer starts from their snapshotted canonical portrait;
-later shots in that scene inherit the previous final frame. Planning passes also
-receive the portraits and account for the opening reference frame. A shot with
+New GUI screenplay renders use the gallery's actual saved assets. Snapshotted
+portraits guide the local generation of each shot's first frame, including shots
+with multiple visible performers. Codex receives the portraits when designing
+shots, then the generated images when writing motion directions. A shot with
 one speaking performer has its native soundtrack converted with Seed-VC toward
 that performer's snapshotted voice sample. The video stream is copied unchanged.
 This preserves native picture timing; it does not prove voice identity or lip sync.
 
-Solo portraits cannot establish an ensemble. Multi-person openings still use
-descriptions; shots with multiple speakers retain generated voices because there
+Generated compositions do not guarantee cast identity. Shots with multiple
+speakers retain generated voices because there
 are no isolated dialogue tracks. These limitations appear in the activity log and
 each shot's `character_assets` record. Silent shots do not run voice conversion.
+
+### Local storyboard setup
+
+Desktop setup installs the separate image environment automatically. For a CLI
+workspace whose video environment already exists:
+
+```sh
+uv venv .venv-storyboard --python 3.12
+uv pip install --python .venv-storyboard/bin/python -r python/requirements-storyboard.txt
+.venv/bin/python python/video.py download --profile hq
+```
+
+The image worker uses the pinned FLUX.2 Klein 4B snapshot through MFLUX. Model
+downloads share `.cache/huggingface/`; completed scene plans and images are reused
+through `.cache/preproduction/`. Generation uses cached weights and saves image
+prompts, seeds, reference hashes, and backend provenance alongside each run.
 
 ### Saved character rendering setup
 
@@ -341,7 +365,7 @@ accepted as a quality milestone.
 
 ## Where to start in the code
 
-Follow the main path: **UI → Python entry point → Codex planner → shot renderer**.
+Follow the main path: **UI → preproduction → storyboard images → motion plan → shot renderer**.
 
 | File | Responsibility |
 | --- | --- |
@@ -349,9 +373,12 @@ Follow the main path: **UI → Python entry point → Codex planner → shot ren
 | [src/screenplay.rs](src/screenplay.rs) | Screenplay editor, casting, and document persistence. |
 | [src/video.rs](src/video.rs) | Starts setup/render workers, handles cancellation, and reads Python progress events. |
 | [python/video.py](python/video.py) | Pipeline entry point; `generate_screenplay()` coordinates planning and rendering. |
+| [python/preproduction.py](python/preproduction.py) | Coordinates both planning passes, storyboard generation, and shared preproduction reuse. |
 | [python/shooting_script.py](python/shooting_script.py) | Parses story beats, calls Codex, validates the plan, and saves shooting scripts. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
-| [python/shot_renderer.py](python/shot_renderer.py) | Reuses saved takes, renders missing shots, carries frames forward, and assembles the result. |
+| [python/storyboard.py](python/storyboard.py) | Generates and validates shot-bound storyboard images and their provenance. |
+| [python/storyboard_backend.py](python/storyboard_backend.py) | Runs the local image model in its separate environment. |
+| [python/shot_renderer.py](python/shot_renderer.py) | Reuses saved takes, renders missing shots from storyboard frames, and assembles the result. |
 | [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
 | [python/validation.py](python/validation.py) | Decoded-frame, stream, and audio/video timing checks. |
 | [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration. |
@@ -364,9 +391,9 @@ stdin/stdout using the [official Codex app-server protocol](https://learn.chatgp
 For each preproduction pass, the planner in `python/shooting_script.py` initializes
 a connection, creates an ephemeral read-only thread, and starts a turn with the
 source, pass-specific instructions and JSON output schema. It streams activity
-into the UI and validates each result. The final pass uses
-[review instructions](python/shooting-script-review-instructions.txt) and returns
-an evidence report instead of another draft.
+into the UI and validates each result. The first pass designs compositions; the
+second receives the actual storyboard images and returns motion directions
+bound to them. Both consume the same saved planning allowance.
 
 The Rust client in `src/codex.rs` handles login and optional chat separately.
 **Show chat** opens that panel; chat threads use `workspace-write` in the selected
@@ -385,16 +412,17 @@ Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
 | Artifact | What to inspect |
 | --- | --- |
 | `screenplay.txt`, `screenplay-request.json` | Original script and cast bindings. |
+| `storyboard-plan.json`, `storyboard-plan.txt` | First-pass shot design and still-image prompts. |
+| `storyboards.json`, `storyboards/` | Verified first-frame images, prompts, reference hashes, and generation provenance. |
 | `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |
-| `shooting-script-draft-*` | Draft, intent, physical rehearsal, and model-feasibility revisions; these are not approved render inputs. |
-| `shooting-script-progress.json` | Atomic checkpoint of completed stages, latest compiled draft, repair count, and matching review. |
-| `shooting-script-draft-repair-*`, `shooting-script-review-*.json` | Repair drafts and review history, preserved across Resume. |
-| `shooting-script-review.json` | Latest approval or rejection, source-beat evidence, shot timelines, and unresolved issues. |
+| `planning-budget.json` | Cumulative Codex planning time, allowance, and last pass. |
+| `preproduction.json` | Shared-cache identity and reuse provenance. |
 | `shooting-script-request-*`, `shooting-script-response-*` | What the planner sent to Codex and received back. |
 | `shooting-script-events-*.jsonl`, `shooting-script-errors-*.txt` | Live protocol events and diagnostics, including failed or stopped planning. |
+| Historical `shooting-script-draft-*`, `shooting-script-review*`, `shooting-script-progress.json` | Preserved artifacts from the removed five-pass planner. |
 | `shots/001/`, `shots/002/`, … | Individual takes and their reports, including automatic `visual_review` findings for new plans. |
 | `shots/<shot>/visual-review/review.json` | Timestamped visual evidence, observed state, and quality findings. |
-| `shots/<shot>/adaptation/` | Automatic revisions of upcoming directions based on rendered state. |
+| Legacy `shots/<shot>/adaptation/` | Revisions of upcoming directions for older continuation-based plans. |
 | `scene-review/review.json` | Synthesis of sampled shot observations against the source's continuity, story, and tone; not full-speed playback. |
 | `takes/<shot>/<take>/` | Archived takes, seeds, and diagnostics from replacements. |
 | Historical `speech-*` files | Retained from older runs; production rendering and Resume do not use them. |
@@ -411,21 +439,36 @@ checkout using its default workspace:
   --plan-only
 ```
 
-This runs the five initial Codex passes, any required repair/review rounds, and
-uses the cached tokenizer. It generates a new plan,
-which may differ from the saved example. Remove `--plan-only` to render as well.
+Without an existing matching preproduction cache, `--plan-only` runs the director
+pass and saves `storyboard-plan.json` and `.txt`. It generates no images and does
+not run the image-based motion pass; the draft is not yet renderable. A matching
+completed cache can supply the full plan immediately. Add `--fresh-preproduction`
+to inspect a newly generated director draft. Remove `--plan-only` for the complete
+workflow, or Resume the saved draft's run directory.
 Add `--render-format portrait` for 1080×1920; `--script-file` defaults to landscape.
-`--shooting-script /path/to/shooting-script.json` reuses a plan after revalidating
-it against the current script, cast, and render format. New plans also require
-matching final preproduction approval; an unapproved draft cannot be reused.
-Legacy saved plans remain compatible and are not retroactively reviewed by Resume
-or `--shooting-script`. Generate a fresh plan to apply the new workflow to an old
-scene. Changing format requires a new shooting script.
+`--profile hq` is the default; use `--profile distilled` for preview. Repeating
+the same scene with a different video profile or seed automatically reuses its
+matching completed preproduction.
+
+`--shooting-script /path/to/shooting-script.json` imports a finalized storyboard
+plan and the bound images from the same directory, revalidating them against the
+current script, cast, and format. Keep `storyboard-plan.json`, `storyboards.json`, and its image files
+beside that plan. Completed legacy plans remain resumable in their original runs;
+start a new run to adopt the current workflow. Changing format requires new
+preproduction.
 
 To resume an existing run from the command line:
 
 ```sh
 .venv/bin/python python/video.py resume --output-dir /path/to/output-directory
+```
+
+To increase an exhausted planning allowance to 15 minutes total while retaining
+completed work:
+
+```sh
+.venv/bin/python python/video.py resume \
+  --output-dir /path/to/output-directory --planning-budget-seconds 900
 ```
 
 ## Verify changes
@@ -453,7 +496,7 @@ cargo test live_app_server_streams_a_complete_reply -- --ignored
 Timing is estimated, and generated actions, faces, voices, and lip sync can still
 fail. Automatic visual review samples frames rather than observing every instant;
 it can miss defects or misjudge a performance. Its report describes quality, not a
-guarantee. Portrait anchors reconnect eligible scene openings to the saved performer,
+guarantee. Portrait-conditioned storyboard images establish each shot's composition,
 but do not lock identity across new angles or locations. Native-timing voice conversion
 also requires audiovisual review. The pipeline completes without per-shot human approval and avoids
 automatic rerenders; a technically complete scene can contain reported visual
@@ -465,5 +508,5 @@ and separate speech synthesis are outside the main workflow. The earlier opt-in
 contains portrait-guided starting images, fixed dialogue audio, and the original
 Seed-VC investigations. Its fixed-audio approach remains separate from GUI rendering.
 
-`.env`, `.venv`, `.cache`, `screenplay.json`, `settings.json`, and generated `outputs/` stay out of Git.
+`.env`, `.venv`, `.venv-storyboard`, `.cache`, `screenplay.json`, `settings.json`, and generated `outputs/` stay out of Git.
 The adapted Studio source retains its **GPL-3.0-only** license; see [LICENSE](LICENSE).

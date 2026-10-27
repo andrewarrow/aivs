@@ -38,7 +38,7 @@ def _worker(*arguments) -> dict:
     raise RuntimeError("Saved voice converter returned no provenance record.")
 
 
-def prepare(plan: dict, profiles: list[dict], run_dir: Path, activity) -> list[dict]:
+def prepare(plan: dict, profiles: list[dict], run_dir: Path, activity, *, storyboard_conditioned=False) -> list[dict]:
     """Resolve only source-bound, snapshotted assets; preflight before inference."""
     characters.verify_snapshots(profiles, run_dir)
     by_id = {profile["id"]: profile for profile in profiles}
@@ -58,6 +58,9 @@ def prepare(plan: dict, profiles: list[dict], run_dir: Path, activity) -> list[d
                     if beats[n]["kind"] == "dialogue"}
         binding = {"policy": POLICY}
         for kind, selected, field in (("image", visible, "image"), ("voice", speakers, "voice_sample")):
+            if kind == "image" and storyboard_conditioned:
+                binding[kind] = {"status": "storyboard", "characters": sorted(selected)}
+                continue
             if len(selected) == 1:
                 profile = by_id[next(iter(selected))]
                 asset = profile.get(field)
