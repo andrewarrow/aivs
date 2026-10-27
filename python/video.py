@@ -303,7 +303,7 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
         emit("complete", output=str(output), status=report["status"])
 
 
-def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_only=False):
+def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_only=False, motion_previs=False):
     """Continue a saved run in place using its original source, cast, and seed."""
     run_dir = Path(directory).expanduser().resolve()
     if not run_dir.is_dir():
@@ -350,7 +350,17 @@ def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_on
         if storyboards_only and not uses_storyboards:
             raise ValueError("Storyboard-only Resume requires a run with per-shot storyboards.")
         output = run_dir / "video.mp4"
-        if (not storyboards_only and report.get("status") == "complete"
+        motion_manifest = None
+        saved_motion = report.get("motion_previsualization")
+        if motion_previs or saved_motion is not None:
+            import motion_previs as previs
+            motion_manifest = read_object("motion/keyframes.json")
+            previs.require_accepted(read_object("shooting-script.json"), read_object("storyboards.json"),
+                                   motion_manifest, run_dir)
+            motion_digest = previs.continuity.digest(motion_manifest)
+            if saved_motion is not None and saved_motion != motion_digest:
+                raise ValueError("Saved motion rendering belongs to different keyframes; preserve this run before changing them.")
+        if (not storyboards_only and (motion_manifest is None or saved_motion is not None) and report.get("status") == "complete"
                 and isinstance(report.get("runtime"), dict)
                 and report["runtime"].get("status") == "complete" and output.is_file()
                 and report.get("sha256") == hashlib.sha256(output.read_bytes()).hexdigest()):
@@ -392,6 +402,8 @@ def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_on
         report.pop("sha256", None)
         report.pop("runtime", None)
         report["status"] = "planning" if plan is None else "rendering"
+        if motion_manifest is not None:
+            report["motion_previsualization"] = motion_digest
         report["planning_budget_seconds"] = budget
         if planning_budget_seconds is not None:
             request["planning_budget_seconds"] = budget
@@ -436,6 +448,7 @@ def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_on
                 character_profiles=(profiles if report.get("character_conditioning") == CHARACTER_CONDITIONING_POLICY
                                     else None),
                 storyboard=boards,
+                motion_manifest=motion_manifest,
                 render_config=config if uses_storyboards else None,
                 render_fn=functools.partial(render, profile=profile),
                 on_progress=lambda **data: emit("render_progress", **data),
@@ -457,7 +470,9 @@ def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_on
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "download", "render", "resume"))
+    parser.add_argument("command", choices=("check", "download", "render", "resume", "previsualize"))
+    parser.add_argument("--motion-previs", action="store_true",
+                        help="Resume final rendering with accepted motion/keyframes.json; preserves old takes")
     parser.add_argument("--output-dir", type=Path, help="Existing screenplay output directory to resume in place")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--profile", choices=("hq", "distilled"),
@@ -492,6 +507,19 @@ def main():
                         help="Screenplay delivery format: landscape 1280×720 or portrait 1080×1920")
     args = parser.parse_args()
     try:
+        if args.motion_previs and (args.command != "resume" or args.storyboards_only):
+            raise ValueError("--motion-previs requires resume without --storyboards-only.")
+        if args.command == "previsualize":
+            if args.output_dir is None:
+                raise ValueError("Previsualization requires --output-dir with completed shooting-script.json and storyboards.")
+            import motion_previs as previs
+            with project_lock(".render.lock"):
+                directory = args.output_dir.expanduser().resolve()
+                activity = lambda message: emit("activity", message=message)
+                previs.generate(directory, on_activity=activity)
+                output = previs.animatic(directory, on_activity=activity)
+                emit("complete", output=str(output), status="previsualized")
+            return 0
         if args.command in ("check", "download") and (args.plan_only or args.storyboards_only or args.voice_mode is not None):
             raise ValueError("Planning stop points and voice mode apply only to screenplay rendering.")
         if args.command == "resume":
@@ -504,7 +532,7 @@ def main():
             if args.voice_mode is not None or args.plan_only:
                 raise ValueError("Resume keeps its saved voice mode; use --storyboards-only to stop before video.")
             resume_screenplay(args.output_dir, planning_budget_seconds=args.planning_budget_seconds,
-                              storyboards_only=args.storyboards_only)
+                              storyboards_only=args.storyboards_only, motion_previs=args.motion_previs)
         elif args.output_dir is not None:
             raise ValueError("--output-dir is only used with resume.")
         elif args.command == "check":

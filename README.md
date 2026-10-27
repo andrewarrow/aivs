@@ -569,7 +569,7 @@ The mocked storyboard pipeline test can also run independently, without GPU
 inference, model downloads, or paid API calls:
 
 ```sh
-PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline test_storyboard_continuity test_storyboard_backend test_production_comparison -v
+PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline test_storyboard_continuity test_production_comparison -v
 ```
 
 The suites cover editing, casting, setup, planning, cancellation, media validation,

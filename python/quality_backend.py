@@ -153,7 +153,8 @@ def doctor():
 
 
 def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, hold_image_framing=False,
-           audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False, profile="distilled"):
+           audio_file=None, width=WIDTH, height=HEIGHT, keep_native=False, profile="distilled",
+           image_anchors=None):
     from importlib.metadata import version
     from quality_progress import RenderProgress, ffmpeg_output, pipeline_activity
     from render_estimate import RenderEstimate
@@ -167,6 +168,11 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
             or any(type(value) is not int or value < 64 or value % 64 for value in (width, height))):
         raise ValueError("Render frames must be positive and dimensions must be positive multiples of 64.")
     image = prepare_source_image(image_file) if image_file is not None else None
+    anchors = prepare_image_anchors(image_anchors, frames, width, height) if image_anchors is not None else None
+    if anchors is not None and (hold_image_framing or audio_file is not None):
+        raise ValueError("Timed image anchors require the text/image video pipeline without held framing or fixed audio.")
+    if anchors is not None and image is not None and image["source_sha256"] != anchors[0]["source_sha256"]:
+        raise ValueError("The opening anchor must match the supplied starting image.")
     audio = prepare_source_audio(audio_file, frames / FPS) if audio_file is not None else None
     if image is not None and hold_image_framing:
         image["conditioning"] = "whole-first-and-last-frame"
@@ -203,6 +209,7 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
             image["source_file"] if image is not None else None,
             frames,
             hold_image_framing,
+            anchors,
         )
         if profile == "hq":
             generation_options.update(stage1_steps=15, stage2_steps=3, cfg_scale=3.0,
@@ -254,6 +261,7 @@ def render(prompt, seed, frames, output, *, on_progress=None, image_file=None, h
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()} if estimate else {},
         "source_image": image,
+        **({"image_anchors": anchors} if anchors is not None else {}),
         "source_audio": audio,
         "peak_decode_mlx_memory_gib": round(decode_peak, 2), "video": info,
         "software": {name: version(name) for name in (
@@ -307,8 +315,39 @@ def prepare_source_image(source):
     }
 
 
-def _image_generation_options(source_file, frames, hold_image_framing):
+def prepare_image_anchors(anchors, frames, width, height):
+    """Validate output-frame timestamps and exact pixels before loading MLX."""
+    if not isinstance(anchors, list) or not 2 <= len(anchors) <= 4:
+        raise ValueError("Motion conditioning requires two to four image anchors.")
+    result = []
+    for anchor in anchors:
+        frame, strength = anchor.get("frame"), anchor.get("strength")
+        if (type(frame) is not int or not 0 <= frame < frames
+                or (result and frame <= result[-1]["frame"])
+                or type(strength) not in (int, float) or not math.isfinite(strength) or not 0 < strength <= 1):
+            raise ValueError("Image anchors need ordered, distinct output frames and strengths in (0, 1].")
+        image = prepare_source_image(anchor["file"])
+        if (image["width"], image["height"]) != (width, height):
+            raise ValueError("Image anchors must match the model dimensions.")
+        if image["source_sha256"] != anchor.get("sha256"):
+            raise ValueError("An image anchor changed before rendering.")
+        result.append(dict(image, frame=frame, strength=strength,
+                           conditioning="replace" if frame == 0 else "guide"))
+    if result[0]["frame"] != 0 or result[-1]["frame"] != frames - 1:
+        raise ValueError("Image anchors must include frame zero and the final output frame.")
+    if len({row["source_sha256"] for row in result}) != len(result):
+        raise ValueError("Motion anchors must contain distinct images.")
+    return result
+
+
+def _image_generation_options(source_file, frames, hold_image_framing, anchors=None):
     """Build the pipeline's image conditioning arguments for this render."""
+    if anchors is not None:
+        from ltx_pipelines_mlx.utils.args import ImageConditioningInput
+        return {"images": [
+            (ImageConditioningInput.replace if row["frame"] == 0 else ImageConditioningInput.guide)(
+                row["source_file"], row["frame"], row["strength"])
+            for row in anchors]}
     if source_file is None:
         return {}
     if not hold_image_framing:

@@ -283,6 +283,30 @@ impl App {
                         };
                     }
                 });
+                ui.menu_button("Motion", |ui| {
+                    if ui.add_enabled(self.video.can_resume(), egui::Button::new("Previsualization…"))
+                        .on_hover_text("Select a run with completed storyboards. Generate timed keyframes and a silent animatic without LTX.")
+                        .clicked()
+                    {
+                        ui.close();
+                        self.import_error = match select_resume(&self.root.join("outputs")) {
+                            Ok(Some(directory)) => { self.video.previsualize(directory); None }
+                            Ok(None) => None,
+                            Err(error) => Some(error),
+                        };
+                    }
+                    if ui.add_enabled(self.video.can_resume(), egui::Button::new("Final Render…"))
+                        .on_hover_text("Select a run with accepted motion keyframes. Render with timed image guides and preserve prior takes.")
+                        .clicked()
+                    {
+                        ui.close();
+                        self.import_error = match select_resume(&self.root.join("outputs")) {
+                            Ok(Some(directory)) => { self.video.final_render(directory); None }
+                            Ok(None) => None,
+                            Err(error) => Some(error),
+                        };
+                    }
+                });
                 ui.menu_button("Codex", |ui| {
                     self.connection_ui(ui);
                     if ui.checkbox(&mut self.chat_open, "Show chat").changed() && self.chat_open {

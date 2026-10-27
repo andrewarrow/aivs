@@ -194,6 +194,8 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
         return False
     if saved.get("render_config") != report.get("render_config"):
         return False
+    if saved.get("motion_keyframes") != report.get("motion_keyframes"):
+        return False
     voice = (report.get("character_assets") or {}).get("voice", {})
     if "file" in voice and clip.name == "video.mp4" and clip.is_file():
         converted = saved.get("voice_conversion")
@@ -321,6 +323,7 @@ def render_shooting_script(
     storyboard=None,
     review_enabled=True,
     render_config=None,
+    motion_manifest=None,
 ) -> dict:
     """Render plan shots in order and publish only a validated assembled video.
 
@@ -339,6 +342,8 @@ def render_shooting_script(
     An optional run-local ``storyboard`` manifest binds one first frame to every
     planned shot, overriding inherited frames and portraits. ``review_enabled``
     can freeze prompts and suppress automatic review for controlled comparisons.
+    ``motion_manifest`` adds independently accepted timed keyframes; its complete
+    per-shot provenance participates in take matching and native-picture resume.
     """
     shots, seconds, fade_out = _validate_plan(plan)
     spec = resolve_format(plan["render_format"]) if "render_format" in plan else None
@@ -375,6 +380,11 @@ def render_shooting_script(
     if requires_storyboard_review:
         import storyboard_continuity
         storyboard_continuity.require_accepted(plan, storyboard, output.parent)
+    if motion_manifest is not None:
+        import motion_previs
+        if storyboard is None:
+            raise ValueError("Timed keyframes require the original accepted storyboard sequence.")
+        motion_previs.require_accepted(plan, storyboard, motion_manifest, output.parent)
     asset_bindings = None
     if character_profiles is not None:
         import character_conditioning
@@ -415,6 +425,7 @@ def render_shooting_script(
             archive_dir = output.parent / "takes" / f"{index + 1:03d}"
             take = _last_archived_take(archive_dir) + 1
             frame_binding = storyboard_bindings[index] if storyboard_bindings is not None else None
+            motion_row = motion_manifest["shots"][index] if motion_manifest is not None else None
             use_previous_frame = frame_binding is None and _uses_previous_frame(shots, index)
             previous_clip = clips[-1] if use_previous_frame else None
             image_file = shot_dir / "start-frame.png" if use_previous_frame else None
@@ -459,6 +470,7 @@ def render_shooting_script(
                     "storyboard_prompt": shot.get("storyboard_prompt")}
                    if frame_binding is not None else {}),
                 **({"render_config": render_config} if render_config is not None else {}),
+                **({"motion_keyframes": motion_row} if motion_row is not None else {}),
                 **({"storyboard_acceptance": storyboard["continuity_acceptance"]} if requires_storyboard_review else {}),
             }
             if automatic_review:
@@ -696,11 +708,16 @@ def render_shooting_script(
                             raise ValueError("Saved character portrait changed before rendering.")
                         if requires_storyboard_review:
                             storyboard_continuity.require_accepted(plan, storyboard, output.parent)
+                        image_anchors = None
+                        if motion_manifest is not None:
+                            motion_previs.require_accepted(plan, storyboard, motion_manifest, output.parent)
+                            image_anchors = motion_previs.anchors(motion_row, output.parent)
                         report["runtime"] = renderer(
                             shot["prompt"], report["seed"], frames, native_clip,
                             on_progress=shot_progress,
                             image_file=image_file,
                             hold_image_framing=False,
+                            **({"image_anchors": image_anchors} if image_anchors is not None else {}),
                             **({"width": width, "height": height} if spec else {}),
                         )
                         if convert_voice:
@@ -760,7 +777,7 @@ def render_shooting_script(
                     "continuity": continuity,
                     "sha256": report["sha256"],
                     **({key: report[key] for key in ("character_assets", "storyboard", "planned_storyboard",
-                                                   "storyboard_prompt", "render_config", "native_sha256", "voice_conversion")
+                                                   "storyboard_prompt", "render_config", "native_sha256", "voice_conversion", "motion_keyframes")
                         if key in report}),
                     **({key: report[key] for key in (
                         "planned_prompt", "planned_shot_sha256", "prompt_template", "adaptation",

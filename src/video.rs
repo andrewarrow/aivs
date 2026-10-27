@@ -52,6 +52,8 @@ enum Task {
     Setup,
     Render(String),
     Resume(PathBuf),
+    Previsualize(PathBuf),
+    FinalRender(PathBuf),
 }
 
 struct Job {
@@ -74,7 +76,9 @@ impl Job {
             let result = match task {
                 Task::Setup => worker.setup(),
                 Task::Render(request) => worker.render(&request),
-                Task::Resume(directory) => worker.resume(&directory),
+                Task::Resume(directory) => worker.resume(&directory, false),
+                Task::Previsualize(directory) => worker.previsualize(&directory),
+                Task::FinalRender(directory) => worker.resume(&directory, true),
             };
             if let Err(error) = result {
                 worker.send(if worker.cancel.load(Ordering::Relaxed) {
@@ -226,7 +230,20 @@ impl Worker {
         }
     }
 
-    fn resume(&self, directory: &Path) -> Result<(), String> {
+    fn previsualize(&self, directory: &Path) -> Result<(), String> {
+        self.progress("Preparing motion keyframes and animatic…");
+        let mut command = self.python("previsualize");
+        command.arg("--output-dir").arg(directory);
+        let output = self.run(command)?;
+        if let Some(path) = output.output.filter(|path| path.is_file()) {
+            self.send(Event::Complete(path));
+            Ok(())
+        } else {
+            Err("Previsualization stopped without an animatic. Saved keyframes are kept for Resume.".into())
+        }
+    }
+
+    fn resume(&self, directory: &Path, motion_previs: bool) -> Result<(), String> {
         self.progress("Resuming video…");
         let mut planning_budget = crate::settings::load_planning_budget(&self.root);
         for (filename, key) in [
@@ -243,6 +260,9 @@ impl Worker {
         }
         let mut command = self.python("resume");
         command.arg("--output-dir").arg(directory);
+        if motion_previs {
+            command.arg("--motion-previs");
+        }
         command
             .arg("--planning-budget-seconds")
             .arg(planning_budget.to_string());
@@ -617,8 +637,10 @@ impl VideoWorkspace {
                 self.fraction = Some(1.0);
                 self.remaining_seconds = None;
                 self.playback_error = None;
+                let animatic = path.file_name().is_some_and(|name| name == "animatic.mp4");
                 let report = path
                     .parent()
+                    .and_then(|directory| if animatic { directory.parent() } else { Some(directory) })
                     .and_then(|directory| std::fs::read(directory.join("render.json")).ok())
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
                 self.output_aspect = report
@@ -629,10 +651,14 @@ impl VideoWorkspace {
                         (width > 0 && height > 0).then_some(width as f32 / height as f32)
                     })
                     .unwrap_or(16.0 / 9.0);
-                self.status = match report.as_ref().and_then(|report| report["status"].as_str()) {
-                    Some("complete") => "Video ready.",
-                    Some("rendered-with-issues") => "Video rendered; visual issues need review.",
-                    _ => "Video rendered; visual review is incomplete.",
+                self.status = if animatic {
+                    "Animatic ready. Final Render uses the accepted keyframes."
+                } else {
+                    match report.as_ref().and_then(|report| report["status"].as_str()) {
+                        Some("complete") => "Video ready.",
+                        Some("rendered-with-issues") => "Video rendered; visual issues need review.",
+                        _ => "Video rendered; visual review is incomplete.",
+                    }
                 }
                 .into();
                 self.output = Some(path);
@@ -677,6 +703,18 @@ impl VideoWorkspace {
     pub fn resume(&mut self, directory: PathBuf) {
         if self.can_resume() {
             self.start(Task::Resume(directory));
+        }
+    }
+
+    pub fn previsualize(&mut self, directory: PathBuf) {
+        if self.can_resume() {
+            self.start(Task::Previsualize(directory));
+        }
+    }
+
+    pub fn final_render(&mut self, directory: PathBuf) {
+        if self.can_resume() {
+            self.start(Task::FinalRender(directory));
         }
     }
 
