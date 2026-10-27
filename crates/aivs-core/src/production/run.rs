@@ -294,105 +294,6 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     }
     finish(ctx, &run, report, outcome)
 }
-fn prepare_dialogue_repair(
-    ctx: &mut Context<'_>,
-    run: &Path,
-    report: &mut Value,
-    state: &mut Value,
-) -> Result<()> {
-    let journal = run.join("dialogue-repair.json");
-    if !matches!(state["status"].as_str(), Some("archiving" | "planning")) {
-        let id = artifacts::timestamp().to_string();
-        let archives = run.join("previous-renders");
-        fs::create_dir_all(&archives).map_err(|e| e.to_string())?;
-        let archive = archives.join(&id);
-        fs::create_dir(&archive).map_err(|e| e.to_string())?;
-        // Preserve the original receipt before moving any production files.
-        for file in ["render.json", "screenplay-request.json"] {
-            fs::copy(run.join(file), archive.join(file)).map_err(|e| e.to_string())?;
-        }
-        if run.join("screenplay.txt").is_file() {
-            fs::copy(run.join("screenplay.txt"), archive.join("screenplay.txt"))
-                .map_err(|e| e.to_string())?;
-        }
-        let mut files = Vec::new();
-        for entry in fs::read_dir(run).map_err(|e| e.to_string())? {
-            let name = entry.map_err(|e| e.to_string())?.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if name.starts_with("shooting-script")
-                || name.starts_with("storyboard")
-                || name.starts_with("source-fidelity")
-                || matches!(
-                    name,
-                    "motion"
-                        | "motion-directions.json"
-                        | "planning-budget.json"
-                        | "preproduction.json"
-                        | "shots"
-                        | "takes"
-                        | "shots.concat.txt"
-                        | "scene-review"
-                        | "video.mp4"
-                )
-            {
-                files.push(name.to_owned());
-            }
-        }
-        files.sort();
-        *state = json!({"version":1,"status":"archiving","archive_id":id,"files":files});
-        save(&journal, state)?;
-    }
-    let id = text(state, "archive_id")?;
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid dialogue repair archive.".into());
-    }
-    let archive = run.join("previous-renders").join(id);
-    if state["status"] == "archiving" {
-        for file in rows(&state["files"])? {
-            ctx.check()?;
-            let name = file.as_str().ok_or("Invalid dialogue repair file.")?;
-            if Path::new(name).components().count() != 1
-                || !matches!(
-                    Path::new(name).components().next(),
-                    Some(std::path::Component::Normal(_))
-                )
-            {
-                return Err("Invalid dialogue repair file.".into());
-            }
-            let from = run.join(name);
-            let to = archive.join(name);
-            match (from.exists(), to.exists()) {
-                (true, false) => fs::rename(&from, &to).map_err(|e| e.to_string())?,
-                (false, true) => {} // Continue an interrupted archive operation.
-                _ => return Err(format!("Cannot preserve dialogue repair input: {name}.")),
-            }
-        }
-        *report = read(&archive.join("render.json"))?;
-        remove(
-            report,
-            &[
-                "error",
-                "sha256",
-                "runtime",
-                "seconds",
-                "planning_seconds",
-                "motion_previsualization",
-            ],
-        );
-        report["status"] = json!("planning");
-        report["shots"] = json!([]);
-        report["dialogue_repair_archive"] = json!(archive);
-        save(&run.join("render.json"), report)?;
-        state["status"] = json!("planning");
-        save(&journal, state)?;
-    }
-    ctx.options["fresh"] = json!(true);
-    ctx.activity(format!(
-        "Repairing dialogue with one speaking role per clip in {}. Previous production is preserved in {}. Use Resume if interrupted.",
-        run.display(), archive.display()
-    ))
-}
-
 fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let run = path(args, "run_dir")?
         .canonicalize()
@@ -449,31 +350,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     if stop && !uses {
         return Err("Storyboard-only Resume requires a run with per-shot storyboards.".into());
     }
-    let repair_file = run.join("dialogue-repair.json");
-    let mut repair = if repair_file.is_file() {
-        read(&repair_file)?
-    } else {
-        Value::Null
-    };
-    if !repair.is_null()
-        && (repair["version"] != 1
-            || !matches!(
-                repair["status"].as_str(),
-                Some("archiving" | "planning" | "complete")
-            ))
-    {
-        return Err("Invalid saved dialogue repair checkpoint.".into());
-    }
-    let repairing = args["repair_dialogue"] == true
-        || matches!(repair["status"].as_str(), Some("archiving" | "planning"));
-    if repairing && (!uses || stop || args["motion_previs"] == true) {
-        return Err("Dialogue repair requires a storyboard run without a previsualization or storyboard-only stop.".into());
-    }
-    let saved_motion = if repairing {
-        Value::Null
-    } else {
-        report["motion_previsualization"].clone()
-    };
+    let saved_motion = report["motion_previsualization"].clone();
     let mut motion = Value::Null;
     let mut motion_hash = None;
     if args["motion_previs"] == true || !saved_motion.is_null() {
@@ -492,8 +369,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         motion_hash = Some(hash);
     }
     let output = run.join("video.mp4");
-    if !repairing
-        && !stop
+    if !stop
         && (motion.is_null() || !saved_motion.is_null())
         && report["status"] == "complete"
         && report["runtime"]["status"] == "complete"
@@ -506,12 +382,6 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     environment(ctx)?;
     if uses && report["character_conditioning"] == character_conditioning::POLICY {
         preflight(ctx, &source, &profiles, &run, !stop)?;
-    }
-    if repairing {
-        // Check runtime availability before archiving the old production.
-        ctx.worker("model_check", json!({"profile":profile}))?;
-        boards::image_call(ctx, "imagegen_check", json!({}))?;
-        prepare_dialogue_repair(ctx, &run, &mut report, &mut repair)?;
     }
     let has_footage = output.is_file()
         || if run.join("shots").is_dir() {
@@ -555,12 +425,10 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     ctx.options["update_run_report"] = json!(true);
     let outcome = (|| -> Result<Value> {
         let (plan, boards) = if uses {
-            if !stop && !repairing {
+            if !stop {
                 ctx.worker("model_check", json!({"profile":profile}))?;
             }
-            if !repairing {
-                boards::image_call(ctx, "imagegen_check", json!({}))?;
-            }
+            boards::image_call(ctx, "imagegen_check", json!({}))?;
             ctx.activity("Resuming shots and storyboards")?;
             let started = Instant::now();
             let prepared = preparation::prepare(ctx, &request, &profiles, &run, seed)?;
@@ -591,10 +459,6 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     })();
     if outcome.as_ref().is_ok_and(Value::is_null) {
         return Ok(report);
-    }
-    if repairing && outcome.is_ok() {
-        repair["status"] = json!("complete");
-        save(&repair_file, &repair)?;
     }
     finish(ctx, &run, report, outcome)
 }

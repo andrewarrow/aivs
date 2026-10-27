@@ -17,7 +17,6 @@ use std::sync::{LazyLock, Mutex};
 pub const PLANNER_VERSION: &str = "storyboard-two-pass-v2";
 pub const PLANNING_POLICY: &str = "single-render-v1";
 pub const STORYBOARD_POLICY: &str = "per-shot-first-frame-v1";
-pub const DIALOGUE_POLICY: &str = "single-speaker-v1";
 
 // Expressions are fixed by this module, never supplied by production inputs.
 fn regex(pattern: &'static str) -> Regex {
@@ -84,7 +83,6 @@ pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
                     "planning_policy",
                     "storyboard_policy",
                     "planner_version",
-                    "dialogue_policy",
                 ],
             );
             Ok(content)

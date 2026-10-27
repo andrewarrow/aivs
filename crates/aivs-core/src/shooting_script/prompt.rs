@@ -377,7 +377,7 @@ pub(super) fn instruction_context(source: &Value) -> Value {
     }
     if source["voice_mode"] == "native" {
         assets["voice"] = serde_json::json!(
-            "Keep the model's native generated soundtrack for every shot. No saved-voice conversion runs. Use the saved performers' voice descriptions as prompt guidance; voice samples will not condition audio. Keep one speaking role per clip even in native mode. Do not split a source line or serialize required overlap to accommodate a voice converter."
+            "Keep the model's native generated soundtrack for every shot. No saved-voice conversion runs. Use the saved performers' voice descriptions as prompt guidance; voice samples will not condition audio. Do not split source dialogue or overlap to accommodate a voice converter."
         );
         assets["limits"] = serde_json::json!(
             "Portraits, generated storyboards and native voice descriptions do not guarantee identity, continuity or lip sync."
@@ -388,7 +388,6 @@ pub(super) fn instruction_context(source: &Value) -> Value {
         "storyboard_policy": super::STORYBOARD_POLICY, "beats": source["beats"],
         "fade_out_at_end": source["fade_out"],
         "generation_capabilities": {"planning_policy": PLANNING_POLICY,
-            "max_speaking_roles_per_shot": 1,
             "independent_storyboard_first_frame_per_shot": true, "joint_picture_and_audio": true,
             "audio_moves_between_generations": false, "saved_character_assets": assets},
         "timing_guidance": {"words_per_minute": 160, "settling_seconds": 0.5},

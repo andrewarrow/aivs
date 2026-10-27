@@ -281,22 +281,6 @@ impl App {
                             Err(error) => Some(error),
                         };
                     }
-                    if ui
-                        .add_enabled(self.video.can_resume(), egui::Button::new("Repair dialogue…"))
-                        .on_hover_text("Rebuild a run with one speaking role per clip. Keep the output directory and archive its previous video and planning files.")
-                        .on_disabled_hover_text("Finish setup and wait for the current video job to stop.")
-                        .clicked()
-                    {
-                        ui.close();
-                        self.import_error = match select_output_directory(&self.root.join("outputs"), "Repair dialogue", "Repair") {
-                            Ok(Some(directory)) => {
-                                self.video.repair_dialogue(directory);
-                                None
-                            }
-                            Ok(None) => None,
-                            Err(error) => Some(error),
-                        };
-                    }
                 });
                 ui.menu_button("Motion", |ui| {
                     if ui.add_enabled(self.video.can_resume(), egui::Button::new("Previsualization…"))
@@ -728,25 +712,16 @@ fn select_fountain(root: &std::path::Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-fn select_resume(outputs: &std::path::Path) -> Result<Option<PathBuf>, String> {
-    select_output_directory(outputs, "Resume video", "Resume")
-}
-
 #[cfg(target_os = "macos")]
-fn select_output_directory(
-    outputs: &std::path::Path,
-    title: &str,
-    prompt: &str,
-) -> Result<Option<PathBuf>, String> {
+fn select_resume(outputs: &std::path::Path) -> Result<Option<PathBuf>, String> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSModalResponseCancel, NSModalResponseOK, NSOpenPanel};
     use objc2_foundation::{NSString, NSURL};
 
-    let mtm =
-        MainThreadMarker::new().ok_or("The output directory chooser requires the main thread.")?;
+    let mtm = MainThreadMarker::new().ok_or("Resume requires the main thread.")?;
     let panel = NSOpenPanel::openPanel(mtm);
-    panel.setTitle(Some(&NSString::from_str(title)));
-    panel.setPrompt(Some(&NSString::from_str(prompt)));
+    panel.setTitle(Some(&NSString::from_str("Resume video")));
+    panel.setPrompt(Some(&NSString::from_str("Resume")));
     panel.setCanChooseFiles(false);
     panel.setCanChooseDirectories(true);
     panel.setAllowsMultipleSelection(false);
@@ -768,11 +743,7 @@ fn select_output_directory(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn select_output_directory(
-    _outputs: &std::path::Path,
-    _title: &str,
-    _prompt: &str,
-) -> Result<Option<PathBuf>, String> {
+fn select_resume(_outputs: &std::path::Path) -> Result<Option<PathBuf>, String> {
     Err("The output directory chooser requires macOS.".into())
 }
 

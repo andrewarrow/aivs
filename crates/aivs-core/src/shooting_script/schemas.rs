@@ -60,10 +60,6 @@ pub(super) fn schema(name: &str) -> Result<Value> {
             }
             let mut plan = object(&[
                 (
-                    "dialogue_policy",
-                    json!({"type": "string", "enum": [super::DIALOGUE_POLICY]}),
-                ),
-                (
                     "planning_policy",
                     json!({"type": "string", "enum": [PLANNING_POLICY]}),
                 ),

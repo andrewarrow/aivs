@@ -1,7 +1,7 @@
 //! Deterministic source coverage, timing, prompt compilation and continuity gates.
 use super::{
-    DIALOGUE_POLICY, PLANNER_VERSION, PLANNING_POLICY, STORYBOARD_POLICY, array, bounded,
-    optional_fields, prompt, same_keys,
+    PLANNER_VERSION, PLANNING_POLICY, STORYBOARD_POLICY, array, bounded, optional_fields, prompt,
+    same_keys,
 };
 use crate::continuity::Result;
 use serde_json::{Value, json};
@@ -83,13 +83,6 @@ pub(super) fn compile(
         "Codex response must contain a shots list.",
     )?;
     let storyboard = source["storyboard_policy"] == STORYBOARD_POLICY;
-    if !candidate["dialogue_policy"].is_null() && candidate["dialogue_policy"] != DIALOGUE_POLICY {
-        return Err("Unrecognized dialogue planning policy.".into());
-    }
-    // Existing saved runs keep their original approved coverage on Resume.
-    // New storyboard plans must isolate each speaking role in its own clip.
-    let single_speaker = candidate["dialogue_policy"] == DIALOGUE_POLICY
-        || (storyboard && candidate["source_sha256"].is_null());
     if candidate
         .get("source_sha256")
         .is_some_and(|hash| hash != &source["source_sha256"])
@@ -364,18 +357,6 @@ pub(super) fn compile(
             .filter(|id| by_id[*id]["kind"] == "dialogue")
             .copied()
             .collect::<Vec<_>>();
-        if single_speaker {
-            let speakers = required
-                .iter()
-                .filter_map(|id| by_id[id]["speaker"].as_str())
-                .collect::<BTreeSet<_>>();
-            if speakers.len() > 1 {
-                return Err(format!(
-                    "Shot {index} gives dialogue to multiple roles ({}). Split at the speaker change into separate shots, each with its own storyboard and only that role's dialogue. Preserve source order and required actions; do not serialize source-required simultaneous speech.",
-                    speakers.into_iter().collect::<Vec<_>>().join(", ")
-                ));
-            }
-        }
         let compile_prompt = |legacy| {
             prompt::compile(
                 template, source, identities, visible, &required, &by_id, request, storyboard,
@@ -383,10 +364,7 @@ pub(super) fn compile(
             )
         };
         let mut compiled = compile_prompt(false)?;
-        if item["prompt"]
-            .as_str()
-            .is_some_and(|saved| saved != compiled)
-        {
+        if item["prompt"].as_str().is_some_and(|saved| saved != compiled) {
             // Resume must preserve the exact approved prompt and its hashes.
             // Accept the previous compiler format only when it reproduces the
             // saved prompt exactly from the same source and template. New
@@ -446,9 +424,6 @@ pub(super) fn compile(
         .sum();
     let mut plan = json!({"version": 1, "source_sha256": source["source_sha256"],
         "seconds": seconds, "fade_out": source["fade_out"], "source": source, "shots": shots});
-    if single_speaker {
-        plan["dialogue_policy"] = json!(DIALOGUE_POLICY);
-    }
     for key in ["planning_policy", "cast_identity"] {
         if !candidate[key].is_null() {
             plan[key] = candidate[key].clone();
