@@ -230,7 +230,7 @@ From this checkout:
    cargo run
    ```
 
-3. Let setup prepare Python 3.12 in `.venv` for video, plus Python 3.10.21
+3. Let setup prepare Python 3.12 in `.venv` for video, plus Python 3.10
    in `.cache/seed-vc-env` for saved voices.
    It installs their separate pinned packages, downloads the required
    distilled, HQ, and voice models, and verifies the GPU. Downloads

@@ -43,8 +43,9 @@ def setup(workspace: Path) -> None:
         cache = workspace / ".cache"
         cache.mkdir(parents=True, exist_ok=True)
         environment = cache / "seed-vc-env"
-        _progress("Preparing Python 3.10.21 for saved-character voices")
-        subprocess.run(["uv", "venv", "--python", "3.10.21", "--allow-existing", str(environment)], check=True)
+        _progress("Preparing Python 3.10 for saved-character voices")
+        # Let uv select an available patch release from its bundled Python catalog.
+        subprocess.run(["uv", "venv", "--python", "3.10", "--allow-existing", str(environment)], check=True)
         _progress("Installing the pinned Seed-VC packages")
         subprocess.run(["uv", "pip", "sync", "--python", str(environment / "bin/python"),
                         str(REQUIREMENTS)], check=True)
