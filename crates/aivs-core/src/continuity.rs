@@ -9,6 +9,7 @@ mod world;
 
 pub use acceptance::{dependent_shots, validate_acceptance};
 pub use dispatch::dispatch;
+pub(crate) use facts::key_label;
 pub use facts::{facts, physical_key, text};
 pub use plan::validate_plan;
 pub use review::{review_sequence, review_shot};

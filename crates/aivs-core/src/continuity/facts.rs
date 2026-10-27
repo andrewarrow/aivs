@@ -155,7 +155,7 @@ pub(super) fn persistent(key: &FactKey) -> bool {
     physical_key(key) || key.1 == "owner" || key.0.starts_with("reveal:")
 }
 
-pub(super) fn key_label(key: &FactKey) -> String {
+pub(crate) fn key_label(key: &FactKey) -> String {
     // Match Python's tuple spelling in saved review evidence.
     format!("({}, {})", python_repr(&key.0), python_repr(&key.1))
 }

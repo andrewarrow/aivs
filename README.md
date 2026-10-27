@@ -559,8 +559,11 @@ counts and connections, evidence, confidence, and structural acceptance. The
 Python module keeps inspection instructions, schemas, Codex calls and checkpoints.
 `motion` in Rust validates frame timing, endpoint states, component inventories,
 hand ownership/support, docking, and source-backed interval transitions using the
-shared continuity rules. Python still plans and generates keyframes and assesses
-pixel-review findings.
+shared continuity rules. It also builds provisional intervals during incremental
+planning and computes pixel-review acceptance from observed hands, positions,
+visible relationships, and component counts. Fresh and resumed reviews use the
+same Rust rules; cached acceptance flags are recomputed. Python keeps keyframe
+planning instructions, schemas, generation calls, and artifact checkpoints.
 
 Preproduction scheduling, repair orchestration, artifact I/O, take recovery,
 visual review orchestration, and FFmpeg assembly remain in Python. Moving that

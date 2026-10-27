@@ -47,6 +47,8 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/continuity/world.rs": include_str!("continuity/world.rs"),
                             "crates/aivs-core/src/codex.rs": include_str!("codex.rs"),
                             "crates/aivs-core/src/motion.rs": include_str!("motion.rs"),
+                            "crates/aivs-core/src/motion/planning.rs": include_str!("motion/planning.rs"),
+                            "crates/aivs-core/src/motion/review.rs": include_str!("motion/review.rs"),
                             "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
                         }))
                     } else if request["operation"] == "codex" {
@@ -77,6 +79,26 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             &args["entry"],
                             &args["binding"],
                         )
+                    } else if request["operation"] == "validate_motion_review" {
+                        let args = &request["args"];
+                        args["number"]
+                            .as_u64()
+                            .and_then(|number| usize::try_from(number).ok())
+                            .ok_or_else(|| "Invalid motion shot number.".to_owned())
+                            .and_then(|number| {
+                                motion::validate_review(
+                                    &args["plan"],
+                                    number,
+                                    &args["frame"],
+                                    &args["value"],
+                                )
+                            })
+                    } else if request["operation"] == "motion_fallback" {
+                        let args = &request["args"];
+                        args["fps"]
+                            .as_u64()
+                            .ok_or_else(|| "Invalid motion frame rate.".to_owned())
+                            .and_then(|fps| motion::fallback(&args["shot"], fps))
                     } else if request["operation"] == "validate_motion_timing" {
                         let args = &request["args"];
                         args["fps"]

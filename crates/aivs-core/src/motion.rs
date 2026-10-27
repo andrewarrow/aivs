@@ -1,4 +1,10 @@
 //! Timed keyframe contracts and hand/component constraints, without inference.
+mod planning;
+mod review;
+
+pub use planning::fallback;
+pub use review::validate_review;
+
 use crate::continuity::{self, FactKey, Result, SceneState};
 use serde::Deserialize;
 use serde_json::{Value, json};

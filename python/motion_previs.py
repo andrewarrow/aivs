@@ -52,10 +52,6 @@ def identity():
                               "image_backend": storyboard_backend.configuration()})
 
 
-def _inventory(state):
-    return ({c["role"] for c in state["characters"]}, {p["id"] for p in state["props"]})
-
-
 def validate_timing(plan, motion):
     """Rust validates timed states against the source-backed continuity contracts."""
     rust_engine.call("validate_motion_timing", plan=plan, motion=motion,
@@ -127,27 +123,7 @@ def plan_motion(run_dir, *, on_activity=print):
 
 def _fallback(shot):
     # Used only to validate not-yet-planned coverage; never published as generated keyframes.
-    opening = {"frame": 0, "composition": shot["storyboard_prompt"], "action": "Opening", "state": shot["continuity"]["opening"], "transitions": [], "strength": 1,
-               "hands": _fallback_hands(shot["continuity"]["opening"])}
-    if shot["continuity"]["opening"] == shot["continuity"]["ending"]:
-        return [opening]
-    ending = dict(opening, frame=shot["seconds"] * quality_backend.FPS - 1, state=shot["continuity"]["ending"],
-                  transitions=[t for t in shot["continuity"]["transitions"] if t["timing"] == "during-shot"],
-                  hands=_fallback_hands(shot["continuity"]["ending"]))
-    middle = dict(opening, frame=1)
-    return [opening, middle, ending]
-
-
-def _fallback_hands(state):
-    hands = {(c["role"], side): "unknown" for c in state["characters"] for side in ("left", "right")}
-    for relation in state["relationships"]:
-        if relation["relation"] in ("holds-left", "holds-right") and relation["value"] == "yes":
-            hands[relation["subject"], relation["relation"][6:]] = relation["object"]
-    for prop in state["props"]:
-        for role, side in hands:
-            if prop["support"] == f"{role}:{side}-hand":
-                hands[role, side] = prop["id"]
-    return [{"role": role, "hand": side, "object": obj} for (role, side), obj in hands.items()]
+    return rust_engine.call("motion_fallback", shot=shot, fps=quality_backend.FPS)
 
 
 def _review(plan, number, frame, image, references, directory, binding, on_activity):
@@ -183,49 +159,9 @@ def _review(plan, number, frame, image, references, directory, binding, on_activ
 
 
 def _validate_review(plan, number, frame, value):
-    continuity._text(value["hand_findings"])
-    continuity._text(value["correction"])
-    if value["repair_strategy"] not in ("targeted-edit", "regenerate"):
-        raise ValueError("Keyframe review must select a supported repair strategy.")
-    hands = value["observed_hands"]
-    roles, props = _inventory(frame["state"])
-    if (len(hands) != 2 * len(roles)
-            or {(h["role"], h["hand"]) for h in hands} != {(r, side) for r in roles for side in ("left", "right")}
-            or any(h["object"] not in props | {"none", "unknown", "not-visible"} for h in hands)):
-        raise ValueError("Pixel review must observe each tracked character's two hand-object states.")
-    # Reuse existing pixel/state contradiction checks for a one-frame contract.
-    shot = dict(plan["shots"][number - 1], continuity={"opening": frame["state"], "ending": frame["state"], "transitions": []},
-                opening_visible_roles=[c["role"] for c in frame["state"]["characters"] if c["presence"] == "visible"])
-    checked = continuity.review_shot(dict(plan, shots=[shot]), 1, value)
-    visible_roles = set(shot["opening_visible_roles"])
-    observed_hands = {(h["role"], h["hand"]): h["object"] for h in hands}
-    for hand in frame["hands"]:
-        if (hand["role"] in visible_roles and hand["object"] not in continuity.UNKNOWN
-                and observed_hands[hand["role"], hand["hand"]] != hand["object"]):
-            checked["violations"].append(f"Unverified hand-object state: {hand['role']} {hand['hand']}")
-    observations = continuity.facts(value["continuity_review"]["observed_opening_state"])
-    expected = continuity.facts(frame["state"])
-    visible_ids = {p["id"] for p in frame["state"]["props"] if p["visibility"] == "visible"} | {
-        c["role"] for c in frame["state"]["characters"] if c["presence"] == "visible"}
-    for key, wanted in expected.items():
-        if key[1] == "location" and wanted not in continuity.UNKNOWN:
-            if (observations.get(key) != wanted and (key[0].split(":", 1)[-1] in visible_ids
-                    or observations.get(key) not in continuity.UNKNOWN | {None})):
-                checked["violations"].append(f"Position mismatch: {key}")
-        if (key[0].startswith("relationship:") and key[0][13:] in visible_ids
-                and key[1].split(":", 1)[-1] in visible_ids and wanted not in continuity.UNKNOWN
-                and observations.get(key) != wanted):
-            checked["violations"].append(f"Unverified visible relationship: {key}")
-    counts = value["component_counts"]
-    ids = [row["id"] for row in counts]
-    roles, props = _inventory(frame["state"])
-    if len(set(ids)) != len(ids) or set(ids) != roles | props or any(type(c["count"]) is not int or c["count"] < -1 for c in counts):
-        raise ValueError("Pixel review must count every tracked component and character exactly once.")
-    if any(c["count"] > 1 or (c["id"] in visible_ids and c["count"] != 1) for c in counts):
-        checked["violations"].append("Missing, uncertain or duplicated visible component/character.")
-    # Keep rejected observations as independently resumable evidence too.
-    return dict(value, accepted=checked["decision"] == "pass" and not checked["violations"],
-                findings=checked["violations"])
+    """Rust recomputes acceptance for fresh and resumed pixel observations."""
+    return rust_engine.call("validate_motion_review", plan=plan, number=number,
+                            frame=frame, value=value)
 
 
 def _keyframe_attempt(plan, number, frame, original, request, inputs, folder, run_dir,
