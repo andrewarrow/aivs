@@ -53,6 +53,7 @@ enum Task {
     Setup,
     Render(String),
     Resume(PathBuf),
+    RepairDialogue(PathBuf),
     Previsualize(PathBuf),
     FinalRender(PathBuf),
 }
@@ -77,9 +78,10 @@ impl Job {
             let result = match task {
                 Task::Setup => worker.setup(),
                 Task::Render(request) => worker.render(&request),
-                Task::Resume(directory) => worker.resume(&directory, false),
+                Task::Resume(directory) => worker.resume(&directory, false, false),
+                Task::RepairDialogue(directory) => worker.resume(&directory, false, true),
                 Task::Previsualize(directory) => worker.previsualize(&directory),
-                Task::FinalRender(directory) => worker.resume(&directory, true),
+                Task::FinalRender(directory) => worker.resume(&directory, true, false),
             };
             if let Err(error) = result {
                 worker.send(if worker.cancel.load(Ordering::Relaxed) {
@@ -244,8 +246,17 @@ impl Worker {
         }
     }
 
-    fn resume(&self, directory: &Path, motion_previs: bool) -> Result<(), String> {
-        self.progress("Resuming video…");
+    fn resume(
+        &self,
+        directory: &Path,
+        motion_previs: bool,
+        repair_dialogue: bool,
+    ) -> Result<(), String> {
+        self.progress(if repair_dialogue {
+            "Repairing dialogue…"
+        } else {
+            "Resuming video…"
+        });
         self.send(Event::Log(format!(
             "Resuming output directory: {}",
             directory.display()
@@ -267,6 +278,9 @@ impl Worker {
         command.arg("--output-dir").arg(directory);
         if motion_previs {
             command.arg("--motion-previs");
+        }
+        if repair_dialogue {
+            command.arg("--repair-dialogue");
         }
         command
             .arg("--planning-budget-seconds")
@@ -550,7 +564,10 @@ impl VideoWorkspace {
         self.remaining_seconds = None;
         self.started_at = Instant::now();
         self.stopping = false;
-        self.rendering = matches!(task, Task::Render(_) | Task::Resume(_));
+        self.rendering = matches!(
+            task,
+            Task::Render(_) | Task::Resume(_) | Task::RepairDialogue(_)
+        );
         if !self.rendering {
             self.setup = Setup::Checking;
         }
@@ -726,6 +743,12 @@ impl VideoWorkspace {
     pub fn resume(&mut self, directory: PathBuf) {
         if self.can_resume() {
             self.start(Task::Resume(directory));
+        }
+    }
+
+    pub fn repair_dialogue(&mut self, directory: PathBuf) {
+        if self.can_resume() {
+            self.start(Task::RepairDialogue(directory));
         }
     }
 

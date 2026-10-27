@@ -34,7 +34,7 @@ fn cancellation() -> Arc<AtomicBool> {
     flag
 }
 fn usage() -> &'static str {
-    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize> [options]\n\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
+    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize> [options]\n\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH\nResume: --output-dir PATH [--storyboards-only | --motion-previs | --repair-dialogue]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
 }
 fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     let mut args = arguments.into_iter();
@@ -43,6 +43,7 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
         return Ok(("help".into(), Value::Null));
     }
     let switches = BTreeSet::from([
+        "repair-dialogue",
         "motion-previs",
         "fresh-preproduction",
         "character-text-only",
@@ -115,6 +116,14 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     }
     payload["fresh"] = json!(has("fresh-preproduction"));
     payload["character"] = json!(flags.get("character").cloned().unwrap_or_default());
+    if has("repair-dialogue")
+        && (command != "resume" || has("motion-previs") || has("storyboards-only"))
+    {
+        return Err(
+            "--repair-dialogue requires resume without --motion-previs or --storyboards-only."
+                .into(),
+        );
+    }
     if has("motion-previs") && (command != "resume" || has("storyboards-only")) {
         return Err("--motion-previs requires resume without --storyboards-only.".into());
     }

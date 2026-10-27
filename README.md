@@ -270,6 +270,16 @@ planning passes and storyboard images before continuing missing work. New
 storyboard plans do not rewrite upcoming shots after video generation begins.
 Saved legacy runs retain their footage and historical artifacts; Resume does not
 silently switch their inference or image-conditioning policy.
+
+For swapped speakers, use **File → Repair dialogue…** on that same directory.
+New dialogue coverage allows one speaking role per clip and favors a clear view
+of that actor's mouth. The compiler rejects clips containing multiple speaking
+roles. Repair archives the previous footage, plans, storyboards and planning logs
+under `previous-renders/<id>/` inside the selected run, then builds new coverage
+and video there using its saved screenplay, cast, seed, format and voice mode.
+Interrupted repairs continue through Resume. Ordinary Resume reuses existing
+takes and does not repair their dialogue.
+
 Checkpoints are saved atomically and existing Codex logs are preserved. An
 interrupted, incomplete Codex turn is restarted, while completed stages are reused.
 Current format and Quality selections do not change a resumed run, including
@@ -669,6 +679,14 @@ To resume an existing run from the command line:
 
 ```sh
 .venv/bin/python python/video.py resume --output-dir /path/to/output-directory
+```
+
+To rebuild dialogue coverage and footage in the same run, preserving the previous
+production in its local archive:
+
+```sh
+.venv/bin/python python/video.py resume \
+  --output-dir /path/to/output-directory --repair-dialogue
 ```
 
 To increase an exhausted planning allowance to 15 minutes total while retaining
