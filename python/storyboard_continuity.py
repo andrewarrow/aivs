@@ -88,6 +88,13 @@ def digest(value):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+def policy_fingerprint():
+    directory = Path(__file__).resolve().parent
+    return digest({name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+                   for name in ("storyboard_continuity.py", "shooting_script.py",
+                                "shooting-script-review-instructions.txt")})
+
+
 def _text(value):
     if not isinstance(value, str) or not value.strip() or len(value) > 1200 or "\x00" in value:
         raise ValueError("Continuity facts must be nonempty bounded text; use unknown or not-visible.")
@@ -157,6 +164,8 @@ def canonical_physical(world):
         for entity in [prop, *prop["components"]]:
             values.update({("prop:" + entity["id"], "physical." + field): entity[field]
                            for field in ("type", "shape", "size", "color")})
+            if entity["features"]:
+                values["prop:" + entity["id"], "physical.distinguishing_features"] = "; ".join(entity["features"])
         for relation in prop["relationships"]:
             values["relationship:" + relation["subject"], relation["relation"] + ":" + relation["object"]] = relation["value"]
     return values
@@ -448,6 +457,7 @@ def review_sequence(plan, rows):
 
 def report_binding(plan, boards):
     return {"policy": POLICY, "source_sha256": plan["source_sha256"],
+            "review_policy_sha256": policy_fingerprint(),
             "source_snapshot_sha256": digest(plan["source"]),
             "plan_sha256": digest(plan),
             "references": boards.get("references", []),

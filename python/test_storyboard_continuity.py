@@ -86,9 +86,11 @@ class StoryboardContinuityTests(unittest.TestCase):
 
     def test_individually_plausible_frames_cannot_reset_unspecified_geometry(self):
         # The source did not specify a size, but frame one establishes it.
+        self.plan["world"]["props"][0]["components"][0]["size"] = "unknown"
         for shot in self.plan["shots"]:
             for state in ("opening", "ending"):
                 shot["continuity"][state]["props"][1]["physical"][2]["value"] = "unknown"
+        continuity.validate_plan(self.plan)
         first, second = row(self.plan, 1), row(self.plan, 2)
         first["continuity_review"]["observed_opening_state"]["props"][1]["physical"][2]["value"] = "hand-sized"
         second["continuity_review"]["observed_opening_state"]["props"][1]["physical"][2]["value"] = "oversized"
@@ -168,8 +170,10 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.plan["source"]["beats"][0]["text"] = "A removes the coat and reveals the existing condition."
         first = self.plan["shots"][0]["continuity"]
         first["ending"]["characters"][0]["visibility"][0]["value"] = "visible"
+        first["ending"]["characters"][0]["costume"] = "coat-off"
         first["ending"]["reveals"][0]["value"] = "revealed"
         first["transitions"] = [transition(self.plan, "visibility.condition", "concealed", "visible"),
+                                transition(self.plan, "costume", "coat", "coat-off"),
                                 transition(self.plan, "value", "concealed", "revealed", entity_id="reveal:condition")]
         for state in ("opening", "ending"):
             self.plan["shots"][1]["continuity"][state] = copy.deepcopy(first["ending"])
@@ -181,6 +185,8 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.assertEqual(reviewed["decision"], "pass")
         self.assertIn(["character:A", "morphology.abdomen_size"], reviewed["unobservable_facts"])
         self.assertEqual(self.review(row(self.plan, 2))["decision"], "pass")
+        self.assertTrue(all(r["decision"] == "pass" for r in continuity.review_sequence(
+            self.plan, {1: result, 2: row(self.plan, 2)}).values()))
 
     def test_legitimate_time_jump_permits_physical_change(self):
         self.plan["shots"][1]["scene_id"] = 2
@@ -192,6 +198,8 @@ class StoryboardContinuityTests(unittest.TestCase):
                        timing="across-cut", beat=2, physical=True)]
         continuity.validate_plan(self.plan)
         self.assertEqual(self.review(row(self.plan, 2))["decision"], "pass")
+        self.assertTrue(all(r["decision"] == "pass" for r in continuity.review_sequence(
+            self.plan, {1: row(self.plan, 1), 2: row(self.plan, 2)}).values()))
 
     def test_uncertain_critical_observation_cannot_approve(self):
         result = row(self.plan, 2)

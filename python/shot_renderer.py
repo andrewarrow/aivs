@@ -329,8 +329,8 @@ def render_shooting_script(
     With ``resume``, matching current and archived takes are checked and reused
     before any new video inference. Generated dialogue is trusted; no speech
     recognizer or transcript comparison participates in rendering or resume.
-    Every saved take remains available. New plans use automated visual evidence
-    to adapt only unrendered shots, including their independent storyboard frames.
+    Every saved take remains available. Storyboard plans use their accepted
+    sequence unchanged; legacy continuation plans may adapt unrendered shots.
     Issues and unavailable reviews remain explicit in the returned production status;
     neither starts another video inference or asks for human approval.
     New GUI runs pass ``character_profiles`` to anchor eligible scene openings
@@ -347,7 +347,7 @@ def render_shooting_script(
         raise ValueError("seed must be an integer.")
     if type(review_enabled) is not bool:
         raise ValueError("review_enabled must be a boolean.")
-    requires_storyboard_review = (plan.get("storyboard_policy") == "per-shot-first-frame-v1"
+    requires_storyboard_review = (storyboard is not None or plan.get("storyboard_policy") == "per-shot-first-frame-v1"
                                  or plan.get("source", {}).get("storyboard_policy") == "per-shot-first-frame-v1")
     if requires_storyboard_review and storyboard is None:
         raise ValueError("This plan requires its validated first-frame storyboard for every shot.")

@@ -353,6 +353,13 @@ class PreproductionPipelineTests(unittest.TestCase):
             self.render(plan, boards, resume=True)
         self.assertEqual(self.render_calls, [])
 
+    def test_changed_review_policy_invalidates_resume_acceptance(self):
+        plan, boards = self.prepare()
+        with patch.object(continuity, "policy_fingerprint", return_value="f" * 64):
+            with self.assertRaisesRegex(ValueError, "acceptance"):
+                self.render(plan, boards, resume=True)
+        self.assertEqual(self.render_calls, [])
+
     def test_verified_compatible_assets_can_be_copied_from_cache(self):
         plan, boards = self.prepare()
         destination = self.root / "cached-run"

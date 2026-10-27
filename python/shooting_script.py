@@ -1379,7 +1379,8 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
         raise ValueError("Saved sequence directions must contain shot records.")
     # Include all earlier pixels (persistent world history) and the next frame
     # (the outgoing cut), not just the individual shot's image.
-    hashes = {n: continuity.digest({"policy": continuity.POLICY, "plan": plan,
+    review_policy_sha256 = continuity.policy_fingerprint()
+    hashes = {n: continuity.digest({"policy": continuity.POLICY, "review_policy_sha256": review_policy_sha256, "plan": plan,
                                    "images": board_images[:min(n + 1, len(board_images))],
                                    "references": boards.get("references", [])})
               for n in range(1, len(plan["shots"]) + 1)}
