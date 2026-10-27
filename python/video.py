@@ -66,8 +66,10 @@ def check(profile="hq"):
     models = "distilled and HQ" if profile == "hq" else "distilled"
     emit("progress", label=f"Checking cached {models} models, text encoder, and audio weights")
     model_path(profile=profile)
-    emit("progress", label="Checking storyboard image generation")
-    storyboard_backend.check(on_activity=lambda message: emit("activity", message=message))
+    emit("progress", label="Checking local storyboard tools")
+    # The render paths verify real image generation after the workspace opens,
+    # where the user can sign in and see generation progress.
+    storyboard_backend.check_local()
     emit("progress", label="Checking saved-character voice converter and cached voice weights")
     character_conditioning.check_voice_setup()
     emit("ready")
@@ -98,8 +100,8 @@ def download(profile="hq"):
 
     with project_lock(".setup.lock"):
         from quality_backend import preflight_download
-        emit("progress", label="Checking storyboard image backend")
-        storyboard_backend.check(on_activity=lambda message: emit("activity", message=message))
+        emit("progress", label="Checking local storyboard tools")
+        storyboard_backend.check_local()
         emit("progress", label="Checking video model download space")
         preflight_download(profile=profile)
         models = "distilled and HQ models" if profile == "hq" else "distilled model"

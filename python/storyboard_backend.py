@@ -55,6 +55,14 @@ def _cli_identity() -> dict:
                 if p.is_file() else None for p in files}, sort_keys=True).encode()).hexdigest()}
 
 
+def check_local() -> dict:
+    """Check installed tooling without generating images or requiring sign-in."""
+    if _backend() == "mflux":
+        import storyboard_mflux
+        return storyboard_mflux.check()
+    return _cli_identity()
+
+
 def check(*, refresh=False, on_activity=None) -> dict:
     """Prove generation and reference editing through the production transport."""
     if _backend() == "mflux":

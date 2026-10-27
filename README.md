@@ -352,7 +352,11 @@ and accepts an actual completed image-tool result, rather than a textual claim.
 The existing prop and sequence inspections still gate video rendering. Update
 Codex if its image tool is unavailable, then sign in and Resume.
 
-Preflight now generates a small cup image and performs a reference-guided color
+Desktop startup checks local storyboard tooling without generating images or
+requiring ChatGPT sign-in. The full capability check runs when generating or
+resuming storyboards, with progress visible in Activity.
+
+Preflight generates a small cup image and performs a reference-guided color
 edit through the same app-server transport used for storyboards. It requires an
 actual completed image-generation event and exact reference path/SHA-256
 metadata; installing the CLI alone is insufficient. A successful check is cached

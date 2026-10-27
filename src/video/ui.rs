@@ -6,10 +6,31 @@ impl VideoWorkspace {
     pub fn setup_ui(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show(ui, |ui| {
             if self.setup == Setup::Checking {
-                ui.horizontal(|ui| {
+                ui.set_max_width(480.0);
+                ui.horizontal_wrapped(|ui| {
                     ui.spinner();
-                    ui.label("Checking local setup…");
+                    ui.add(egui::Label::new(&self.status).wrap());
                 });
+                if self.started_at.elapsed().as_secs() >= 3 {
+                    ui.label(format!(
+                        "{} elapsed",
+                        remaining_time(self.started_at.elapsed().as_secs() as f64)
+                    ));
+                }
+                self.activity_ui(ui, 120.0);
+                if ui
+                    .add_enabled(
+                        self.job.is_some() && !self.stopping,
+                        egui::Button::new(if self.stopping { "Stopping…" } else { "Stop" })
+                            .min_size(egui::vec2(64.0, 44.0)),
+                    )
+                    .clicked()
+                {
+                    if let Some(job) = &self.job {
+                        job.stop();
+                    }
+                    self.stopping = true;
+                }
             }
         });
         // A ready install goes directly from the startup check to its workspace.

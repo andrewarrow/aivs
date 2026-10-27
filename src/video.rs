@@ -695,7 +695,13 @@ impl VideoWorkspace {
             }
             Event::Stopped => {
                 self.rendering = false;
-                self.status = "Stopped. Partial output is kept in outputs.".into();
+                self.status = if self.is_ready() {
+                    "Stopped. Partial output is kept in outputs."
+                } else {
+                    self.setup = Setup::Failed;
+                    "Setup stopped. Choose Retry setup to check again."
+                }
+                .into();
                 return true;
             }
         }
