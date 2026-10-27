@@ -763,18 +763,12 @@ completed work:
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-python3 -m unittest discover -s python -v
 ```
 
-The mocked storyboard pipeline test can also run independently, without GPU
-inference, model downloads, or paid API calls:
-
-```sh
-PYTHONPATH=python .venv/bin/python -m unittest test_preproduction_pipeline test_storyboard_continuity test_production_comparison -v
-```
-
-The suites cover editing, casting, setup, planning, cancellation, media validation,
-Codex protocol handling, and responsive UI layout. Optional integration checks:
+The Rust suites cover editing, casting, setup, cancellation, Codex protocol
+handling, and responsive UI layout. Python unit tests have been removed as
+production logic moves into Rust. Use the storyboard and Resume commands above
+to check production behavior. Optional integration checks:
 
 ```sh
 # Reuse an existing model cache while testing setup in a temporary workspace.
