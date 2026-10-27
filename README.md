@@ -6,7 +6,7 @@ https://github.com/user-attachments/assets/4e372e6e-2cd9-4b2f-ac84-19e1252cea96
 
 AIVS turns a human-readable screenplay into an AI-generated video with speech.
 Write a scene, cast its characters, select its heading, and choose **Generate
-video**. Codex designs the shots, a local image model creates their starting
+video**. Codex designs the shots, its built-in image generator creates their starting
 compositions, and Codex directs motion from those actual images. **LTX-2.5 HQ
 renders each shot's video and audio locally** on an Apple Silicon Mac.
 
@@ -15,7 +15,7 @@ Screenplay + cast
        ↓
 Codex pass 1 → shot design + storyboard prompts
        ↓
-Local reference-image generation → one composed first frame per shot
+Codex image generation → visual references + one composed first frame per shot
        ↓
 Codex pass 2 → motion, acting, camera and sound from the actual images
        ↓
@@ -27,8 +27,9 @@ FFmpeg assembly → video.mp4
 The desktop app is Rust; the video pipeline is Python using MLX on Apple's GPU.
 Codex planning and automatic visual review use your configured Codex service and
 login. Planning sends saved cast portraits and storyboard images to Codex;
-visual review sends sampled rendered frames. Image generation, video inference,
-and media checks run locally; generated dialogue is trusted without transcription.
+visual review sends sampled rendered frames. Storyboard image generation also uses
+your Codex login and sends the relevant saved portraits and physical references.
+Video inference and media checks run locally; generated dialogue is trusted without transcription.
 
 For a repeatable visual-quality experiment, see
 [Compare production paths](docs/production-comparison.md): the earlier baseline
@@ -113,29 +114,34 @@ Preproduction has two Codex passes, with local image generation between them:
    neighboring frames and source transitions, then write motion directions.
    Longer sequences use overlapping batches with saved observations.
 
-FLUX.2 Klein generates reusable empty environment plates, important prop
-references and full-body references for known morphology, then one still per
+Codex's built-in image generator creates reusable empty environment plates,
+important prop references and full-body references for known morphology, then one still per
 shot. Only characters visible at time zero supply actor references. Earlier
-character-filled shots are never used as setting references. It runs through
-MFLUX in its own Python environment. Canonical props use centered, evenly lit
+character-filled shots are never used as setting references. Generation uses
+Codex app-server and your existing login, without a separate image API key or
+local image-model download. Canonical props use centered, evenly lit
 product photographs, using the planner's visual description to preserve a concrete
 resting layout and connected assembly. Before any prop reference can condition a
 storyboard, Codex inspects the actual pixels for exact component counts, extra
-parts, coherent assembly and clear connections. For failed or ambiguous references, the inspector
-writes a complete replacement description in at most 120 words, specifying correct
+parts, coherent assembly and clear connections. For failed or ambiguous references,
+the inspector writes a complete replacement description in at most 120 words, specifying correct
 placement, support and connections. Retries use that description as their required
-prompt, up to three images per reference; defect reports stay in the inspection
-checkpoint instead of entering the image prompt as optional, truncated prose.
-Inspection receipts bind the definition, reviewer and image bytes; Resume reuses accepted
-receipts and preserves failed attempts. These inspections share the planning budget.
+prompt, up to three images per reference. Detailed defect reports stay in the
+inspection checkpoint. Inspection receipts bind the definition, reviewer and image
+bytes; Resume reuses accepted receipts and preserves failed attempts. These
+inspections share the planning budget.
 Visible opening facts (costume, exposed body traits, components and ownership)
-enter the actual image prompt; concealed traits stay private. When a detailed
-state exceeds the 512-token budget, accepted reference images carry unchanged
-prop geometry, identical simple props share a design image, and current state
-and connections remain explicit. Optional composition prose is shortened only
-after that compaction, and the effective prompt is recorded. Changed references
+enter the actual image prompt; concealed traits stay private. The complete opening
+state and composition reach Codex without the former FLUX 512-token limit.
+Identical simple props share a design image, with their separate identities and
+states retained in the prompt. The image tool's actual reference paths and hashes
+must match the requested inputs. Original generated pixels, prompts and app-server
+events are saved before the image is fitted without distortion to LTX's dimensions.
+Completed image-tool checkpoints survive interruption and can be reused on Resume.
+Codex image generation has no controllable random seed; the saved seed identifies
+the request and retry, rather than guaranteeing identical new pixels. Changed references
 or prompt inputs regenerate dependent frames, preserving superseded images and
-their provenance. The image worker exits before LTX loads. Python validates
+their provenance. The Codex image turn finishes before LTX loads. Python validates
 source coverage, exact dialogue, timing,
 and prompt limits. The final shooting script and storyboard checksums are bound
 together with an accepted `storyboard-review.json`. The renderer and Resume
@@ -207,12 +213,13 @@ The planner still preserves source dialogue in its prompts.
 - An **Apple Silicon Mac with Metal support** and **Rust 1.92+**.
 - **Homebrew**, so setup can install `uv`, FFmpeg, and Git if missing.
 - A **Hugging Face access token** for downloading models.
-- The **Codex CLI**, signed in and available on `PATH` (or set `AIVS_CODEX_PATH`).
-  Codex provides screenplay planning and automatic visual review; the chat panel is optional.
+- A current **Codex CLI** with built-in image generation, signed in and available
+  on `PATH` (or set `AIVS_CODEX_PATH`). Codex provides screenplay planning,
+  storyboard images and automatic visual review; the chat panel is optional.
 - Disk space for both model caches and output footage. HQ video setup checks for
   **70 GiB free** on a fresh install, or **22 GiB** when the distilled cache is
   already complete. Required distilled and HQ video model downloads are about
-  **62 GB**. The separate FLUX.2 storyboard model requires additional space.
+  **62 GB**. Storyboard generation uses your Codex image-generation allowance.
 
 From this checkout:
 
@@ -224,10 +231,10 @@ From this checkout:
    cargo run
    ```
 
-3. Let setup prepare Python 3.12 in `.venv` for video and `.venv-storyboard` for
-   still images, plus Python 3.10.21 in `.cache/seed-vc-env` for saved voices.
+3. Let setup prepare Python 3.12 in `.venv` for video, plus Python 3.10.21
+   in `.cache/seed-vc-env` for saved voices.
    It installs their separate pinned packages, downloads the required
-   distilled, HQ, storyboard, and voice models, and verifies the GPU. Downloads
+   distilled, HQ, and voice models, and verifies the GPU. Downloads
    reuse the cache. Use **Check again** after adding a token, or **Retry setup**
    after fixing a setup error.
 4. If needed, choose **Codex → Sign in with ChatGPT** and finish in your browser.
@@ -325,7 +332,7 @@ and render scene by scene.
 - **⌘/Ctrl+Z** and **⌘/Ctrl+Shift+Z** undo and redo edits, including casting.
 
 New GUI screenplay renders use the gallery's actual saved assets. Snapshotted
-portraits guide the local generation of each shot's first frame, including shots
+portraits guide Codex's generation of each shot's first frame, including shots
 with multiple visible performers. Codex receives the portraits when designing
 shots, then the generated images when writing motion directions. A shot with
 one speaking performer has its native soundtrack converted with Seed-VC toward
@@ -337,24 +344,29 @@ speakers retain generated voices because there
 are no isolated dialogue tracks. These limitations appear in the activity log and
 each shot's `character_assets` record. Silent shots do not run voice conversion.
 
-### Local storyboard setup
+### Storyboard image generation
 
-Desktop setup installs the separate image environment automatically. For a CLI
-workspace whose video environment already exists:
+Storyboards and canonical physical references use the same signed-in Codex CLI
+as planning. The app-server request invokes the built-in image-generation skill
+and accepts an actual completed image-tool result, rather than a textual claim.
+The existing prop and sequence inspections still gate video rendering. Update
+Codex if its image tool is unavailable, then sign in and Resume.
+
+For a CLI workspace whose video environment already exists:
 
 ```sh
-uv venv .venv-storyboard --python 3.12
-uv pip install --python .venv-storyboard/bin/python -r python/requirements-storyboard.txt
+.venv/bin/python python/storyboard_backend.py check
 .venv/bin/python experiments/character-consistency/setup_voice_conversion.py
 .venv/bin/python python/video.py download --profile hq
 ```
 
-The image worker uses the pinned FLUX.2 Klein 4B snapshot through MFLUX. Model
-downloads share `.cache/huggingface/`; completed scene plans and images are reused
-through `.cache/preproduction/`. Generation uses cached weights and saves image
-prompts, seeds, reference hashes, and backend provenance alongside each run.
-Before downloading model weights, setup checks the combined missing video and
-storyboard files against their pinned download sizes. Complete cached files are
+Completed scene plans and images are reused through `.cache/preproduction/`.
+Generation saves image prompts, request seeds, reference hashes, original image
+bytes and backend provenance alongside each run. An interrupted local-FLUX run
+regenerates its physical references and affected frames with Codex, preserving
+superseded assets. No FLUX environment or image weights are required.
+Before downloading model weights, setup checks missing video files against their
+pinned download sizes. Complete cached files are
 reused; damaged and partial files count as missing. The check reserves another
 2 GiB for temporary files and 5 GiB for generated outputs, accounting for separate
 cache and output volumes.
@@ -424,7 +436,7 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [python/shooting_script.py](python/shooting_script.py) | Parses story beats, calls Codex, validates the plan, and saves shooting scripts. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
 | [python/storyboard.py](python/storyboard.py) | Generates and validates shot-bound storyboard images and their provenance. |
-| [python/storyboard_backend.py](python/storyboard_backend.py) | Runs the local image model in its separate environment. |
+| [python/storyboard_backend.py](python/storyboard_backend.py) | Generates reference-aware images through the signed-in Codex app-server. |
 | [python/shot_renderer.py](python/shot_renderer.py) | Reuses saved takes, renders missing shots from storyboard frames, and assembles the result. |
 | [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
 | [python/validation.py](python/validation.py) | Decoded-frame, stream, and audio/video timing checks. |
@@ -504,8 +516,8 @@ To inspect actual generated first frames and motion directions before video
 inference, use `--storyboards-only`. This completes both planning passes, image
 generation, bounded image repairs, and the source-fidelity check, then saves
 `storyboards.json`, its images, and `shooting-script.json`. It does not require
-LTX weights or Seed-VC, but needs the cached LTX tokenizer, storyboard environment
-and image weights, and cast portraits. Saved voice samples and the converter are
+LTX weights or Seed-VC, but needs the cached LTX tokenizer, Codex image generation,
+and cast portraits. Saved voice samples and the converter are
 checked when you later Resume into video rendering. `--plan-only` and
 `--storyboards-only` are mutually exclusive.
 

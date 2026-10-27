@@ -186,7 +186,8 @@ def generate_references(plan, profiles, run_dir, seed, *, repair_ids=(), round_n
             inputs = [{"file": f"characters/{profile['id']}/{profile['image']['file']}", "sha256": profile["image"]["sha256"]}]
         attempt = round_number if spec["id"] in repair_ids else 0
         old = entries.get(spec["id"])
-        if attempt == 0 and old and old.get("definition_sha256") == _fingerprint(spec):
+        if (attempt == 0 and old and old.get("definition_sha256") == _fingerprint(spec)
+                and old.get("generation", {}).get("backend") == storyboard_backend.configuration()):
             resolve_image(old, run_dir)
             if spec["kind"] != "prop":
                 continue
@@ -229,7 +230,7 @@ def generate_references(plan, profiles, run_dir, seed, *, repair_ids=(), round_n
     return result
 
 
-def visible_state_prompt(plan, shot, reference_geometry=None):
+def visible_state_prompt(plan, shot):
     """Compile drawable opening facts without disclosing concealed story facts."""
     state = shot.get("continuity", {}).get("opening", {})
     hidden = {"unknown", "not-visible", "concealed", "offscreen", "absent"}
@@ -241,9 +242,6 @@ def visible_state_prompt(plan, shot, reference_geometry=None):
         visibility = {a["key"]: a["value"] for a in character["visibility"]}
         details = [f"{key} {character[key]}" for key in ("costume", "posture", "location")
                    if character[key] not in hidden]
-        if reference_geometry is not None:
-            details = (["wearing " + character["costume"]] if character["costume"] not in hidden else [])
-            details += [character[key] for key in ("posture", "location") if character[key] not in hidden]
         for category in ("appearance", "morphology"):
             for attribute in character[category]:
                 key, value = attribute["key"], attribute["value"]
@@ -261,7 +259,6 @@ def visible_state_prompt(plan, shot, reference_geometry=None):
         for entity in [prop, *prop["components"]]:
             canonical[entity["id"]] = (entity, prop)
     visible = {p["id"] for p in state.get("props", []) if p["visibility"] == "visible"}
-    grouped = {}
     for prop in state.get("props", []):
         if prop["id"] not in visible:
             continue
@@ -269,38 +266,13 @@ def visible_state_prompt(plan, shot, reference_geometry=None):
         physical = {key: definition[key] for key in ("type", "shape", "size", "color") if key in definition}
         if definition.get("features"):
             physical["distinguishing_features"] = "; ".join(definition["features"])
-        canonical_physical = dict(physical)
         physical.update({a["key"]: a["value"] for a in prop["physical"]})
-        reference = (reference_geometry or {}).get(prop["id"])
-        # Accepted reference pixels carry unchanged geometry, including type.
-        # Every physical change, ownership and current placement stays explicit.
-        details = [f"{key} {value}" for key, value in physical.items() if value not in hidden
-                   and (reference is None or canonical_physical.get(key) != value)]
+        details = [f"{key} {value}" for key, value in physical.items() if value not in hidden]
         if parent and parent["id"] != prop["id"] and parent["id"] not in visible:
             details.append("component of " + parent["type"])
-        if reference_geometry is None:
-            details.extend(f"{key} {prop[key]}" for key in ("owner", "support", "location", "state")
-                           if prop[key] not in hidden)
-        else:
-            # A named hand already identifies its owner. Avoid saying the same
-            # placement twice (e.g. support=chair seat, location=chair).
-            support = prop["support"]
-            if prop["owner"] not in hidden and (support in hidden or prop["owner"] not in support):
-                details.append("owner " + prop["owner"])
-            if support not in hidden:
-                details.append("support " + support)
-            location = prop["location"].removeprefix("at ")
-            if prop["location"] not in hidden and (support in hidden or location not in support):
-                details.append("at " + prop["location"])
-            if prop["state"] not in hidden:
-                details.append(prop["state"])
-        if reference_geometry is None:
-            clauses.append(prop["id"] + ": " + "; ".join(details))
-        else:
-            grouped.setdefault(tuple(details), []).append(prop["id"])
-    for details, ids in grouped.items():
-        count = f" ({len(ids)} objects)" if len(ids) > 1 else ""
-        clauses.append(", ".join(ids) + count + ": " + "; ".join(details))
+        details.extend(f"{key} {prop[key]}" for key in ("owner", "support", "location", "state")
+                       if prop[key] not in hidden)
+        clauses.append(prop["id"] + ": " + "; ".join(details))
     for relation in state.get("relationships", []):
         if relation["subject"] in visible and relation["object"] in visible and relation["value"] not in hidden:
             clauses.append(f"{relation['subject']} {relation['relation']} {relation['object']}={relation['value']}")
@@ -327,7 +299,6 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
         references.append(reference)
         instructions.append(f"Image {len(references)}: {role}'s face identity.")
     library_path = Path(run_dir) / "storyboard-references.json"
-    reference_geometry = {}
     if library_path.is_file():
         library = json.loads(library_path.read_text())
         specs = {spec["id"]: spec for spec in reference_specs(plan)}
@@ -356,15 +327,12 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
                     image_number = shared_designs[shared]
                     asset = references[image_number - 1]
                     asset.setdefault("reference_ids", [asset["reference_id"]]).append(reference["id"])
-                    reference_geometry[definition["id"]] = image_number
+                    instructions[image_number - 1] += f" Also the design for {definition['id']}."
                     continue
             references.append(dict(reference["image"], purpose=reference["kind"], reference_id=reference["id"]))
             instructions.append(f"Image {len(references)}: {reference['id']} physical reference.")
-            if reference["kind"] == "prop":
-                for part in [definition, *definition["components"]]:
-                    reference_geometry[part["id"]] = len(references)
-                if shared is not None:
-                    shared_designs[shared] = len(references)
+            if reference["kind"] == "prop" and shared is not None:
+                shared_designs[shared] = len(references)
     # A previous frame is a scene full of people and mutable story facts, not a
     # clean environment plate. Never feed it back as an authoritative set image.
     # Independent frames share the director's scene description instead.
@@ -386,27 +354,10 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
               + presence + "Keep concealed features covered; references do not override current clothing or visibility. "
               + " ".join(instructions) + "\nVisible opening state: " + visible_state_prompt(plan, shot) +
               "\nKeep faces, active hands and essential props clear of frame edges.")
-    mapping = []
-    for image_number, reference in enumerate(references, 1):
-        if "role" in reference:
-            label = reference["role"] + " face"
-        elif reference["purpose"] == "prop":
-            definition = specs[reference["reference_id"]]["definition"]
-            ids = [r.removeprefix("prop:") for r in reference.get("reference_ids", [reference["reference_id"]])]
-            ids.extend(part["id"] for part in definition["components"])
-            label = ", ".join(ids)
-        else:
-            label = reference["reference_id"]
-        mapping.append(f"Image {image_number}: {label}")
-    compact_prompt = ("Single live-action photograph, no panels or lettering. " + presence
-                      + "Keep concealed features covered; current state overrides reference pose/clothes. "
-                      + "One instance per part; current docking/placement overrides references. "
-                      + "; ".join(mapping) + "\nOpening: "
-                      + visible_state_prompt(plan, shot, reference_geometry))
     return {"policy": POLICY, "source_sha256": plan.get("source_sha256"), "shot": number,
             "opening_state": shot.get("continuity", {}).get("opening"),
             "world_sha256": _fingerprint(plan.get("world", {})),
-            "prompt": prompt, "compact_prompt": compact_prompt, "composition": composition.strip(),
+            "prompt": prompt, "composition": composition.strip(),
             "references": references, "seed": (seed + number - 1) % (2**31),
             "width": width, "height": height, "backend": storyboard_backend.configuration()}
 
@@ -463,7 +414,6 @@ def regenerate_shot(plan: dict, profiles: list[dict], run_dir: Path, seed: int,
     activity(f"Regenerating storyboard {shot_index + 1}: {reason}")
     runtime = storyboard_backend.generate(request["prompt"], references, partial, request["seed"],
                                           width=width, height=height, composition=request["composition"],
-                                          compact_prompt=request["compact_prompt"],
                                           on_activity=activity)
     info = quality_backend.prepare_source_image(partial)
     if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):
@@ -547,10 +497,8 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *,
             manifest.pop("continuity_acceptance", None)
             activity(f"Regenerating storyboard {number} after reference or prompt changes")
         if backend is None:
-            activity("Checking the local storyboard model")
+            activity("Checking Codex storyboard image generation")
             backend = storyboard_backend.check()
-            if manifest.get("backend") not in (None, backend):
-                raise ValueError("The storyboard runtime changed during this run; restore it or start a new run.")
             manifest["backend"] = backend
         activity(f"Generating storyboard {number}/{len(plan['shots'])}")
         manifest.update(status="generating", current_shot=number)
@@ -569,7 +517,6 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *,
             references = [resolve_image({"image": reference}, run_dir) for reference in request["references"]]
             runtime = storyboard_backend.generate(request["prompt"], references, partial, request["seed"],
                                                    width=width, height=height, composition=request["composition"],
-                                                   compact_prompt=request["compact_prompt"],
                                                    on_activity=activity)
             info = quality_backend.prepare_source_image(partial)
             if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):

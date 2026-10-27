@@ -34,7 +34,7 @@ def cache_key(request, profiles):
     directory = Path(__file__).resolve().parent
     files = ("shooting_script.py", "shooting-script-instructions.txt",
              "shooting-script-review-instructions.txt", "storyboard.py",
-             "storyboard_backend.py", "prop_reference.py", "requirements-storyboard.txt", "render_formats.py",
+             "storyboard_backend.py", "prop_reference.py", "render_formats.py",
              "preproduction.py", "storyboard_continuity.py")
     identity = {
         "source": shooting_script.parse_request(request, profiles)["source_sha256"],

@@ -71,12 +71,9 @@ def _download_token():
     return token.strip()
 
 
-def preflight_download(profile="distilled", *, include_storyboard=False):
-    """Check the combined setup footprint before the first model is downloaded."""
+def preflight_download(profile="distilled"):
+    """Check the local video setup footprint before the first model is downloaded."""
     specs = [download_spec(profile)]
-    if include_storyboard:
-        import storyboard_backend
-        specs.append(storyboard_backend.download_spec())
     return preflight_downloads(specs, cache_dir=CACHE / "hub", output_dir=ROOT / "outputs",
                                token=_download_token())
 

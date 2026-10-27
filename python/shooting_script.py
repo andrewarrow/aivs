@@ -990,13 +990,14 @@ def _executable(executable) -> str:
 
 
 def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, response_path,
-                  on_activity, on_activity_delta, output_schema=None, image_paths=()):
+                  on_activity, on_activity_delta, output_schema=None, image_paths=(),
+                  image_generation=False, on_image=None, on_thread=None, bootstrap_cwd=None):
     """Use app-server notifications; exec --json only exposes completed text items."""
     timeout_seconds = max(0.0, deadline - time.monotonic())
     with events_path.open("wb") as events, \
             errors_path.open("wb") as errors, selectors.DefaultSelector() as selector:
         process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, cwd=cwd)
+                                   stderr=subprocess.PIPE, cwd=bootstrap_cwd or cwd)
         # A large screenplay must not block pipe draining while being sent.
         os.set_blocking(process.stdin.fileno(), False)
         outgoing = bytearray()
@@ -1036,6 +1037,8 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
                             stream(stream_id, text)
             elif kind == "commandExecution" and item_id not in streamed:
                 stream(item_id, item.get("aggregatedOutput") or "")
+            elif kind == "imageGeneration" and on_image is not None:
+                on_image(item)
 
         def fail(detail):
             raise RuntimeError(f"Codex request failed: {detail}")
@@ -1056,22 +1059,36 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
                 result = event.get("result", {})
                 if event["id"] == 1:
                     send({"method": "initialized", "params": {}})
-                    send({"id": 2, "method": "thread/start", "params": {
-                        "cwd": str(cwd), "approvalPolicy": "never", "sandbox": "read-only",
-                        "ephemeral": True, "serviceName": "aivs"}})
+                    thread_params = {
+                        "cwd": str(cwd), "approvalPolicy": "never",
+                        "sandbox": "workspace-write" if image_generation else "read-only",
+                        "ephemeral": True, "serviceName": "aivs"}
+                    if image_generation:
+                        thread_params["developerInstructions"] = (
+                            "Create the requested image using the built-in image generation tool. "
+                            "Use every supplied reference image. Do not use external APIs, substitute "
+                            "programmatic drawings, or delegate. Preserve all reference files. "
+                            "Generate exactly one image, then finish. Report unavailable image tools explicitly.")
+                    send({"id": 2, "method": "thread/start", "params": thread_params})
                 elif event["id"] == 2:
                     thread_id = result.get("thread", {}).get("id")
                     if not thread_id:
                         fail("Codex did not return a thread ID.")
+                    if on_thread is not None:
+                        on_thread(result)
                     on_activity("Codex connected.")
                     inputs = [{"type": "text", "text": instruction}]
                     inputs.extend({"type": "localImage", "path": str(Path(path).resolve())}
                                   for path in image_paths)
-                    send({"id": 3, "method": "turn/start", "params": {
+                    turn_params = {
                         "threadId": thread_id, "input": inputs,
                         "cwd": str(cwd), "approvalPolicy": "never",
-                        "sandboxPolicy": {"type": "readOnly"},
-                        "summary": "detailed", "outputSchema": output_schema or _SCHEMA}})
+                        "sandboxPolicy": ({"type": "workspaceWrite", "writableRoots": [str(cwd)],
+                                           "networkAccess": True} if image_generation else {"type": "readOnly"}),
+                        "summary": "detailed"}
+                    if not image_generation:
+                        turn_params["outputSchema"] = output_schema or _SCHEMA
+                    send({"id": 3, "method": "turn/start", "params": turn_params})
                 return
             params = event.get("params", {})
             item_id = params.get("itemId", "")
@@ -1092,6 +1109,8 @@ def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, 
                     phases[item.get("id", "")] = item.get("phase")
                 elif item.get("type") == "commandExecution":
                     on_activity(f"Codex running: {item.get('command', '')}")
+                elif item.get("type") == "imageGeneration":
+                    on_activity("Codex is generating the storyboard image")
             elif method == "item/completed":
                 complete_item(params.get("item", {}))
             elif method == "turn/completed":

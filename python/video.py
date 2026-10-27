@@ -66,7 +66,7 @@ def check(profile="hq"):
     models = "distilled and HQ" if profile == "hq" else "distilled"
     emit("progress", label=f"Checking cached {models} models, text encoder, and audio weights")
     model_path(profile=profile)
-    emit("progress", label="Checking local storyboard renderer and cached image weights")
+    emit("progress", label="Checking Codex storyboard image generation")
     storyboard_backend.check()
     emit("progress", label="Checking saved-character voice converter and cached voice weights")
     character_conditioning.check_voice_setup()
@@ -98,14 +98,14 @@ def download(profile="hq"):
 
     with project_lock(".setup.lock"):
         from quality_backend import preflight_download
-        emit("progress", label="Checking combined video and storyboard download space")
-        preflight_download(profile=profile, include_storyboard=True)
+        emit("progress", label="Checking Codex for storyboard image generation")
+        storyboard_backend.check()
+        emit("progress", label="Checking video model download space")
+        preflight_download(profile=profile)
         models = "distilled and HQ models" if profile == "hq" else "distilled model"
         size = "about 62 GB; " if profile == "hq" else ""
         emit("progress", label=f"Downloading LTX-2.5 {models} with audio ({size}cached files are reused)")
         model_path(download=True, progress_class=DownloadProgress, profile=profile)
-        emit("progress", label="Downloading local storyboard image model (cached files are reused)")
-        storyboard_backend.download()
     check(profile)
 
 

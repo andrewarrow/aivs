@@ -1,2 +1,0 @@
-# Isolated from the LTX/MLX environment: MFLUX needs newer MLX/Transformers.
-mflux==0.24.0

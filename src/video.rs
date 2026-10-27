@@ -14,10 +14,6 @@ use std::{
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/video.py");
 const REQUIREMENTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/requirements.txt");
-const STORYBOARD_REQUIREMENTS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/python/requirements-storyboard.txt"
-);
 const VOICE_SETUP: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/experiments/character-consistency/setup_voice_conversion.py"
@@ -192,32 +188,11 @@ impl Worker {
         let mut command = Command::new("uv");
         command.args(["pip", "sync", "--python", ".venv/bin/python", REQUIREMENTS]);
         self.run(command)?;
-        self.progress("Preparing Python 3.12 for local storyboard images");
-        let mut command = Command::new("uv");
-        command.args([
-            "venv",
-            "--python",
-            "3.12",
-            "--allow-existing",
-            ".venv-storyboard",
-        ]);
-        self.run(command)?;
-        self.progress("Installing the local storyboard image packages");
-        let mut command = Command::new("uv");
-        command.args([
-            "pip",
-            "install",
-            "--python",
-            ".venv-storyboard/bin/python",
-            "-r",
-            STORYBOARD_REQUIREMENTS,
-        ]);
-        self.run(command)?;
         self.progress("Preparing saved-character voices in the separate Seed-VC environment");
         let mut command = Command::new(self.root.join(".venv/bin/python"));
         command.args(["-u", VOICE_SETUP]);
         self.run(command)?;
-        self.progress("Downloading the storyboard, distilled, and HQ video models");
+        self.progress("Downloading the distilled and HQ video models");
         let output = self.run(self.python("download"))?;
         if output.needs_token {
             self.send(Event::NeedsToken);
@@ -743,7 +718,7 @@ impl VideoWorkspace {
                             ui.add(egui::ProgressBar::new(self.fraction.unwrap_or(0.0))
                                 .animate(self.fraction.is_none())
                                 .desired_width(width));
-                            ui.label("Setup checks combined space for video and storyboard models before downloading weights. Cached files are reused. Keep AIVS open.");
+                            ui.label("Setup checks space for the video models before downloading weights. Codex generates storyboard images. Cached files are reused. Keep AIVS open.");
                         }
                         self.error_ui(ui);
                         self.activity_ui(ui, 120.0);
