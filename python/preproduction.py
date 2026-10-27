@@ -34,7 +34,7 @@ def cache_key(request, profiles):
     directory = Path(__file__).resolve().parent
     files = ("shooting_script.py", "shooting-script-instructions.txt",
              "shooting-script-review-instructions.txt", "storyboard.py",
-             "storyboard_backend.py", "requirements-storyboard.txt", "render_formats.py",
+             "storyboard_backend.py", "prop_reference.py", "requirements-storyboard.txt", "render_formats.py",
              "preproduction.py", "storyboard_continuity.py")
     identity = {
         "source": shooting_script.parse_request(request, profiles)["source_sha256"],
@@ -126,7 +126,8 @@ def _repair_state(run_dir, source_sha256):
 
 
 def _finish_storyboard_repair(director, boards, state, request, profiles, run_dir, *,
-                              token_counter, on_activity):
+                              token_counter, on_activity, planning_budget_seconds=600,
+                              on_activity_delta=None):
     """Resume a reserved repair, then publish its plan and image bindings together.
 
     The journal stays pending until both artifacts are saved. If interrupted
@@ -144,7 +145,9 @@ def _finish_storyboard_repair(director, boards, state, request, profiles, run_di
     reference_ids = sorted({r for issue in repair["issues"] for r in issue.get("reference_ids", [])})
     library = storyboard.generate_references(revised, profiles, run_dir, repair["reference_seed"],
                                             repair_ids=reference_ids, round_number=round_number,
-                                            on_activity=on_activity)
+                                            on_activity=on_activity,
+                                            review_options={"planning_budget_seconds": planning_budget_seconds,
+                                                            "on_activity_delta": on_activity_delta})
     for issue in repair["issues"]:
         number = issue["shot"]
         entries[number - 1] = storyboard.regenerate_shot(
@@ -216,7 +219,8 @@ def _reserve_storyboard_repair(director, issues, state, seed, run_dir, *, boards
         changed = seen | {n for n, (a, b) in enumerate(zip(director["shots"], revised["shots"]), 1)
                           if storyboard.planned_shot_sha256(director, a) != storyboard.planned_shot_sha256(revised, b)}
         bad_refs = {r for issue in issues for r in issue.get("reference_ids", [])}
-        changed |= {e["shot"] for e in boards["shots"] if any(r.get("reference_id") in bad_refs
+        changed |= {e["shot"] for e in boards["shots"] if any(
+                    set(r.get("reference_ids", [r.get("reference_id")])) & bad_refs
                     for r in e.get("generation", {}).get("references", []))}
         affected = continuity.dependent_shots(boards, changed)
         issues = list(issues) + [{"shot": n, "issue": "Regenerate dependent image after upstream physical/composition repair.",
@@ -297,10 +301,13 @@ def prepare(request, profiles, run_dir, seed, *, token_counter=None,
         if repairs["rounds"][-1]["status"] == "pending":
             director, boards = _finish_storyboard_repair(
                 director, boards, repairs, request, profiles, run_dir,
-                token_counter=token_counter, on_activity=activity)
+                token_counter=token_counter, on_activity=activity,
+                planning_budget_seconds=planning_budget_seconds, on_activity_delta=on_activity_delta)
         storyboard.prepare(director, boards, run_dir)
     else:
-        boards = storyboard.generate(director, profiles, run_dir, seed, on_activity=activity)
+        boards = storyboard.generate(director, profiles, run_dir, seed, on_activity=activity,
+                                     review_options={"planning_budget_seconds": planning_budget_seconds,
+                                                     "on_activity_delta": on_activity_delta})
     storyboard_seconds = round(time.monotonic() - started, 3)
     while True:
         try:
@@ -318,7 +325,8 @@ def prepare(request, profiles, run_dir, seed, *, token_counter=None,
             started = time.monotonic()
             director, boards = _finish_storyboard_repair(
                 director, boards, repairs, request, profiles, run_dir,
-                token_counter=token_counter, on_activity=activity)
+                token_counter=token_counter, on_activity=activity,
+                planning_budget_seconds=planning_budget_seconds, on_activity_delta=on_activity_delta)
             storyboard_seconds += round(time.monotonic() - started, 3)
     boards = rebind_storyboards(director, plan, boards, run_dir)
     _save(run_dir / "storyboards.json", boards)

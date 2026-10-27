@@ -117,11 +117,21 @@ FLUX.2 Klein generates reusable empty environment plates, important prop
 references and full-body references for known morphology, then one still per
 shot. Only characters visible at time zero supply actor references. Earlier
 character-filled shots are never used as setting references. It runs through
-MFLUX in its own Python environment. Visible opening facts (costume, exposed body
-traits, prop geometry, components and ownership) enter the actual image prompt;
-concealed traits stay private. The worker preserves these facts within the
-512-token limit, shortening composition prose when necessary and recording the
-effective prompt. The image worker exits before LTX loads. Python validates
+MFLUX in its own Python environment. Canonical props use centered, evenly lit
+product photographs. Before any prop reference can condition a storyboard, Codex
+inspects the actual pixels for exact component counts, extra parts, coherent
+assembly and clear connections. Failed or ambiguous references regenerate with
+the observed defects as feedback, up to three images per reference. Inspection
+receipts bind the definition, reviewer and image bytes; Resume reuses accepted
+receipts and preserves failed attempts. These inspections share the planning budget.
+Visible opening facts (costume, exposed body traits, components and ownership)
+enter the actual image prompt; concealed traits stay private. When a detailed
+state exceeds the 512-token budget, accepted reference images carry unchanged
+prop geometry, identical simple props share a design image, and current state
+and connections remain explicit. Optional composition prose is shortened only
+after that compaction, and the effective prompt is recorded. Changed references
+or prompt inputs regenerate dependent frames, preserving superseded images and
+their provenance. The image worker exits before LTX loads. Python validates
 source coverage, exact dialogue, timing,
 and prompt limits. The final shooting script and storyboard checksums are bound
 together with an accepted `storyboard-review.json`. The renderer and Resume

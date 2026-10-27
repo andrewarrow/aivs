@@ -141,12 +141,13 @@ def download() -> None:
 
 
 def generate(prompt: str, references: list[Path], output: Path, seed: int, *,
-             width: int, height: int, composition: str | None = None, on_activity=None) -> dict:
+             width: int, height: int, composition: str | None = None,
+             compact_prompt: str | None = None, on_activity=None) -> dict:
     """Render exactly one still; the subprocess exits before LTX loads weights."""
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite storyboard image: {output}")
     payload = {"prompt": prompt, "references": [str(path.resolve()) for path in references],
-               "composition": composition, "output": str(output.resolve()),
+               "composition": composition, "compact_prompt": compact_prompt, "output": str(output.resolve()),
                "seed": seed, "width": width, "height": height}
     return _worker("generate", payload, on_activity=on_activity,
                    log_file=output.with_suffix(".log"))
@@ -166,33 +167,41 @@ def _identity() -> dict:
             ("mflux", "mlx", "transformers", "huggingface-hub", "Pillow")}}
 
 
-def _fit_prompt(tokenizer, prompt, composition=None):
-    """Fit optional composition prose while retaining every compiled state fact."""
+def _fit_prompt(tokenizer, prompt, composition=None, compact_prompt=None):
+    """Use accepted reference geometry to budget state, then fit composition prose."""
     def count(value):
         formatted = tokenizer.apply_chat_template([{"role": "user", "content": value}],
                                                    tokenize=False, add_generation_prompt=True,
                                                    enable_thinking=False)
         return len(tokenizer.encode(formatted, add_special_tokens=True, truncation=False))
 
+    candidate = prompt + ("\nComposition: " + composition if composition else "")
+    if compact_prompt is not None and count(candidate) > 512 and count(compact_prompt) < count(prompt):
+        prompt = compact_prompt
     required_tokens = count(prompt)
     if required_tokens > 512:
         raise ValueError(f"Essential storyboard state needs {required_tokens} tokens; simplify the visible composition to fit 512.")
     if composition is None:
         return prompt, required_tokens, False
     words = composition.split()
-    # Only remove whole words from the optional prose. The structured state,
-    # role exclusions, reference mapping and concealment rules are immutable.
+    # Only shorten optional prose. Counts, role exclusions, reference mapping,
+    # ownership, placement and concealment rules are never token-truncated.
     candidate = prompt + "\nComposition: " + composition
     tokens = count(candidate)
     if tokens <= 512:
         return candidate, tokens, False
-    while words:
-        words.pop()
-        candidate = prompt + "\nComposition: " + " ".join(words)
+    low, high = 0, len(words)
+    best, best_tokens = prompt, required_tokens
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = prompt + ("\nComposition: " + " ".join(words[:middle]) if middle else "")
         tokens = count(candidate)
-        if words and tokens <= 512:
-            return candidate, tokens, True
-    raise ValueError("Essential storyboard state leaves no room for composition; simplify the visible composition.")
+        if tokens <= 512:
+            best, best_tokens = candidate, tokens
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best, best_tokens, True
 
 
 def _generate(payload: dict) -> dict:
@@ -206,7 +215,8 @@ def _generate(payload: dict) -> dict:
         raise FileExistsError(f"Storyboard output already exists: {output}")
     started = time.monotonic()
     tokenizer = Qwen2TokenizerFast.from_pretrained(str(_snapshot() / "tokenizer"), local_files_only=True)
-    prompt, token_count, shortened = _fit_prompt(tokenizer, payload["prompt"], payload.get("composition"))
+    prompt, token_count, shortened = _fit_prompt(tokenizer, payload["prompt"], payload.get("composition"),
+                                                payload.get("compact_prompt"))
     if shortened:
         print("Shortened composition prose to preserve essential opening state within 512 tokens.", flush=True)
     # The edit pipeline concatenates reference latents unconditionally. Empty
@@ -226,6 +236,7 @@ def _generate(payload: dict) -> dict:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     return {**identity, "pipeline": "reference-edit" if has_references else "text-to-image",
             "prompt": prompt, "prompt_tokens": token_count, "composition_shortened": shortened,
+            "state_compacted": bool(payload.get("compact_prompt") and prompt.startswith(payload["compact_prompt"])),
             "elapsed_seconds": round(time.monotonic() - started, 3), "sha256": digest}
 
 
