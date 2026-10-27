@@ -11,9 +11,12 @@ _ASSET_NAMES = {"image": "reference.png", "scene_image": "scene-reference.png", 
 
 
 def _digest(path: Path) -> str:
-    # Inference workers also use this helper without starting a controller.
+    # Seed-VC workers use Python 3.10, which lacks hashlib.file_digest.
+    digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _validate_asset_record(record, expected_filename, directory, label) -> Path:
