@@ -3,6 +3,13 @@ use std::path::PathBuf;
 use super::{App, AppCommand};
 use crate::{project::Project, screenplay::Screenplay};
 
+#[derive(Clone, Copy)]
+pub(crate) enum SaveChangesChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
 pub(super) enum ProjectAction {
     New,
     Open(PathBuf),
@@ -137,6 +144,45 @@ impl App {
         if self.pending_project_action.is_none() {
             return;
         }
+        #[cfg(target_os = "macos")]
+        let choice = {
+            let can_save = !self.busy && (!self.project.is_untitled() || !self.video.has_job());
+            let choice = crate::macos::confirm_save_changes(&self.project.name(), can_save);
+            // AppKit runs its own modal loop; redraw after it returns.
+            ctx.request_repaint();
+            Some(choice)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let choice = self.save_changes_ui(ctx);
+        match choice {
+            Some(SaveChangesChoice::Save) => match self.save_project(false) {
+                Ok(true) => {
+                    if let Some(action) = self.pending_project_action.take() {
+                        self.perform_project_action(action);
+                    }
+                }
+                Ok(false) => self.pending_project_action = None,
+                Err(error) => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.pending_project_action = None;
+                        crate::macos::show_error("Could not save project", &error);
+                    }
+                    self.import_error = Some(error);
+                }
+            },
+            Some(SaveChangesChoice::Discard) => {
+                if let Some(action) = self.pending_project_action.take() {
+                    self.perform_project_action(action);
+                }
+            }
+            Some(SaveChangesChoice::Cancel) => self.pending_project_action = None,
+            None => {}
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn save_changes_ui(&self, ctx: &egui::Context) -> Option<SaveChangesChoice> {
         let mut choice = None;
         egui::Modal::new(egui::Id::new("save_project_changes")).show(ctx, |ui| {
             ui.set_max_width((ctx.content_rect().width() - 64.0).clamp(240.0, 400.0));
@@ -153,36 +199,19 @@ impl App {
                     .on_disabled_hover_text("Stop the current job before saving this project.")
                     .clicked()
                 {
-                    choice = Some(0);
+                    choice = Some(SaveChangesChoice::Save);
                 }
                 if ui.button("Don't Save").clicked() {
-                    choice = Some(1);
+                    choice = Some(SaveChangesChoice::Discard);
                 }
                 if ui.button("Cancel").clicked() {
-                    choice = Some(2);
+                    choice = Some(SaveChangesChoice::Cancel);
                 }
             });
         });
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            choice = Some(2);
+            choice = Some(SaveChangesChoice::Cancel);
         }
-        match choice {
-            Some(0) => match self.save_project(false) {
-                Ok(true) => {
-                    if let Some(action) = self.pending_project_action.take() {
-                        self.perform_project_action(action);
-                    }
-                }
-                Ok(false) => {}
-                Err(error) => self.import_error = Some(error),
-            },
-            Some(1) => {
-                if let Some(action) = self.pending_project_action.take() {
-                    self.perform_project_action(action);
-                }
-            }
-            Some(2) => self.pending_project_action = None,
-            _ => {}
-        }
+        choice
     }
 }

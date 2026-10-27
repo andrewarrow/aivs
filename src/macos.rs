@@ -275,3 +275,46 @@ fn menu_item(
         )
     }
 }
+
+/// Use AppKit for standard alerts so layout, appearance, and keyboard behavior
+/// follow the user's macOS settings, just like the native file panels.
+pub(crate) fn confirm_save_changes(
+    project_name: &str,
+    can_save: bool,
+) -> crate::app::projects::SaveChangesChoice {
+    use crate::app::projects::SaveChangesChoice;
+    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn};
+
+    let main_thread = MainThreadMarker::new().expect("Alerts require the main thread");
+    let alert = NSAlert::new(main_thread);
+    alert.setMessageText(&NSString::from_str(&format!(
+        "Save changes to “{project_name}”?"
+    )));
+    let message = if can_save {
+        "Your unsaved changes will be lost if you don’t save them."
+    } else {
+        "Your unsaved changes will be lost if you don’t save them. To save, cancel and stop the current job first."
+    };
+    alert.setInformativeText(&NSString::from_str(message));
+    let save = alert.addButtonWithTitle(ns_string!("Save"));
+    save.setEnabled(can_save);
+    alert.addButtonWithTitle(ns_string!("Don’t Save"));
+    alert.addButtonWithTitle(ns_string!("Cancel"));
+    match alert.runModal() {
+        response if response == NSAlertFirstButtonReturn && can_save => SaveChangesChoice::Save,
+        response if response == NSAlertSecondButtonReturn => SaveChangesChoice::Discard,
+        _ => SaveChangesChoice::Cancel,
+    }
+}
+
+pub(crate) fn show_error(title: &str, message: &str) {
+    use objc2_app_kit::{NSAlert, NSAlertStyle};
+
+    let main_thread = MainThreadMarker::new().expect("Alerts require the main thread");
+    let alert = NSAlert::new(main_thread);
+    alert.setAlertStyle(NSAlertStyle::Warning);
+    alert.setMessageText(&NSString::from_str(title));
+    alert.setInformativeText(&NSString::from_str(message));
+    alert.addButtonWithTitle(ns_string!("OK"));
+    alert.runModal();
+}
