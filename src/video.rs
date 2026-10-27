@@ -633,19 +633,26 @@ impl VideoWorkspace {
                 self.fraction = Some(1.0);
                 self.remaining_seconds = None;
                 self.playback_error = None;
-                self.output_aspect = path
+                let report = path
                     .parent()
                     .and_then(|directory| std::fs::read(directory.join("render.json")).ok())
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                self.output_aspect = report
+                    .as_ref()
                     .and_then(|report| {
                         let width = report["width"].as_u64()?;
                         let height = report["height"].as_u64()?;
                         (width > 0 && height > 0).then_some(width as f32 / height as f32)
                     })
                     .unwrap_or(16.0 / 9.0);
+                self.status = match report.as_ref().and_then(|report| report["status"].as_str()) {
+                    Some("complete") => "Video ready.",
+                    Some("rendered-with-issues") => "Video rendered; visual issues need review.",
+                    _ => "Video rendered; visual review is incomplete.",
+                }
+                .into();
                 self.output = Some(path);
                 self.reveal_output = true;
-                self.status = "Video ready.".into();
                 return true;
             }
             Event::Failed(error) => {

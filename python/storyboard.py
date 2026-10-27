@@ -136,6 +136,73 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
             "width": width, "height": height, "backend": storyboard_backend.configuration()}
 
 
+def regenerate_shot(plan: dict, profiles: list[dict], run_dir: Path, seed: int,
+                    shot_index: int, *, reason: str, directory: Path,
+                    prior_image=None, on_activity=None) -> dict:
+    """Generate a repaired first frame without overwriting any approved image.
+
+    The caller owns the attempt limit and publication of the returned binding.
+    A request-bound checkpoint lets Resume finish an interrupted repair without
+    changing its seed or discarding a completed image.
+    """
+    activity = on_activity or (lambda message: None)
+    run_dir = Path(run_dir).resolve()
+    directory = Path(directory).resolve()
+    if not directory.is_relative_to(run_dir) or directory == run_dir:
+        raise ValueError("Repaired storyboard images must stay inside the run directory.")
+    if type(shot_index) is not int or not 0 <= shot_index < len(plan["shots"]):
+        raise ValueError("Invalid storyboard repair shot index.")
+    if type(seed) is not int or not isinstance(reason, str) or not reason.strip():
+        raise ValueError("Storyboard repair requires a seed and a concrete reason.")
+    characters.verify_snapshots(profiles, run_dir)
+    shot = plan["shots"][shot_index]
+    spec = resolve_format(plan["render_format"]) if "render_format" in plan else None
+    width, height = ((spec["model_width"], spec["model_height"]) if spec else
+                     (quality_backend.WIDTH, quality_backend.HEIGHT))
+    request = _frame_request(plan, shot, profiles, run_dir, prior_image, shot_index + 1,
+                             seed, width, height)
+    request["repair_reason"] = reason
+    request_hash = _fingerprint(request)
+    fingerprint = planned_shot_sha256(plan, shot)
+    directory.mkdir(parents=True, exist_ok=True)
+    checkpoint = directory / "storyboard.json"
+    if checkpoint.is_file():
+        entry = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if (not isinstance(entry, dict) or entry.get("generation_sha256") != request_hash
+                or entry.get("generation") != request
+                or entry.get("planned_shot_sha256") != fingerprint
+                or entry.get("shot") != shot_index + 1):
+            raise ValueError("Saved storyboard repair belongs to different inputs.")
+        resolve_image(entry, run_dir)
+        activity(f"Reusing repaired storyboard {shot_index + 1}")
+        return entry
+    backend = storyboard_backend.check()
+    _save(directory / "request.json", request)
+    target, partial = directory / "frame.png", directory / "frame.partial.png"
+    # Preserve evidence if a worker was interrupted before committing its row.
+    for orphan in (partial, target):
+        if orphan.exists():
+            import time
+            orphan.rename(orphan.with_name(f"{orphan.stem}.interrupted-{time.time_ns()}{orphan.suffix}"))
+    references = [resolve_image({"image": reference}, run_dir) for reference in request["references"]]
+    activity(f"Regenerating storyboard {shot_index + 1}: {reason}")
+    runtime = storyboard_backend.generate(request["prompt"], references, partial, request["seed"],
+                                          width=width, height=height, on_activity=activity)
+    info = quality_backend.prepare_source_image(partial)
+    if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):
+        raise ValueError("Repaired storyboard has unexpected image dimensions or bytes.")
+    for reference in request["references"]:
+        resolve_image({"image": reference}, run_dir)
+    partial.replace(target)
+    entry = {"shot": shot_index + 1, "planned_shot_sha256": fingerprint,
+             "generation_sha256": request_hash, "generation": request, "runtime": runtime,
+             "backend": backend,
+             "image": {"file": target.relative_to(run_dir).as_posix(),
+                       "sha256": info["source_sha256"], "width": width, "height": height}}
+    _save(checkpoint, entry)
+    return entry
+
+
 def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *, on_activity=None) -> dict:
     """Create one independent first frame per shot, retaining completed frames.
 

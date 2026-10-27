@@ -261,14 +261,15 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
                 on_activity=lambda message: emit("activity", message=message),
                 on_activity_delta=lambda stream_id, delta: emit("activity_delta", id=stream_id, delta=delta),
             )
-            report.update(status="complete", sha256=hashlib.sha256(output.read_bytes()).hexdigest())
+            report.update(status=report["runtime"].get("status", "rendered-needs-review"),
+                          sha256=hashlib.sha256(output.read_bytes()).hexdigest())
             save()
         except BaseException as exc:
             report.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
                           error=str(exc) or type(exc).__name__)
             save()
             raise
-        emit("complete", output=str(output))
+        emit("complete", output=str(output), status=report["status"])
 
 
 def resume_screenplay(directory, *, planning_budget_seconds=None):
@@ -314,9 +315,11 @@ def resume_screenplay(directory, *, planning_budget_seconds=None):
             raise ValueError("Planning budget must be an integer between 60 and 86400 seconds.")
         uses_storyboards = request.get("storyboard_policy") == STORYBOARD_POLICY
         output = run_dir / "video.mp4"
-        if (report.get("status") == "complete" and output.is_file()
+        if (report.get("status") == "complete"
+                and isinstance(report.get("runtime"), dict)
+                and report["runtime"].get("status") == "complete" and output.is_file()
                 and report.get("sha256") == hashlib.sha256(output.read_bytes()).hexdigest()):
-            emit("complete", output=str(output))
+            emit("complete", output=str(output), status=report["status"])
             return
 
         check_environment()
@@ -381,14 +384,15 @@ def resume_screenplay(directory, *, planning_budget_seconds=None):
                 on_activity=lambda message: emit("activity", message=message),
                 on_activity_delta=lambda stream_id, delta: emit("activity_delta", id=stream_id, delta=delta),
             )
-            report.update(status="complete", sha256=hashlib.sha256(output.read_bytes()).hexdigest())
+            report.update(status=report["runtime"].get("status", "rendered-needs-review"),
+                          sha256=hashlib.sha256(output.read_bytes()).hexdigest())
             save()
         except BaseException as exc:
             report.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
                           error=str(exc) or type(exc).__name__)
             save()
             raise
-        emit("complete", output=str(output))
+        emit("complete", output=str(output), status=report["status"])
 
 
 def main():

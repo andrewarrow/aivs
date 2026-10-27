@@ -175,7 +175,18 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
         return False
     if saved.get("character_assets") != report.get("character_assets"):
         return False
-    if saved.get("storyboard") != report.get("storyboard"):
+    if (saved.get("planned_storyboard", saved.get("storyboard")) !=
+            report.get("planned_storyboard", report.get("storyboard"))):
+        return False
+    adapted_storyboard = saved.get("storyboard") != report.get("storyboard")
+    if adapted_storyboard and (
+            not isinstance(saved.get("storyboard"), dict)
+            or saved.get("adaptation", {}).get("status") != "applied"
+            or saved["storyboard"].get("image", {}).get("sha256") !=
+            saved.get("continuity", {}).get("source_image_sha256")):
+        return False
+    if (saved.get("adaptation", {}).get("status") == "applied"
+            and saved["adaptation"].get("source_clip_sha256") != report.get("observed_source_clip_sha256")):
         return False
     if saved.get("render_config") != report.get("render_config"):
         return False
@@ -204,6 +215,7 @@ def _matches_saved_take(saved: dict, report: dict, clip: Path,
     if not isinstance(continuity, dict) or any(
         continuity.get(key) != report["continuity"].get(key)
         for key in ("conditioning", "source_shot", "source_frame", "source_image_sha256")
+        if key != "source_image_sha256" or not adapted_storyboard
     ):
         return False
     if previous_clip is not None:
@@ -314,8 +326,9 @@ def render_shooting_script(
     before any new video inference. Generated dialogue is trusted; no speech
     recognizer or transcript comparison participates in rendering or resume.
     Every saved take remains available. New plans use automated visual evidence
-    to adapt only unrendered shots. Neither a quality issue nor unavailable review
-    starts another video inference or asks for human approval.
+    to adapt only unrendered shots, including their independent storyboard frames.
+    Issues and unavailable reviews remain explicit in the returned production status;
+    neither starts another video inference or asks for human approval.
     New GUI runs pass ``character_profiles`` to anchor eligible scene openings
     with saved portraits and convert single-speaker audio to saved voice samples.
     Native picture checkpoints make interrupted conversion resumable separately.
@@ -431,17 +444,36 @@ def render_shooting_script(
                 "scene_id": shot.get("scene_id"),
                 "continuity": continuity,
                 **({"character_assets": assets} if assets is not None else {}),
-                **({"storyboard": frame_binding} if frame_binding is not None else {}),
+                **({"storyboard": frame_binding, "planned_storyboard": frame_binding,
+                    "storyboard_prompt": shot.get("storyboard_prompt")}
+                   if frame_binding is not None else {}),
                 **({"render_config": render_config} if render_config is not None else {}),
             }
             if automatic_review:
                 report.update(planned_prompt=planned_shot["prompt"],
                               planned_shot_sha256=_planned_shot_sha256(plan, planned_shot),
-                              prompt_template=shot["prompt_template"])
+                              prompt_template=shot["prompt_template"],
+                              observed_source_clip_sha256=summaries[-1]["sha256"] if summaries else None)
 
             reused = False
             saved = _saved_report(shot_dir)
             report_committed = False
+
+            def restore_storyboard(candidate):
+                nonlocal frame_binding, image_file
+                binding = candidate.get("storyboard")
+                if binding is None or binding == frame_binding:
+                    return
+                execution_shot = dict(planned_shot, prompt=candidate["prompt"],
+                                      prompt_template=candidate["prompt_template"],
+                                      storyboard_prompt=candidate["storyboard_prompt"])
+                if binding.get("planned_shot_sha256") != _planned_shot_sha256(plan, execution_shot):
+                    raise ValueError("Saved adapted storyboard belongs to different execution directions.")
+                image_file = storyboard_assets.resolve_image(binding, output.parent)
+                frame_binding = binding
+                shot["storyboard_prompt"] = candidate["storyboard_prompt"]
+                report.update(storyboard=binding, storyboard_prompt=shot["storyboard_prompt"])
+                continuity.update(source_image=str(image_file), source_image_sha256=binding["image"]["sha256"])
 
             def save_failure(status, error=None):
                 # Verification must not relabel old footage with the seed and
@@ -501,6 +533,7 @@ def render_shooting_script(
                             emit_progress(last_fraction,
                                           f"Shot {index + 1}/{total_shots}: Checking saved take {candidate.get('take', 1)}")
                             validate_video(candidate_clip, frames, width, height, expect_audio=True)
+                            restore_storyboard(candidate)
                         except (ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as exc:
                             failures.append((candidate_dir, candidate, exc))
                             continue
@@ -555,6 +588,7 @@ def render_shooting_script(
                         # An interruption during text planning did not consume a
                         # video take. Keep its seed, frame and adaptation cache.
                         report.update(take=saved.get("take", 1), seed=saved["seed"])
+                        restore_storyboard(saved)
                         if reuse_native:
                             report.update(runtime=saved["runtime"], native_sha256=saved["native_sha256"])
                         if automatic_review:
@@ -580,7 +614,7 @@ def render_shooting_script(
                     save_shot(index, report)
                     if use_previous_frame and not reuse_native:
                         _extract_last_frame(previous_clip, source_frame, image_file)
-                    if (automatic_review and use_previous_frame and visual_reviews and not reuse_native
+                    if (automatic_review and _uses_previous_frame(shots, index) and visual_reviews and not reuse_native
                             and not (pending and report.get("adaptation", {}).get("status") in ("applied", "unchanged"))):
                         emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Reconciling observed continuity")
                         try:
@@ -590,11 +624,46 @@ def render_shooting_script(
                                 execution_plan, index, visual_reviews[-1], shot_dir / "adaptation",
                                 token_counter=token_counter, on_activity=activity,
                                 on_activity_delta=on_activity_delta,
+                                storyboard_mode=frame_binding is not None,
                             )
                             if (not isinstance(adapted, dict)
                                     or any(not isinstance(adapted.get(key), str) or not adapted[key].strip()
                                            for key in ("prompt", "prompt_template"))):
                                 raise ValueError("Continuity adaptation returned no valid directions")
+                            if frame_binding is not None and adapted.get("adaptation", {}).get("status") == "applied":
+                                if character_profiles is None:
+                                    raise ValueError("Storyboard adaptation needs the saved character profiles.")
+                                frame_shot = {key: value for key, value in adapted.items() if key != "adaptation"}
+                                frame_plan = dict(execution_plan, shots=list(execution_plan["shots"]))
+                                frame_plan["shots"][index] = frame_shot
+                                frame_key = hashlib.sha256(json.dumps(
+                                    [frame_shot, summaries[-1]["sha256"]], sort_keys=True).encode()).hexdigest()
+                                directory = output.parent / "storyboard-adaptations" / f"{index + 1:03d}" / frame_key
+                                evidence = visual_reviews[-1].get("evidence", {})
+                                prior_frame = evidence.get("full_final_frame", evidence.get("final_frame"))
+                                prior = None
+                                if prior_frame and Path(prior_frame).is_file():
+                                    prior_path = Path(prior_frame).resolve()
+                                    prior = {"image": {"file": prior_path.relative_to(output.parent.resolve()).as_posix(),
+                                                       "sha256": _file_sha256(prior_path)}}
+                                replacement = storyboard_assets.regenerate_shot(
+                                    frame_plan, character_profiles, output.parent, seed, index,
+                                    reason=adapted["adaptation"]["reason"], directory=directory,
+                                    prior_image=prior, on_activity=activity,
+                                )
+                                replacement_image = storyboard_assets.resolve_image(replacement, output.parent)
+                                checked = review_backend.review_adapted_storyboard(
+                                    execution_plan, index, adapted, visual_reviews[-1], replacement_image,
+                                    directory / "visual-review", on_activity=activity,
+                                    on_activity_delta=on_activity_delta,
+                                )
+                                if not checked["approved"]:
+                                    raise ValueError("Regenerated storyboard was rejected: " + checked["source_preservation"])
+                                adapted["adaptation"]["storyboard_review"] = checked
+                                frame_binding, image_file = replacement, replacement_image
+                                report.update(storyboard=frame_binding, storyboard_prompt=adapted["storyboard_prompt"])
+                                continuity.update(source_image=str(image_file),
+                                                  source_image_sha256=frame_binding["image"]["sha256"])
                             shot = adapted
                         except Exception as exc:
                             shot = dict(shot, adaptation={"status": "unavailable", "reason": str(exc)})
@@ -658,7 +727,10 @@ def render_shooting_script(
                         activity(f"Shot {index + 1}: {observed.get('summary', 'Visual assessment unavailable.')} "
                                  "Keeping this take under the single-render policy.")
                 report.pop("error", None)
-                report.update(status="complete")
+                shot_status = ("rendered-with-issues" if automatic_review and observed["status"] == "issues_detected"
+                               else "rendered-needs-review" if automatic_review and observed["status"] == "unavailable"
+                               else "complete")
+                report.update(status=shot_status)
                 clips.append(clip)
                 summaries.append({
                     "index": index,
@@ -667,11 +739,12 @@ def render_shooting_script(
                     "seed": report["seed"],
                     "take": report["take"],
                     "seconds": shot["seconds"],
-                    "status": "complete",
+                    "status": shot_status,
                     "runtime": runtime,
                     "continuity": continuity,
                     "sha256": report["sha256"],
-                    **({key: report[key] for key in ("character_assets", "storyboard", "render_config", "native_sha256", "voice_conversion")
+                    **({key: report[key] for key in ("character_assets", "storyboard", "planned_storyboard",
+                                                   "storyboard_prompt", "render_config", "native_sha256", "voice_conversion")
                         if key in report}),
                     **({key: report[key] for key in (
                         "planned_prompt", "planned_shot_sha256", "prompt_template", "adaptation",
@@ -718,7 +791,13 @@ def render_shooting_script(
     except KeyboardInterrupt:
         raise
 
+    review_statuses = [item.get("status") for item in visual_reviews]
+    if scene_review is not None:
+        review_statuses.append(scene_review.get("status"))
+    status = ("rendered-with-issues" if "issues_detected" in review_statuses
+              else "rendered-needs-review" if "unavailable" in review_statuses else "complete")
     return {
+        "status": status,
         "backend": "mlx",
         "pipeline": "directed-shots",
         "output_frames": total_frames,
