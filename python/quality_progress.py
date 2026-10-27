@@ -215,7 +215,7 @@ def decoder_activity(progress):
 
 
 @contextmanager
-def pipeline_activity(pipeline, progress):
+def pipeline_activity(pipeline, progress, *, profile="distilled"):
     """Observe existing sync points without changing tensors or GPU scheduling.
 
     These hooks target RUNTIME_REVISION in quality_backend.py. Restore them on
@@ -229,7 +229,13 @@ def pipeline_activity(pipeline, progress):
     steps = 0
     step_started = 0.0
     stage_started = 0.0
-    original_loop = pipeline._run_denoise_loop
+    hq = profile == "hq"
+    if hq:
+        from ltx_pipelines_mlx import ti2vid_two_stages_hq
+        loop_owner, loop_name = ti2vid_two_stages_hq, "res2s_denoise_loop"
+    else:
+        loop_owner, loop_name = pipeline, "_run_denoise_loop"
+    original_loop = getattr(loop_owner, loop_name)
     original_bind = BlockStreamer.bind
     original_tqdm = samplers.tqdm
 
@@ -245,7 +251,9 @@ def pipeline_activity(pipeline, progress):
             f"{label}: loading transformer block {idx + 1}/{streamer.block_count} "
             f"from disk ({idx} blocks completed)", level=3,
         )
-        if steps and streamer.block_count:
+        # HQ repeats blocks for several guidance passes and two evaluations
+        # per step. Only its native step callback advances completed work.
+        if not hq and steps and streamer.block_count:
             progress.completed((step - 1 + idx / streamer.block_count) / steps)
         result = original_bind(streamer, block, idx, *args, **kwargs)
         with progress._lock:
@@ -255,9 +263,14 @@ def pipeline_activity(pipeline, progress):
     def denoise_loop(**kwargs):
         nonlocal stage, step, steps, step_started, stage_started
         stage += 1
-        step = 0
-        steps = len(kwargs["sigmas"]) - 1
+        step = 1
+        full_steps = len(kwargs["sigmas"]) - 1
+        terminal = int(hq and kwargs["sigmas"][-1] == 0)
+        steps = full_steps + terminal
+        evaluations = 2 if hq else 1
+        total_work = full_steps * evaluations + terminal
         stage_started = time.monotonic()
+        step_started = stage_started
         progress.activity(f"Stage {stage}/2 denoising: 0% — {steps} steps")
         with progress._lock:
             if progress.estimate is not None:
@@ -265,29 +278,35 @@ def pipeline_activity(pipeline, progress):
         video_tokens = kwargs["video_state"].latent.shape[1]
         audio_tokens = kwargs["audio_state"].latent.shape[1]
         progress.log(f"Stage {stage}/2: {video_tokens:,} video + {audio_tokens:,} audio tokens per step", level=2)
-        model = kwargs["model"]
-        on_step = kwargs["on_step"]
-
-        def forward(*args, **model_kwargs):
-            nonlocal step, step_started
-            step += 1
-            step_started = time.monotonic()
-            progress.activity(f"Stage {stage}/2: starting step {step}/{steps}")
-            return model(*args, **model_kwargs)
+        on_step = kwargs.get("on_step")
 
         def step_done(index, total, *args):
+            nonlocal step, step_started
             if on_step is not None:
                 on_step(index, total, *args)
             elapsed = time.monotonic() - stage_started
-            remaining = elapsed / (index + 1) * (total - index - 1)
-            progress.completed((index + 1) / total)
+            # res2s includes a final single-evaluation denoise after the
+            # configured two-evaluation steps. It is real remaining work.
+            fraction = min((index + 1) * evaluations, total_work) / total_work
+            remaining = elapsed / fraction * (1 - fraction)
+            progress.completed(fraction)
             progress.activity(
-                f"Stage {stage}/2 denoising: {(index + 1) / total:.0%} — "
+                f"Stage {stage}/2 denoising: {fraction:.0%} — "
                 f"step {index + 1}/{total} complete in {time.monotonic() - step_started:.1f}s; "
                 f"stage ETA ~{remaining:.0f}s (excludes later stages)"
             )
+            step = min(index + 2, total)
+            step_started = time.monotonic()
 
-        return original_loop(**{**kwargs, "model": forward, "on_step": step_done})
+        result = original_loop(**{**kwargs, "on_step": step_done})
+        with progress._lock:
+            if progress.estimate is not None:
+                progress.estimate.finish(f"stage{stage}")
+                if hq and stage == 1:
+                    label = "Upscaling video and preparing full-resolution refinement"
+                    progress.activity(label)
+                    progress.estimate.start("upscale", label)
+        return result
 
     def phase_wrapper(method, label, key):
         def wrapped(*args, **kwargs):
@@ -299,13 +318,23 @@ def pipeline_activity(pipeline, progress):
         stack.enter_context(decoder_activity(progress))
         stack.enter_context(patch.object(samplers, "tqdm", no_bar))
         stack.enter_context(patch.object(BlockStreamer, "bind", bind))
-        stack.enter_context(patch.object(pipeline, "_run_denoise_loop", denoise_loop))
-        for name, label, key in (
+        stack.enter_context(patch.object(loop_owner, loop_name, denoise_loop))
+        phases = (
             ("_stage1", "Encoding prompt and preparing initial video/audio", "prompt"),
             ("_upsample_latent", "Upscaling video latents 2×", "upscale"),
             ("_stage2", "Preparing full-resolution refinement", "refine"),
             ("_load_decoders", "Loading video/audio decoders", "decoders"),
             ("_decode_and_save_video", "Decoding frames, generating audio, and writing native MP4", "decode"),
-        ):
+        )
+        if hq:
+            # HQ encodes and prepares its latents inline, then calls the
+            # module's res2s sampler twice. Decoder methods are shared.
+            phases = phases[-2:]
+            label = "Encoding prompt and preparing initial video/audio"
+            progress.activity(label)
+            with progress._lock:
+                if progress.estimate is not None:
+                    progress.estimate.start("prompt", label)
+        for name, label, key in phases:
             stack.enter_context(patch.object(pipeline, name, phase_wrapper(getattr(pipeline, name), label, key)))
         yield

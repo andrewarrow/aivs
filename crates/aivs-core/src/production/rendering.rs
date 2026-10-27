@@ -1,15 +1,35 @@
 use super::*;
 use crate::{character_conditioning, inference, media, render_formats, shot_renderer, storyboard};
 use std::time::Instant;
+
+#[derive(Default)]
+struct RenderProgress {
+    fraction: f64,
+    estimate: Option<(Instant, f64)>,
+}
+
+impl RenderProgress {
+    fn event(&mut self, fraction: f64, label: String, remaining: Option<f64>) -> Value {
+        self.fraction = fraction.min(0.99).max(self.fraction);
+        if let Some(seconds) = remaining {
+            self.estimate = Some((Instant::now(), seconds));
+        }
+        let remaining = self
+            .estimate
+            .map(|(at, seconds)| seconds - at.elapsed().as_secs_f64())
+            .filter(|seconds| *seconds > 0.0);
+        json!({"type":"render_progress","data":{"label":label,"fraction":self.fraction,"remaining_seconds":remaining}})
+    }
+}
+
 fn progress(
     ctx: &mut Context<'_>,
-    last: &mut f64,
+    last: &mut RenderProgress,
     fraction: f64,
     label: String,
     remaining: Option<f64>,
 ) -> Result<()> {
-    *last = fraction.min(0.99).max(*last);
-    ctx.event(json!({"type":"render_progress","data":{"label":label,"fraction":last,"remaining_seconds":remaining}}))
+    ctx.event(last.event(fraction, label, remaining))
 }
 fn shot_update(
     ctx: &mut Context<'_>,
@@ -102,7 +122,7 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let mut execution = plan.clone();
     let mut summaries = Vec::new();
     let mut reviews = Vec::new();
-    let mut last = 0.0;
+    let mut last = RenderProgress::default();
     let mut completed = 0_u64;
     let started = Instant::now();
     let profile = args["profile"]
@@ -254,7 +274,7 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
                     let shot_started = Instant::now();
                     let take = report["take"].clone();
                     let emitter = &mut ctx.emit;
-                    let last_fraction = &mut last;
+                    let render_progress = &mut last;
                     let runtime = inference::run(
                         &json!({"root":ctx.root,"python":ctx.python,"worker_operation":"ltx_render","payload":payload}),
                         ctx.cancelled.clone(),
@@ -269,16 +289,29 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
                             let fraction = fraction.clamp(0.0, 1.0);
                             let by_duration =
                                 (completed as f64 + duration as f64 * fraction) / seconds as f64;
-                            *last_fraction = (*last_fraction).max((0.97 * by_duration).min(0.97));
                             let remaining = data["remaining_seconds"].as_f64().map(|remaining| {
-                                remaining.max(0.0)
-                                    + (seconds - completed - duration) as f64
-                                        * shot_started.elapsed().as_secs_f64().max(0.001)
-                                        / (duration as f64 * fraction).max(0.05)
+                                // Use the shot's predicted total cost, rather
+                                // than dividing elapsed time by a smoothed bar.
+                                let shot_total =
+                                    shot_started.elapsed().as_secs_f64() + remaining.max(0.0);
+                                let rendering = remaining.max(0.0)
+                                    + (seconds - completed - duration) as f64 * shot_total
+                                        / duration as f64;
+                                // The bar reserves its last 3% for production
+                                // finishing; reserve the same share of time.
+                                rendering
+                                    + (started.elapsed().as_secs_f64() + rendering) * 0.03 / 0.97
                             });
-                            emitter(
-                                json!({"type":"render_progress","data":{"fraction":last_fraction,"label":format!("Shot {}/{}, take {take}: {}",index+1,shots.len(),data["label"].as_str().unwrap_or("Rendering")),"remaining_seconds":remaining}}),
-                            )
+                            emitter(render_progress.event(
+                                (0.97 * by_duration).min(0.97),
+                                format!(
+                                    "Shot {}/{}, take {take}: {}",
+                                    index + 1,
+                                    shots.len(),
+                                    data["label"].as_str().unwrap_or("Rendering")
+                                ),
+                                remaining,
+                            ))
                         },
                     )?;
                     report["runtime"] = runtime;

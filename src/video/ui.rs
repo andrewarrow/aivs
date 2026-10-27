@@ -205,10 +205,15 @@ impl VideoWorkspace {
                     let text = self.remaining_seconds.map_or_else(
                         || "Estimating time remaining…".into(),
                         |seconds| {
+                            let seconds =
+                                seconds - self.remaining_updated_at.elapsed().as_secs_f64();
+                            if seconds <= 0.0 {
+                                return "Updating time estimate…".into();
+                            }
                             format!(
                                 "≈{:.0}% · About {} left",
                                 fraction * 100.0,
-                                remaining_time(seconds)
+                                remaining_time(seconds.max(1.0))
                             )
                         },
                     );

@@ -30,9 +30,11 @@ class RenderEstimate:
         raise AttributeError(name)
 
     @classmethod
-    def from_history(cls, outputs, frames, width, height, revision, callback):
+    def from_history(cls, outputs, frames, width, height, revision, callback, *,
+                     profile="distilled", audio="generated"):
         budgets = rust_engine.call("render_estimate_history", outputs=str(Path(outputs).resolve()),
-                                   frames=frames, width=width, height=height, revision=revision)
+                                   frames=frames, width=width, height=height, revision=revision,
+                                   profile=profile, audio=audio)
         return cls(callback, budgets=budgets)
 
     def _step(self, action, **args):

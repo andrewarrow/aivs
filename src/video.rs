@@ -479,6 +479,7 @@ pub struct VideoWorkspace {
     status: String,
     fraction: Option<f32>,
     remaining_seconds: Option<f64>,
+    remaining_updated_at: Instant,
     started_at: Instant,
     logs: VecDeque<String>,
     current_log_stream: Option<String>,
@@ -512,6 +513,7 @@ impl VideoWorkspace {
             status: "Checking local setup…".into(),
             fraction: None,
             remaining_seconds: None,
+            remaining_updated_at: Instant::now(),
             started_at: Instant::now(),
             logs: VecDeque::new(),
             current_log_stream: None,
@@ -609,6 +611,7 @@ impl VideoWorkspace {
                 self.status = label;
                 self.fraction = Some(self.fraction.unwrap_or(0.0).max(fraction));
                 self.remaining_seconds = remaining_seconds;
+                self.remaining_updated_at = Instant::now();
             }
             Event::Log(line) => {
                 self.current_log_stream = None;

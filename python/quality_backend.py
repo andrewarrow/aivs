@@ -165,11 +165,10 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
     image, anchors, audio = (prepared[key] for key in ("image", "anchors", "audio"))
     native, inference_frames = prepared["native"], prepared["inference_frames"]
     started = time.monotonic()
-    # The installed progress hooks and timing history describe the distilled
-    # architecture. HQ has different sampler calls; show phase heartbeats only.
-    estimate = (RenderEstimate.from_history(output.parent.parent, frames, width, height,
-                                           RUNTIME_REVISION, on_progress)
-                if profile == "distilled" else None)
+    estimate = RenderEstimate.from_history(
+        ROOT / "outputs", frames, width, height, RUNTIME_REVISION, on_progress,
+        profile=profile, audio="supplied" if audio is not None else "generated",
+    )
     with RenderProgress(verbose=3, estimate=estimate) as progress:
         with progress.phase("Loading MLX renderer", "runtime"):
             import mlx.core as mx
@@ -197,9 +196,7 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
                                       stg_scale=0.0, enable_teacache=False)
         if audio is not None:
             generation_options["audio_path"] = prepared["conditioning_audio"]
-        activity = (progress.phase("HQ generation and decode (15 + 3 steps)")
-                    if profile == "hq" else pipeline_activity(pipeline, progress))
-        with activity:
+        with pipeline_activity(pipeline, progress, profile=profile):
             pipeline.generate_and_save(
                 prompt=prompt, output_path=str(native), width=width, height=height,
                 num_frames=inference_frames, frame_rate=FPS, seed=seed,
@@ -215,7 +212,7 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
         "audio": "supplied" if audio is not None else "generated",
         "inference_frames": inference_frames, "output_frames": frames,
         "elapsed_seconds": round(time.monotonic() - started, 2),
-        "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()} if estimate else {},
+        "phase_seconds": {key: round(value, 3) for key, value in estimate.phase_seconds.items()},
         "source_image": image,
         **({"image_anchors": anchors} if anchors is not None else {}),
         "source_audio": audio,
