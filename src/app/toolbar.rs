@@ -1,6 +1,7 @@
 pub(super) enum GalleryIcon {
     Characters,
     Sets,
+    Runs,
 }
 
 impl GalleryIcon {
@@ -8,6 +9,7 @@ impl GalleryIcon {
         let label = match self {
             Self::Characters => "Characters",
             Self::Sets => "Sets",
+            Self::Runs => "Runs",
         };
         let mut response =
             ui.add(egui::Button::selectable(*visible, "").min_size(egui::vec2(44.0, 44.0)));
@@ -72,6 +74,12 @@ impl GalleryIcon {
                     ],
                     stroke,
                 ));
+            }
+            Self::Runs => {
+                for y in [-7.0, 0.0, 7.0] {
+                    painter.circle_filled(point(-9.0, y), 1.5, stroke.color);
+                    painter.line_segment([point(-3.0, y), point(10.0, y)], stroke);
+                }
             }
         }
         response.on_hover_text(format!(

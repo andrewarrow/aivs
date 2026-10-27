@@ -3,6 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use crate::codex::{ChatGptAccount, CodexClient, CodexEvent, CodexWorkStatus};
 
 pub(crate) mod projects;
+mod runs;
 mod toolbar;
 
 struct Message {
@@ -54,6 +55,8 @@ pub struct App {
     sets: crate::sets::SetGallery,
     characters_open: bool,
     sets_open: bool,
+    runs_open: bool,
+    runs: runs::RunsPanel,
     screenplay: crate::screenplay::Screenplay,
     video: crate::video::VideoWorkspace,
     project: crate::project::Project,
@@ -106,6 +109,8 @@ impl App {
             sets,
             characters_open: false,
             sets_open: false,
+            runs_open: false,
+            runs: runs::RunsPanel::default(),
             screenplay,
             codex_started: false,
             root,
@@ -515,6 +520,7 @@ impl App {
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    toolbar::GalleryIcon::Runs.toggle(ui, &mut self.runs_open);
                     toolbar::GalleryIcon::Sets.toggle(ui, &mut self.sets_open);
                     toolbar::GalleryIcon::Characters.toggle(ui, &mut self.characters_open);
                 });
@@ -528,6 +534,13 @@ impl App {
                 });
             }
         });
+        if self.runs_open {
+            let width = (ui.available_width() * 0.30).min(280.0);
+            egui::Panel::right("runs")
+                .exact_size(width)
+                .resizable(false)
+                .show(ui, |ui| self.runs.ui(ui, self.project.root()));
+        }
         if self.characters_open {
             self.characters.load_if_needed();
         }
