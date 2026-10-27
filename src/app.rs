@@ -677,6 +677,10 @@ impl App {
         self.video.has_job()
     }
 
+    pub fn is_checking_setup(&self) -> bool {
+        self.video.is_checking_setup()
+    }
+
     pub fn is_generating_video(&self) -> bool {
         self.video.is_rendering()
     }

@@ -103,6 +103,15 @@ impl DesktopWindow {
         if size.width == 0 || size.height == 0 {
             return None;
         }
+        // Keep the initial readiness check out of the first visible frame.
+        // Installation, missing credentials, and failures still show setup UI.
+        if self.first_frame && app.is_checking_setup() {
+            app.poll_background(&self.context);
+            if app.is_checking_setup() {
+                return Some(Instant::now() + std::time::Duration::from_millis(100));
+            }
+            startup.mark("initial setup check completed");
+        }
         if self.first_frame {
             startup.mark("first redraw received");
         }

@@ -719,6 +719,10 @@ impl VideoWorkspace {
         self.setup == Setup::Ready
     }
 
+    pub fn is_checking_setup(&self) -> bool {
+        self.setup == Setup::Checking
+    }
+
     pub fn can_resume(&self) -> bool {
         self.is_ready() && self.job.is_none()
     }
