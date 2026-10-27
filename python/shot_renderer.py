@@ -11,6 +11,7 @@ import tempfile
 import time
 
 import quality_backend
+import rust_engine
 import storyboard as storyboard_assets
 from validation import validate_video
 from render_formats import resolve_format
@@ -19,7 +20,6 @@ FPS = quality_backend.FPS
 WIDTH = quality_backend.WIDTH
 HEIGHT = quality_backend.HEIGHT
 _SEED_MODULUS = 2**31
-_RETAKE_SEED_STRIDE = 1_000_003
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -35,56 +35,12 @@ def _atomic_json(path: Path, value: dict) -> None:
 
 
 def _validate_plan(plan: dict) -> tuple[list[dict], int, bool]:
-    if not isinstance(plan, dict) or plan.get("version") != 1:
-        raise ValueError("Shooting plan must be an object with version 1.")
-    shots = plan.get("shots")
-    if not isinstance(shots, list) or not shots:
-        raise ValueError("Shooting plan must contain at least one shot.")
-    has_scene_ids = any(isinstance(shot, dict) and "scene_id" in shot for shot in shots)
-    normalized = []
-    for index, shot in enumerate(shots):
-        if not isinstance(shot, dict):
-            raise ValueError(f"Shot {index + 1} must be an object.")
-        seconds = shot.get("seconds")
-        if isinstance(seconds, bool) or not isinstance(seconds, int) or not 4 <= seconds <= 12:
-            raise ValueError(f"Shot {index + 1} duration must be an integer from 4 to 12 seconds.")
-        if not isinstance(shot.get("prompt"), str) or not shot["prompt"].strip():
-            raise ValueError(f"Shot {index + 1} needs a non-empty prompt.")
-        for key in ("continue_previous",):
-            if not isinstance(shot.get(key), bool):
-                raise ValueError(f"Shot {index + 1} needs a boolean {key} value.")
-        if has_scene_ids and (type(shot.get("scene_id")) is not int or shot["scene_id"] < 0):
-            raise ValueError(f"Shot {index + 1} needs a nonnegative integer scene_id.")
-        if shot["continue_previous"]:
-            if index == 0:
-                raise ValueError("The first shot cannot continue a previous shot.")
-            if has_scene_ids and shot["scene_id"] != normalized[-1]["scene_id"]:
-                raise ValueError(f"Shot {index + 1} cannot continue across scenes.")
-        for key in ("start_state", "end_state"):
-            if not isinstance(shot.get(key), str):
-                raise ValueError(f"Shot {index + 1} needs a string {key} value.")
-        beat_ids = shot.get("beat_ids")
-        if not isinstance(beat_ids, list):
-            raise ValueError(f"Shot {index + 1} needs a beat_ids list.")
-        normalized.append(shot)
-    seconds = sum(shot["seconds"] for shot in normalized)
-    if isinstance(plan.get("seconds"), bool) or plan.get("seconds") != seconds:
-        raise ValueError("Shooting plan seconds must equal the sum of its shot durations.")
-    if not isinstance(plan.get("fade_out"), bool):
-        raise ValueError("Shooting plan needs a boolean fade_out value.")
-    return normalized, seconds, plan["fade_out"]
+    validated = rust_engine.call("validate_render_plan", plan=plan)
+    return plan["shots"], validated["seconds"], validated["fade_out"]
 
 
 def _uses_previous_frame(shots: list[dict], index: int) -> bool:
-    if index == 0:
-        return False
-    # Scene IDs distinguish repeated headings (e.g. returning to the same room
-    # later). For source-backed plans, a director's camera-cut flag must never
-    # silently discard the only visual identity/wardrobe conditioning we have.
-    if "scene_id" in shots[index]:
-        return shots[index]["scene_id"] == shots[index - 1]["scene_id"]
-    # Older hand-authored plans have no scene metadata.
-    return shots[index]["continue_previous"]
+    return rust_engine.call("uses_previous_frame", shots=shots, index=index)
 
 
 def _extract_last_frame(clip: Path, frame_index: int, image: Path) -> None:
@@ -110,7 +66,7 @@ def _planned_shot_sha256(plan: dict, shot: dict) -> str:
 
 
 def _take_seed(base_seed: int, take: int) -> int:
-    return (base_seed + (take - 1) * _RETAKE_SEED_STRIDE) % _SEED_MODULUS
+    return rust_engine.call("take_seed", base_seed=base_seed, take=take)
 
 
 def _saved_report(shot_dir: Path) -> dict | None:
@@ -118,14 +74,7 @@ def _saved_report(shot_dir: Path) -> dict | None:
         report = json.loads((shot_dir / "render.json").read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return None
-    if (not isinstance(report, dict) or not isinstance(report.get("prompt"), str)
-            or type(report.get("seed")) is not int
-            or type(report.get("seconds")) is not int
-            or not isinstance(report.get("beat_ids"), list)
-            or not isinstance(report.get("continuity"), dict)
-            or type(report.get("take", 1)) is not int or report.get("take", 1) < 1):
-        return None
-    return report
+    return rust_engine.call("validate_saved_take_report", report=report)
 
 
 def _last_archived_take(archive_dir: Path) -> int:
@@ -170,81 +119,25 @@ def _archive_take(shot_dir: Path, archive_dir: Path, take: int) -> int:
 
 def _matches_saved_take(saved: dict, report: dict, clip: Path,
                         previous_clip: Path | None) -> bool:
-    take = saved.get("take", 1)
-    if type(take) is not int or take < 1:
-        return False
-    if saved.get("character_assets") != report.get("character_assets"):
-        return False
-    if report.get("storyboard_acceptance") is not None and (
-            saved.get("storyboard_acceptance") != report["storyboard_acceptance"]
-            or saved.get("prompt") != report["prompt"]):
-        return False
-    if (saved.get("planned_storyboard", saved.get("storyboard")) !=
-            report.get("planned_storyboard", report.get("storyboard"))):
-        return False
-    adapted_storyboard = saved.get("storyboard") != report.get("storyboard")
-    if adapted_storyboard and (
-            not isinstance(saved.get("storyboard"), dict)
-            or saved.get("adaptation", {}).get("status") != "applied"
-            or saved["storyboard"].get("image", {}).get("sha256") !=
-            saved.get("continuity", {}).get("source_image_sha256")):
-        return False
-    if (saved.get("adaptation", {}).get("status") == "applied"
-            and saved["adaptation"].get("source_clip_sha256") != report.get("observed_source_clip_sha256")):
-        return False
-    if saved.get("render_config") != report.get("render_config"):
-        return False
-    if saved.get("motion_keyframes") != report.get("motion_keyframes"):
-        return False
-    voice = (report.get("character_assets") or {}).get("voice", {})
-    if "file" in voice and clip.name == "video.mp4" and clip.is_file():
-        converted = saved.get("voice_conversion")
-        if (not isinstance(converted, dict) or not isinstance(converted.get("inputs"), dict)
-                or converted.get("character") != voice["character"]
-                or converted["inputs"].get("reference") != voice["sha256"]
-                or converted.get("identity") != voice["converter"]):
-            return False
-    if (saved.get("base_seed", report["base_seed"]) != report["base_seed"]
-            or saved.get("seed") != _take_seed(report["base_seed"], take)
-            or any(saved.get(key) != report[key]
-                   for key in ("seconds", "beat_ids", "scene_id"))):
-        return False
-    if saved.get("planned_shot_sha256") is not None:
-        # A previously rendered adaptation is authoritative on Resume. A new
-        # visual opinion must never invalidate otherwise reusable expensive media.
-        if (saved["planned_shot_sha256"] != report.get("planned_shot_sha256")
-                or saved.get("planned_prompt") != report.get("planned_prompt")):
-            return False
-    elif saved.get("prompt") != report["prompt"]:
-        return False
-    continuity = saved.get("continuity")
-    if not isinstance(continuity, dict) or any(
-        continuity.get(key) != report["continuity"].get(key)
-        for key in ("conditioning", "source_shot", "source_frame", "source_image_sha256")
-        if key != "source_image_sha256" or not adapted_storyboard
-    ):
-        return False
-    if previous_clip is not None:
-        recorded_hash = continuity.get("source_clip_sha256")
-        if recorded_hash is not None:
-            if recorded_hash != report["continuity"]["source_clip_sha256"]:
-                return False
-        else:
-            # Older runs recorded the input frame hash in the renderer runtime.
-            # Compare it with today's predecessor instead of trusting paths or
-            # an invocation-local "reused" flag across repeated resumes.
-            runtime = saved.get("runtime")
-            reference = runtime.get("source_image") if isinstance(runtime, dict) else None
-            if not isinstance(reference, dict) or not reference.get("source_sha256"):
-                return False
-            with tempfile.TemporaryDirectory(prefix=".resume-frame-", dir=clip.parent) as temporary:
-                frame = Path(temporary) / "frame.png"
-                _extract_last_frame(previous_clip, report["continuity"]["source_frame"], frame)
-                if _file_sha256(frame) != reference["source_sha256"]:
-                    return False
-    if saved.get("sha256") is not None and saved["sha256"] != _file_sha256(clip):
-        raise ValueError(f"Saved video changed: {clip}. Review it before replacing the take.")
-    return True
+    # Rust decides eligibility and requests only the missing byte evidence.
+    # In particular, old continuation runs need a decoded predecessor frame;
+    # native-picture resume skips the final voice-conversion identity check.
+    evidence = dict(saved=saved, report=report, clip_path=str(clip),
+                    is_final_clip=clip.name == "video.mp4" and clip.is_file(),
+                    has_previous_clip=previous_clip is not None)
+    decision = rust_engine.call("match_saved_take", **evidence)
+    if decision["status"] == "needs_previous_frame":
+        with tempfile.TemporaryDirectory(prefix=".resume-frame-", dir=clip.parent) as temporary:
+            frame = Path(temporary) / "frame.png"
+            _extract_last_frame(previous_clip, decision["source_frame"], frame)
+            evidence["legacy_frame_sha256"] = _file_sha256(frame)
+        decision = rust_engine.call("match_saved_take", **evidence)
+    if decision["status"] == "needs_clip_hash":
+        evidence["clip_sha256"] = _file_sha256(clip)
+        decision = rust_engine.call("match_saved_take", **evidence)
+    if decision["status"] not in ("matched", "mismatch"):
+        raise RuntimeError("The Rust engine returned an incomplete take verification.")
+    return decision["status"] == "matched"
 
 
 def _restore_take(source: Path, shot_dir: Path, archive_dir: Path,
@@ -760,9 +653,8 @@ def render_shooting_script(
                         activity(f"Shot {index + 1}: {observed.get('summary', 'Visual assessment unavailable.')} "
                                  "Keeping this take under the single-render policy.")
                 report.pop("error", None)
-                shot_status = ("rendered-with-issues" if automatic_review and observed["status"] == "issues_detected"
-                               else "rendered-needs-review" if automatic_review and observed["status"] == "unavailable"
-                               else "complete")
+                shot_status = rust_engine.call(
+                    "render_review_status", reviews=[observed] if automatic_review else [])
                 report.update(status=shot_status)
                 clips.append(clip)
                 summaries.append({
@@ -824,11 +716,8 @@ def render_shooting_script(
     except KeyboardInterrupt:
         raise
 
-    review_statuses = [item.get("status") for item in visual_reviews]
-    if scene_review is not None:
-        review_statuses.append(scene_review.get("status"))
-    status = ("rendered-with-issues" if "issues_detected" in review_statuses
-              else "rendered-needs-review" if "unavailable" in review_statuses else "complete")
+    status = rust_engine.call("render_review_status",
+                              reviews=visual_reviews + ([scene_review] if scene_review is not None else []))
     return {
         "status": status,
         "backend": "mlx",

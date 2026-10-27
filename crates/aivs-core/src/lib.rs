@@ -4,6 +4,7 @@ pub mod continuity;
 pub mod motion;
 pub mod preproduction;
 pub mod prop_reference;
+pub mod shot_renderer;
 pub mod visual_review;
 
 use serde_json::{Value, json};
@@ -53,6 +54,7 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/motion/review.rs": include_str!("motion/review.rs"),
                             "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
                             "crates/aivs-core/src/preproduction.rs": include_str!("preproduction.rs"),
+                            "crates/aivs-core/src/shot_renderer.rs": include_str!("shot_renderer.rs"),
                             "crates/aivs-core/src/visual_review.rs": include_str!("visual_review.rs"),
                         }))
                     } else if request["operation"] == "codex" {
@@ -65,6 +67,21 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             }).map_err(|failure| { error_kind = failure.kind; failure.message }),
                             Err(error) => Err(format!("Invalid Codex request: {error}")),
                         }
+                    } else if matches!(
+                        request["operation"].as_str(),
+                        Some(
+                            "validate_render_plan"
+                                | "uses_previous_frame"
+                                | "take_seed"
+                                | "validate_saved_take_report"
+                                | "match_saved_take"
+                                | "render_review_status"
+                        )
+                    ) {
+                        shot_renderer::dispatch(
+                            request["operation"].as_str().unwrap_or_default(),
+                            &request["args"],
+                        )
                     } else if matches!(
                         request["operation"].as_str(),
                         Some(

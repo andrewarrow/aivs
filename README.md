@@ -521,9 +521,10 @@ Change story direction in the director instructions. Continuity rules belong in
 
 Deterministic continuity, canonical prop acceptance, motion keyframe timing and
 hand-object constraints, visual review validation, storyboard repair policy,
-and production Codex sessions run in Rust. `aivs-core` has no desktop or model
-dependencies. The desktop launches itself with `--engine` before initializing the
-UI and passes that path to Python as `AIVS_ENGINE_PATH`.
+shot execution rules and saved-take matching, and production Codex sessions run
+in Rust. `aivs-core` has no desktop or model dependencies. The desktop launches
+itself with `--engine` before initializing the UI and passes that path to Python
+as `AIVS_ENGINE_PATH`.
 
 For standalone Python commands, first build the headless engine:
 
@@ -585,7 +586,18 @@ and revised director plan before asking Rust to mark the round complete, so an
 interrupted publication resumes the same reserved attempt. Repair exhaustion
 preserves findings and prevents video inference.
 
-Preproduction scheduling, repair execution, artifact I/O, take recovery,
+`shot_renderer` in Rust validates execution plans, chooses scene frame handoffs,
+computes take seeds with the existing stride and modulus, and validates saved
+render reports. Resume eligibility checks cover planned and adapted storyboards,
+acceptance bindings, character/voice assets, render configuration, motion
+keyframes, planned directions, and predecessor provenance. Rust requests missing
+clip or legacy decoded-frame hashes from Python before accepting reuse. Changed
+matching clips remain errors, and native-picture recovery skips final soundtrack
+identity checks until voice conversion completes. Existing render report fields
+and JSON fingerprint serialization are unchanged. Advisory visual reviews map to
+production status in Rust and never authorize another video inference.
+
+Preproduction scheduling, repair execution, artifact I/O, take archival/restoration,
 visual review orchestration, and FFmpeg assembly remain in Python. Moving that
 state machine and narrowing Python to isolated inference workers are the next
 migration phases. LTX/MLX, Seed-VC, and optional MFLUX remain Python inference code.
