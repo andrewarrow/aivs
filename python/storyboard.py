@@ -145,7 +145,7 @@ def _reference_attempt(spec, request, run_dir, activity):
         resolve_image(entry, run_dir)
         return entry, folder
     activity("Generating reusable " + spec["id"] + " reference")
-    storyboard_backend.check()
+    storyboard_backend.check(on_activity=activity)
     _save(folder / "request.json", request)
     target = folder / "reference.png"
     if target.exists():
@@ -286,6 +286,11 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
     if not isinstance(visible, list):
         raise ValueError(f"Storyboard shot {number} needs explicit opening_visible_roles.")
     references, instructions = [], []
+    if prior is not None:
+        # A repair targets these exact rejected pixels, never an unrelated prior scene.
+        resolve_image({"image": prior}, run_dir)
+        references.append(dict(prior, purpose="edit-target"))
+        instructions.append("Image 1: rejected image to edit; preserve all correct regions.")
     for role in visible:
         if role not in cast or cast[role] not in by_id:
             raise ValueError(f"Storyboard shot {number} has an unknown visible performer: {role}")
@@ -299,6 +304,8 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
         references.append(reference)
         instructions.append(f"Image {len(references)}: {role}'s face identity.")
     library_path = Path(run_dir) / "storyboard-references.json"
+    if plan.get("world") and reference_specs(plan) and not library_path.is_file():
+        raise ValueError("The canonical shot-reference library is missing; regenerate references before image generation.")
     if library_path.is_file():
         library = json.loads(library_path.read_text())
         specs = {spec["id"]: spec for spec in reference_specs(plan)}
@@ -307,6 +314,9 @@ def _frame_request(plan, shot, profiles, run_dir, prior, number, seed, width, he
         visible_props = {p["id"] for p in shot["continuity"]["opening"]["props"] if p["visibility"] == "visible"}
         needed |= {"prop:" + p["id"] for p in plan["world"]["props"] if shot["scene_id"] in p["scene_ids"]
                    and {p["id"], *(c["id"] for c in p["components"])} & visible_props}
+        missing = (needed & specs.keys()) - {r["id"] for r in library["references"]}
+        if missing:
+            raise ValueError(f"Missing essential shot references: {sorted(missing)}")
         for reference in library["references"]:
             if reference["id"] not in needed:
                 continue
@@ -388,6 +398,9 @@ def regenerate_shot(plan: dict, profiles: list[dict], run_dir: Path, seed: int,
     request = _frame_request(plan, shot, profiles, run_dir, prior_image, shot_index + 1,
                              seed, width, height)
     request["repair_reason"] = reason
+    request["edit_target"] = prior_image
+    request["preserve"] = ["correct facial identity and anatomy", "camera framing and lighting",
+                           "correct costume and environment", "all correct prop geometry and placement"]
     request_hash = _fingerprint(request)
     fingerprint = planned_shot_sha256(plan, shot)
     directory.mkdir(parents=True, exist_ok=True)
@@ -402,7 +415,7 @@ def regenerate_shot(plan: dict, profiles: list[dict], run_dir: Path, seed: int,
         resolve_image(entry, run_dir)
         activity(f"Reusing repaired storyboard {shot_index + 1}")
         return entry
-    backend = storyboard_backend.check()
+    backend = storyboard_backend.check(on_activity=activity)
     _save(directory / "request.json", request)
     target, partial = directory / "frame.png", directory / "frame.partial.png"
     # Preserve evidence if a worker was interrupted before committing its row.
@@ -412,9 +425,15 @@ def regenerate_shot(plan: dict, profiles: list[dict], run_dir: Path, seed: int,
             orphan.rename(orphan.with_name(f"{orphan.stem}.interrupted-{time.time_ns()}{orphan.suffix}"))
     references = [resolve_image({"image": reference}, run_dir) for reference in request["references"]]
     activity(f"Regenerating storyboard {shot_index + 1}: {reason}")
-    runtime = storyboard_backend.generate(request["prompt"], references, partial, request["seed"],
-                                          width=width, height=height, composition=request["composition"],
-                                          on_activity=activity)
+    if prior_image is not None:
+        runtime = storyboard_backend.edit(
+            resolve_image({"image": prior_image}, run_dir), reason + "\n" + request["prompt"],
+            request["preserve"], references, partial, request["seed"],
+            width=width, height=height, composition=request["composition"], on_activity=activity)
+    else:
+        runtime = storyboard_backend.generate(request["prompt"] + "\nCorrection: " + reason,
+            references, partial, request["seed"], width=width, height=height,
+            composition=request["composition"], on_activity=activity)
     info = quality_backend.prepare_source_image(partial)
     if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):
         raise ValueError("Repaired storyboard has unexpected image dimensions or bytes.")
@@ -498,7 +517,7 @@ def generate(plan: dict, profiles: list[dict], run_dir: Path, seed: int, *,
             activity(f"Regenerating storyboard {number} after reference or prompt changes")
         if backend is None:
             activity("Checking Codex storyboard image generation")
-            backend = storyboard_backend.check()
+            backend = storyboard_backend.check(on_activity=activity)
             manifest["backend"] = backend
         activity(f"Generating storyboard {number}/{len(plan['shots'])}")
         manifest.update(status="generating", current_shot=number)

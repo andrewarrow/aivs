@@ -15,6 +15,7 @@ import storyboard_continuity as continuity
 import visual_review
 
 POLICY = "motion-previsualization-v1"
+MAX_FRAME_REPAIRS = 3
 TEXT = continuity.TEXT
 HANDS_SCHEMA = {"type": "array", "items": continuity.object_schema({
     "role": TEXT, "hand": {"type": "string", "enum": ["left", "right"]}, "object": TEXT,
@@ -34,6 +35,8 @@ REVIEW_SCHEMA = continuity.object_schema({
         "id": TEXT, "count": {"type": "integer"}})},
     "hand_findings": TEXT,
     "observed_hands": HANDS_SCHEMA,
+    "repair_strategy": {"type": "string", "enum": ["targeted-edit", "regenerate"]},
+    "correction": TEXT,
 })
 
 
@@ -67,6 +70,8 @@ def _physical_state(state, hand_states):
         if h["object"] in props:
             if by_id[h["object"]]["owner"] != h["role"]:
                 raise ValueError("The hand's object owner contradicts the physical state.")
+            if by_id[h["object"]]["support"] != f"{h['role']}:{h['hand']}-hand":
+                raise ValueError("Every held component must be supported by the same tracked hand, not a cradle/base.")
             hands[h["role"], "holds-" + h["hand"]] = h["object"]
     for p in state["props"]:
         if p["owner"] not in roles | continuity.UNKNOWN | {"none"}:
@@ -78,6 +83,8 @@ def _physical_state(state, hand_states):
         if relation in ("holds-left", "holds-right"):
             if subject not in roles or obj not in props or value not in ("yes", "no"):
                 raise ValueError("Hand relationships require a role, holds-left/right, component ID and yes/no.")
+            if value == "no" and hands.get((subject, relation)) == obj:
+                raise ValueError("A negative holding relationship contradicts its explicit hand state.")
             if value == "yes":
                 key = subject, relation
                 if key in hands and hands[key] != obj:
@@ -251,7 +258,7 @@ def _review(plan, number, frame, image, references, directory, binding, on_activ
             raise ValueError("Saved keyframe review belongs to different pixels or contracts.")
         return _validate_review(plan, number, frame, review["result"])
     instruction = (
-        "Inspect the attached keyframe first, then locked references and preceding approved frame. "
+        "Inspect the attached keyframe first, then preceding accepted pose, opening frame, and locked shot references. "
         "This is a photograph at the specified time, not the opening of the whole shot. "
         "Observe pixels independently against the supplied state. Use exact planned values for semantic matches; "
         "unknown for unobservable facts. Do not certify concealed geometry. Check faces, morphology, costume, "
@@ -261,8 +268,12 @@ def _review(plan, number, frame, image, references, directory, binding, on_activ
         "Describe hand-object evidence in hand_findings and independently record observed_hands for each "
         "character's left and right hand, object=held component ID or none/unknown/not-visible. Compare with references and prior pose. "
         "Use continuity_review observed_opening_state for THIS timed state's observations. "
-        "Set source_transition_evidence=[]; return pass only if clear and consistent.\n"
-        + json.dumps({"shot": number, "frame": frame, "world": plan["world"], "source": plan["source"]})
+        "Set source_transition_evidence=[]; return pass only if clear and consistent. "
+        "For a rejection, give a concrete pixel correction in correction, and choose repair_strategy=targeted-edit "
+        "for a local defect or regenerate if framing, composition or anatomy is fundamentally broken. "
+        "For a pass use correction=none and repair_strategy=targeted-edit.\n"
+        + json.dumps({"shot": number, "frame": frame, "world": plan["world"], "source": plan["source"],
+                      "reference_files_in_attachment_order": [str(p) for p in references]})
     )
     result = visual_review._call(instruction, REVIEW_SCHEMA, directory, "inspect",
         lambda value: _validate_review(plan, number, frame, value),
@@ -273,6 +284,9 @@ def _review(plan, number, frame, image, references, directory, binding, on_activ
 
 def _validate_review(plan, number, frame, value):
     continuity._text(value["hand_findings"])
+    continuity._text(value["correction"])
+    if value["repair_strategy"] not in ("targeted-edit", "regenerate"):
+        raise ValueError("Keyframe review must select a supported repair strategy.")
     hands = value["observed_hands"]
     roles, props = _inventory(frame["state"])
     if (len(hands) != 2 * len(roles)
@@ -314,69 +328,117 @@ def _validate_review(plan, number, frame, value):
                 findings=checked["violations"])
 
 
+def _keyframe_attempt(plan, number, frame, original, request, inputs, folder, run_dir,
+                      seed, on_activity, *, rejected=None, review=None, fresh=False):
+    """One immutable image/review attempt; completed work survives interruption."""
+    folder.mkdir(parents=True, exist_ok=True)
+    checkpoint = folder / "frame.json"
+    width, height = (original["image"][k] for k in ("width", "height"))
+    if checkpoint.exists():
+        entry = read(checkpoint)
+        if entry["request"] != request:
+            raise ValueError("Saved keyframe inputs changed; preserve artifacts and use a new run.")
+        image = storyboard.resolve_image(entry, run_dir)
+    elif frame["frame"] == 0:
+        image = storyboard.resolve_image(original, run_dir)
+        entry = dict(frame, image=original["image"], request=request)
+        storyboard._save(checkpoint, entry)
+    else:
+        image, partial = folder / "frame.png", folder / "frame.partial.png"
+        for orphan in (partial, image):
+            if orphan.exists():
+                orphan.rename(orphan.with_name(f"{orphan.stem}.interrupted-{time.time_ns()}.png"))
+        prompt_references = request["references"]
+        if rejected is not None and not fresh:
+            prompt_references = [rejected["image"], *prompt_references]
+        prompt = (
+            "One cinematic photograph at the specified time. Use the attached locked design/identity references "
+            "and opening/preceding frames. Preserve camera, lighting, faces, anatomy, clothing and prop designs. "
+            "Prior frames establish appearance, not current pose. Render exactly this physical state, including "
+            "empty supports and attached cords. Never duplicate moving components. Each Image number below "
+            "identifies its source reference in attachment order.\n" + json.dumps({
+                "state": frame["state"], "world": plan["world"], "time_seconds": frame["frame"] / 24,
+                "reference_images": [{"image_number": i, **ref} for i, ref in enumerate(prompt_references, 1)]}))
+        options = dict(width=width, height=height, composition=frame["composition"], on_activity=on_activity)
+        if rejected is not None and not fresh:
+            on_activity(f"Editing rejected shot {number} keyframe at {frame['frame'] / 24:.3f}s")
+            runtime = storyboard_backend.edit(
+                storyboard.resolve_image(rejected, run_dir),
+                review["correction"] + "\nFindings: " + json.dumps(review["findings"]) + "\n" + prompt,
+                ["correct face and anatomy", "camera and framing", "costume, environment and lighting",
+                 "all geometry and contacts already consistent with the timed physical state"],
+                inputs, partial, seed, **options)
+        else:
+            on_activity(f"Generating shot {number} keyframe at {frame['frame'] / 24:.3f}s")
+            if review is not None:
+                prompt += "\nPrevious defects to avoid: " + review["correction"] + " " + json.dumps(review["findings"])
+            runtime = storyboard_backend.generate(prompt, inputs, partial, seed, **options)
+        info = quality_backend.prepare_source_image(partial)
+        if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):
+            raise ValueError("Generated keyframe has unexpected pixels or dimensions.")
+        partial.replace(image)
+        entry = dict(frame, request=request, runtime=runtime, image={"file": image.relative_to(run_dir).as_posix(),
+                     "sha256": info["source_sha256"], "width": width, "height": height})
+        storyboard._save(checkpoint, entry)
+    for reference in request["references"]:
+        storyboard.resolve_image({"image": reference}, run_dir)
+    if rejected is not None:
+        storyboard.resolve_image(rejected, run_dir)
+    binding = {"request": continuity.digest(request), "image": entry["image"]}
+    result = _review(plan, number, frame, image, inputs, folder, binding, on_activity)
+    entry["review"] = {"file": (folder / "review.json").relative_to(run_dir).as_posix(),
+                       "sha256": continuity.digest(read(folder / "review.json"))}
+    return entry, result
+
+
 def generate(run_dir, *, on_activity=print):
+    run_dir = Path(run_dir).resolve()
     plan, boards = _base(run_dir)
+    storyboard_backend.check(on_activity=on_activity)
     motion = plan_motion(run_dir, on_activity=on_activity)
-    profiles = read(run_dir / "render.json")["characters"]
+    render = read(run_dir / "render.json")
+    profiles, seed = render["characters"], render["seed"]
     rows = []
     for number, (shot, direction) in enumerate(zip(plan["shots"], motion["shots"]), 1):
         original = boards["shots"][number - 1]
         width, height = (original["image"][k] for k in ("width", "height"))
         opening = storyboard.resolve_image(original, run_dir)
-        # Use every locked prop/environment/body image, plus snapshotted cast portraits.
-        references = [storyboard.resolve_image(r, run_dir) for r in boards["references"]]
-        references += [storyboard.resolve_image({"image": {"file": f"characters/{p['id']}/{p['image']['file']}",
-                        "sha256": p["image"]["sha256"]}}, run_dir) for p in profiles if p.get("image")]
         frames = []
         for frame in direction["keyframes"]:
+            # Select only this timed state's scene, visible cast, body and prop designs.
+            timed_shot = dict(shot, continuity=dict(shot["continuity"], opening=frame["state"]),
+                              opening_visible_roles=[c["role"] for c in frame["state"]["characters"]
+                                                     if c["presence"] == "visible"])
+            selected = storyboard._frame_request(plan, timed_shot, profiles, run_dir, None,
+                                                  number, seed, width, height)["references"]
+            references = [storyboard.resolve_image({"image": ref}, run_dir) for ref in selected]
+            descriptions = {path: ref for path, ref in zip(references, selected)}
             folder = run_dir / "motion" / f"{number:03d}" / f"{frame['frame']:05d}"
-            folder.mkdir(parents=True, exist_ok=True)
             prior = storyboard.resolve_image(frames[-1], run_dir) if frames else opening
-            inputs = list(dict.fromkeys([*references, opening, prior]))
+            # Priority order: preceding accepted pose, opening, then shot-specific canonical references.
+            inputs = list(dict.fromkeys([prior, opening, *references]))
+            descriptions[opening] = dict(original["image"], purpose="approved opening frame")
+            descriptions[prior] = dict(frames[-1]["image"] if frames else original["image"],
+                                       purpose="preceding accepted pose")
             request = {"implementation": identity(), "plan_sha256": motion["plan_sha256"], "shot": number,
-                       "frame": frame, "references": [{"file": p.relative_to(run_dir).as_posix(),
+                       "frame": frame, "references": [{**descriptions[p], "file": p.relative_to(run_dir).as_posix(),
                        "sha256": quality_backend.prepare_source_image(p)["source_sha256"]} for p in inputs]}
-            checkpoint = folder / "frame.json"
-            if checkpoint.exists():
-                entry = read(checkpoint)
-                if entry["request"] != request:
-                    raise ValueError("Saved keyframe inputs changed; preserve artifacts and use a new run.")
-                image = storyboard.resolve_image(entry, run_dir)
-            elif frame["frame"] == 0:
-                image = opening
-                entry = dict(frame, image=original["image"], request=request)
-                storyboard._save(checkpoint, entry)
-            else:
-                image = folder / "frame.png"
-                partial = folder / "frame.partial.png"
-                for orphan in (partial, image):
-                    if orphan.exists():
-                        orphan.rename(orphan.with_name(f"{orphan.stem}.interrupted-{time.time_ns()}.png"))
-                on_activity(f"Generating shot {number} keyframe at {frame['frame'] / 24:.3f}s")
-                runtime = storyboard_backend.generate(
-                    "One cinematic photograph at the specified time. Use the attached locked design/identity references "
-                    "and opening/preceding frames. Preserve camera, lighting, faces, anatomy, clothing and prop designs. "
-                    "Prior frames establish appearance, not current pose. Render exactly this physical state, including "
-                    "empty supports and attached cords. Never duplicate moving components.\n" + json.dumps({
-                        "state": frame["state"], "world": plan["world"], "time_seconds": frame["frame"] / 24,
-                        "reference_files_in_order": request["references"]}), inputs, partial,
-                    read(run_dir / "render.json")["seed"] + number + frame["frame"],
-                    width=width, height=height, composition=frame["composition"], on_activity=on_activity)
-                info = quality_backend.prepare_source_image(partial)
-                if info["source_sha256"] != runtime["sha256"] or (info["width"], info["height"]) != (width, height):
-                    raise ValueError("Generated keyframe has unexpected pixels or dimensions.")
-                partial.replace(image)
-                entry = dict(frame, request=request, runtime=runtime, image={"file": image.relative_to(run_dir).as_posix(),
-                             "sha256": info["source_sha256"], "width": width, "height": height})
-                storyboard._save(checkpoint, entry)
-            for reference in request["references"]:
-                storyboard.resolve_image({"image": reference}, run_dir)
-            review_binding = {"request": continuity.digest(request), "image": entry["image"]}
-            review = _review(plan, number, frame, image, inputs, folder, review_binding, on_activity)
+            entry, review = _keyframe_attempt(plan, number, frame, original, request, inputs, folder,
+                run_dir, seed + number + frame["frame"], on_activity)
+            # Opening pixels are already approved and must stay identical to the storyboard.
+            for retry in range(1, MAX_FRAME_REPAIRS + 1):
+                if review["accepted"] or frame["frame"] == 0:
+                    break
+                fresh = review["repair_strategy"] == "regenerate" or retry == MAX_FRAME_REPAIRS
+                repair_request = dict(request, repair={"attempt": retry,
+                    "strategy": "regenerate" if fresh else "targeted-edit", "rejected_image": entry["image"],
+                    "review": entry["review"], "correction": review["correction"]})
+                entry, review = _keyframe_attempt(plan, number, frame, original, repair_request, inputs,
+                    folder / f"repair-{retry}", run_dir, seed + number + frame["frame"] + retry * 7919,
+                    on_activity, rejected=entry, review=review, fresh=fresh)
             if not review["accepted"]:
-                raise ValueError(f"Keyframe {number}/{frame['frame']} rejected; see {folder / 'review.json'}")
-            entry["review"] = {"file": (folder / "review.json").relative_to(run_dir).as_posix(),
-                               "sha256": continuity.digest(read(folder / "review.json"))}
+                raise ValueError(f"Keyframe {number}/{frame['frame']} rejected after bounded repair; "
+                                 f"all attempts preserved under {folder}")
             frames.append(entry)
         rows.append({"shot": number, "keyframes": frames})
     manifest = dict(motion, shots=rows, implementation=identity(), status="accepted")
@@ -402,6 +464,13 @@ def require_accepted(plan, boards, manifest, run_dir):
             image = storyboard.resolve_image(frame, run_dir)
             for ref in frame["request"]["references"]:
                 storyboard.resolve_image({"image": ref}, run_dir)
+            repair = frame["request"].get("repair")
+            if repair is not None:
+                storyboard.resolve_image({"image": repair["rejected_image"]}, run_dir)
+                rejected_review = (run_dir / repair["review"]["file"]).resolve()
+                if (not rejected_review.is_relative_to(run_dir.resolve())
+                        or continuity.digest(read(rejected_review)) != repair["review"]["sha256"]):
+                    raise ValueError("Keyframe repair evidence changed.")
             review_path = (run_dir / frame["review"]["file"]).resolve()
             if not review_path.is_relative_to(run_dir.resolve()):
                 raise ValueError("Keyframe review escapes run directory.")

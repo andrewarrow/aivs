@@ -66,8 +66,8 @@ def check(profile="hq"):
     models = "distilled and HQ" if profile == "hq" else "distilled"
     emit("progress", label=f"Checking cached {models} models, text encoder, and audio weights")
     model_path(profile=profile)
-    emit("progress", label="Checking Codex storyboard image generation")
-    storyboard_backend.check()
+    emit("progress", label="Checking storyboard image generation")
+    storyboard_backend.check(on_activity=lambda message: emit("activity", message=message))
     emit("progress", label="Checking saved-character voice converter and cached voice weights")
     character_conditioning.check_voice_setup()
     emit("ready")
@@ -98,8 +98,8 @@ def download(profile="hq"):
 
     with project_lock(".setup.lock"):
         from quality_backend import preflight_download
-        emit("progress", label="Checking Codex for storyboard image generation")
-        storyboard_backend.check()
+        emit("progress", label="Checking storyboard image backend")
+        storyboard_backend.check(on_activity=lambda message: emit("activity", message=message))
         emit("progress", label="Checking video model download space")
         preflight_download(profile=profile)
         models = "distilled and HQ models" if profile == "hq" else "distilled model"
@@ -249,7 +249,7 @@ def generate_screenplay(request, seed=None, *, shooting_script=None, plan_only=F
             if not (plan_only or storyboards_only):
                 model_path(profile=profile)
             if not plan_only:
-                storyboard_backend.check()
+                storyboard_backend.check(on_activity=lambda message: emit("activity", message=message))
             emit("progress", label="Preparing shots and storyboards with Codex")
             count_tokens = prompt_token_counter()
             plan, boards = preproduction.prepare(
@@ -414,7 +414,7 @@ def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_on
             if uses_storyboards:
                 if not storyboards_only:
                     model_path(profile=profile)
-                storyboard_backend.check()
+                storyboard_backend.check(on_activity=lambda message: emit("activity", message=message))
                 emit("progress", label="Resuming shots and storyboards")
                 started = time.monotonic()
                 plan, boards = preproduction.prepare(

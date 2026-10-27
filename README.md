@@ -352,6 +352,16 @@ and accepts an actual completed image-tool result, rather than a textual claim.
 The existing prop and sequence inspections still gate video rendering. Update
 Codex if its image tool is unavailable, then sign in and Resume.
 
+Preflight now generates a small cup image and performs a reference-guided color
+edit through the same app-server transport used for storyboards. It requires an
+actual completed image-generation event and exact reference path/SHA-256
+metadata; installing the CLI alone is insufficient. A successful check is cached
+for 24 hours under `.cache/imagegen-preflight/`, bound to the CLI version and
+account/configuration fingerprints. The first check uses two image generations.
+Run `python/storyboard_backend.py check --refresh` to repeat it after a capability
+change. Unsupported reference metadata fails during preflight with the installed
+version and diagnostic path; AIVS does not guess a minimum supported version.
+
 For a CLI workspace whose video environment already exists:
 
 ```sh
@@ -360,11 +370,39 @@ For a CLI workspace whose video environment already exists:
 .venv/bin/python python/video.py download --profile hq
 ```
 
+Director coverage has its own cache under `.cache/preproduction/directors/`.
+Changing only the image backend reuses that coverage; image generation,
+inspection and image-informed motion direction have separate identities.
 Completed scene plans and images are reused through `.cache/preproduction/`.
 Generation saves image prompts, request seeds, reference hashes, original image
 bytes and backend provenance alongside each run. An interrupted local-FLUX run
 regenerates its physical references and affected frames with Codex, preserving
 superseded assets. No FLUX environment or image weights are required.
+Shot-specific references are prioritized and limited to five actual image-tool
+inputs. Overflow is consolidated into labeled reference sheets with source
+hashes; essential references are never silently dropped. Requests too large for
+readable sheets fail explicitly. Normalization preserves the full source image
+and pads aspect-ratio differences instead of cropping hands or props. Saved
+provenance includes the source size and normalized content rectangle; visual
+review inspects those normalized pixels before rendering.
+
+Local FLUX remains an optional, explicitly selected backend. Install it separately
+from the video environment:
+
+```sh
+uv venv .venv-storyboard --python 3.12
+uv pip install --python .venv-storyboard/bin/python -r python/requirements-storyboard.txt
+.venv/bin/python python/storyboard_mflux.py download
+export AIVS_STORYBOARD_BACKEND=mflux
+.venv/bin/python python/storyboard_backend.py check
+```
+
+The default is `AIVS_STORYBOARD_BACKEND=codex-imagegen`. AIVS never switches
+backends silently. FLUX uses the previously pinned MFLUX version and local
+weights, including its 512-token prompt limit; oversized essential briefs fail
+instead of being truncated. An app launched from Finder needs this environment
+variable supplied by its launch environment.
+
 Before downloading model weights, setup checks missing video files against their
 pinned download sizes. Complete cached files are
 reused; damaged and partial files count as missing. The check reserves another

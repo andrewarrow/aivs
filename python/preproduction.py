@@ -29,13 +29,11 @@ def _read(path):
     return value
 
 
-def cache_key(request, profiles):
-    """Seeds, video inference profiles and time allowances do not change coverage."""
+def director_cache_key(request, profiles):
+    """Image renderer changes never invalidate source-bound director coverage."""
     directory = Path(__file__).resolve().parent
     files = ("shooting_script.py", "shooting-script-instructions.txt",
-             "shooting-script-review-instructions.txt", "storyboard.py",
-             "storyboard_backend.py", "prop_reference.py", "render_formats.py",
-             "preproduction.py", "storyboard_continuity.py")
+             "render_formats.py", "storyboard_continuity.py")
     identity = {
         "source": shooting_script.parse_request(request, profiles)["source_sha256"],
         "implementation": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
@@ -43,6 +41,49 @@ def cache_key(request, profiles):
         "tokenizer_revision": quality_backend.MODEL_REVISION,
     }
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+def cache_key(request, profiles):
+    """Final motion direction also depends on the rendered and inspected images."""
+    directory = Path(__file__).resolve().parent
+    files = ("shooting-script-review-instructions.txt", "storyboard.py", "storyboard_backend.py",
+             "storyboard_mflux.py", "prop_reference.py", "preproduction.py")
+    return continuity.digest({"director": director_cache_key(request, profiles),
+        "backend": storyboard.storyboard_backend.configuration(),
+        "implementation": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}})
+
+
+def _prepare_director(request, profiles, run_dir, *, fresh, options):
+    key = director_cache_key(request, profiles)
+    index = quality_backend.ROOT / ".cache" / "preproduction" / "directors" / f"{key}.json"
+    draft = run_dir / "storyboard-plan.json"
+    if not fresh and not draft.exists() and index.is_file():
+        try:
+            saved = _read(index)
+            candidate = saved["plan"]
+            if (saved["key"] != key or saved["plan_sha256"] != continuity.digest(candidate)
+                    or candidate.get("planner_version") != shooting_script.PLANNER_VERSION
+                    or candidate.get("planning_stage") != "storyboard"):
+                raise ValueError("Director cache identity changed.")
+            shooting_script.validate_shooting_script(candidate, request, profiles,
+                                                     token_counter=options["token_counter"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            options["on_activity"](f"Cached director plan is unavailable ({exc}); preparing coverage")
+        else:
+            _save(draft, candidate)
+            (run_dir / "storyboard-plan.txt").write_text("\n".join(
+                f"SHOT {n} | {shot['seconds']}s\n{shot['storyboard_prompt']}\n"
+                for n, shot in enumerate(candidate["shots"], 1)), encoding="utf-8")
+            options["on_activity"]("Reusing director coverage; image rendering and inspection have separate caches")
+    director = shooting_script.create_storyboard_plan(request, profiles, run_dir, **options)
+    # Repairs stay local to the image run; share the original source-backed coverage.
+    if not (run_dir / "storyboard-repairs.json").exists():
+        try:
+            index.parent.mkdir(parents=True, exist_ok=True)
+            _save(index, {"key": key, "plan_sha256": continuity.digest(director), "plan": director})
+        except OSError as exc:
+            options["on_activity"](f"Director plan is saved locally; shared cache could not be updated: {exc}")
+    return director
 
 
 def rebind_storyboards(director, final, boards, run_dir):
@@ -154,6 +195,7 @@ def _finish_storyboard_repair(director, boards, state, request, profiles, run_di
             revised, profiles, run_dir, repair["seed"], number - 1,
             reason=issue["issue"],
             directory=run_dir / "storyboards" / "repairs" / f"{round_number:02d}" / f"{number:03d}",
+            prior_image=repair.get("prior_images", {}).get(str(number)),
             on_activity=on_activity,
         )
     boards = dict(boards, shots=entries, references=library["references"], status="complete")
@@ -234,6 +276,8 @@ def _reserve_storyboard_repair(director, issues, state, seed, run_dir, *, boards
     state["rounds"].append({
         "status": "pending", "before_plan_sha256": shooting_script._plan_fingerprint(director),
         "plan": revised, "issues": issues,
+        "prior_images": {str(issue["shot"]): boards["shots"][issue["shot"] - 1]["image"]
+                         for issue in issues} if boards is not None else {},
         "reference_seed": seed,
         "seed": (seed + len(state["rounds"]) + 1) % (2**31),
     })
@@ -245,6 +289,7 @@ def prepare(request, profiles, run_dir, seed, *, token_counter=None,
             fresh=False, on_activity=None, on_activity_delta=None):
     """Return (final plan, boards), or (director draft, None) for plan-only."""
     run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
     activity = on_activity or (lambda message: None)
     key = cache_key(request, profiles)
     index = quality_backend.ROOT / ".cache" / "preproduction" / f"{key}.json"
@@ -288,7 +333,9 @@ def prepare(request, profiles, run_dir, seed, *, token_counter=None,
             return plan, boards
 
     import time
-    director = shooting_script.create_storyboard_plan(request, profiles, run_dir, **options)
+    if not plan_only:
+        storyboard.storyboard_backend.check(on_activity=activity)
+    director = _prepare_director(request, profiles, run_dir, fresh=fresh, options=options)
     if plan_only:
         return director, None
     budget = _read(run_dir / "planning-budget.json")
