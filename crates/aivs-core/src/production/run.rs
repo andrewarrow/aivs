@@ -1,5 +1,5 @@
 use super::*;
-use crate::{character_conditioning, characters, dialogue, media, render_formats};
+use crate::{character_conditioning, characters, dialogue, render_formats};
 use std::{fs::File, io::Read, process::Command, time::Instant};
 fn lock(root: &Path, name: &str) -> Result<File> {
     let file = File::options()

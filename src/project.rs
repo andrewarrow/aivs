@@ -214,12 +214,12 @@ pub fn choose_save(project: &Project) -> Result<Option<PathBuf>, String> {
         panel.setDirectoryURL(Some(&url));
     }
     match panel.runModal() {
-        NSModalResponseOK => panel
+        response if response == NSModalResponseOK => panel
             .URL()
             .and_then(|url| url.to_file_path())
             .map(Some)
             .ok_or_else(|| "Could not read the selected project location.".into()),
-        NSModalResponseCancel => Ok(None),
+        response if response == NSModalResponseCancel => Ok(None),
         _ => Err("Could not open the save dialog.".into()),
     }
 }
@@ -239,12 +239,12 @@ pub fn choose_open() -> Result<Option<PathBuf>, String> {
         panel.setDirectoryURL(Some(&url));
     }
     match panel.runModal() {
-        NSModalResponseOK => panel
+        response if response == NSModalResponseOK => panel
             .URL()
             .and_then(|url| url.to_file_path())
             .map(Some)
             .ok_or_else(|| "Could not read the selected project.".into()),
-        NSModalResponseCancel => Ok(None),
+        response if response == NSModalResponseCancel => Ok(None),
         _ => Err("Could not open the project chooser.".into()),
     }
 }
