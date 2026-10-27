@@ -473,38 +473,96 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [src/app.rs](src/app.rs) | Desktop workspace, setup gate, and optional chat UI. |
 | [src/screenplay.rs](src/screenplay.rs) | Screenplay editor, casting, and document persistence. |
 | [src/video.rs](src/video.rs) | Starts setup/render workers, handles cancellation, and reads Python progress events. |
+| [crates/aivs-core](crates/aivs-core) | Headless Rust continuity rules, sequence acceptance, repair dependencies, and shared Codex transport/production sessions. |
+| [python/rust_engine.py](python/rust_engine.py) | Versioned JSON transport to the Rust engine and migration cache compatibility. |
 | [python/video.py](python/video.py) | Pipeline entry point; `generate_screenplay()` coordinates planning and rendering. |
 | [python/preproduction.py](python/preproduction.py) | Coordinates both planning passes, storyboard generation, and shared preproduction reuse. |
-| [python/shooting_script.py](python/shooting_script.py) | Parses story beats, calls Codex, validates the plan, and saves shooting scripts. |
+| [python/shooting_script.py](python/shooting_script.py) | Parses story beats, requests Codex work through Rust, validates screenplay coverage, and saves shooting scripts. |
+| [python/storyboard_continuity.py](python/storyboard_continuity.py) | Schema definitions and legacy artifact codec; continuity decisions run in Rust. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
 | [python/storyboard.py](python/storyboard.py) | Generates and validates shot-bound storyboard images and their provenance. |
 | [python/storyboard_backend.py](python/storyboard_backend.py) | Generates reference-aware images through the signed-in Codex app-server. |
 | [python/shot_renderer.py](python/shot_renderer.py) | Reuses saved takes, renders missing shots from storyboard frames, and assembles the result. |
 | [python/quality_backend.py](python/quality_backend.py) | Local LTX-2.5/MLX generation and model setup. |
 | [python/validation.py](python/validation.py) | Decoded-frame, stream, and audio/video timing checks. |
-| [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration. |
+| [src/codex.rs](src/codex.rs) | Codex account login and optional chat integration using the shared Rust transport. |
 | [src/main.rs](src/main.rs), [src/playback.rs](src/playback.rs) | Native egui/winit/wgpu window and macOS AVKit playback. |
 
 ### How the Codex integration works
 
 AIVS launches `codex app-server` and exchanges newline-delimited JSON over
 stdin/stdout using the [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server).
-For each preproduction pass, the planner in `python/shooting_script.py` initializes
-a connection, creates an ephemeral read-only thread, and starts a turn with the
+For each preproduction pass, the planner in `python/shooting_script.py` requests an
+isolated session from `aivs-core`. Rust initializes a connection, creates an
+ephemeral read-only thread, and starts a turn with the
 source, pass-specific instructions and JSON output schema. It streams activity
 into the UI and validates each result. The first pass designs compositions; the
 second receives the actual storyboard images and returns motion directions
 bound to them. Both consume the same saved planning allowance.
 
-The Rust client in `src/codex.rs` handles login and optional chat separately.
+Image generation and visual inspection use the same Rust production-session
+implementation, including local-image attachments, streamed activity, raw logs,
+partial final responses, and deadlines. Image generation uses its own writable
+workspace. The Python adapter forwards callbacks and retains existing image
+checkpoint handling; it no longer implements the app-server protocol. The
+protocol follows the [official app-server documentation](https://learn.chatgpt.com/docs/app-server).
+
+The client in `src/codex.rs` handles login and optional chat in a separate session,
+sharing the Rust wire protocol with production work.
 **Show chat** opens that panel; chat threads use `workspace-write` in the selected
 workspace, with network access disabled and `approvalPolicy: never`. Reconnecting
 starts a fresh chat. The Codex CLI owns credentials, and AIVS inherits its model
 and reasoning defaults.
 
-Change story direction in the director instructions. Keep Python responsible for
-source fidelity, timing bounds, and rendering contracts rather than rules tied
-to particular story props.
+Change story direction in the director instructions. Continuity rules belong in
+`aivs-core` and must remain independent of particular story props.
+
+### Rust engine migration
+
+The first migration slice moves deterministic continuity and production Codex
+sessions into Rust. `aivs-core` has no desktop or model dependencies. The desktop
+launches itself with `--engine` before initializing the UI and passes that path
+to Python as `AIVS_ENGINE_PATH`.
+
+For standalone Python commands, first build the headless engine:
+
+```bash
+cargo build -p aivs-core --bin aivs-engine
+```
+
+The bridge finds a built `aivs-engine` or `aivs` under `target/debug` or
+`target/release` (also respecting `CARGO_TARGET_DIR`). Set `AIVS_ENGINE_PATH` to
+choose an executable explicitly. The bridge never builds code automatically and
+rejects an engine whose compiled rule sources differ from the checkout.
+
+`aivs-engine` accepts newline-delimited versioned JSON on stdin and emits results
+and progress events on stdout. For example, an empty state's facts request is:
+
+```json
+{"version":1,"id":1,"operation":"facts","args":{"state":{"characters":[],"props":[],"reveals":[],"relationships":[]}}}
+```
+
+The response is `{"version":1,"id":1,"result":[]}`. Domain errors return an
+`error` and `error_kind`; production Codex calls also emit `event` envelopes with
+the same request ID. A persistent worker serves the Python pipeline. Each Codex
+request creates its own app-server process and ephemeral thread; parent EOF or a
+deadline ends the session and reaps the child.
+
+Python retains the existing JSON serialization and fingerprint algorithms for
+artifacts. [engine-compatibility.json](python/engine-compatibility.json) maps this
+exact migration snapshot to the previous implementation hashes so existing
+director caches, accepted reviews, and Resume bindings keep their identities.
+The mapping is conditional on the migrated Python, bridge, and compiled Rust
+source hashes. Any later change to those sources invalidates that mapping; do
+not refresh it automatically when changing production behavior. Existing assets
+still pass Rust's acceptance rules before inference. Compatibility and the
+five-second telephone experiment require local execution; they were not run as
+part of this change.
+
+Preproduction scheduling, repair orchestration, motion planning, artifact I/O,
+and video assembly still run in Python. Moving that state machine and narrowing
+Python to isolated inference workers are the next migration phases. LTX/MLX,
+Seed-VC, and optional MFLUX inference are unchanged by this slice.
 
 ## Inspect and debug a run
 

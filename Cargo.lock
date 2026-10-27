@@ -59,6 +59,7 @@ dependencies = [
 name = "aivs"
 version = "0.1.0"
 dependencies = [
+ "aivs-core",
  "egui",
  "egui-wgpu",
  "egui-winit",
@@ -76,6 +77,14 @@ dependencies = [
  "url",
  "webbrowser",
  "winit",
+]
+
+[[package]]
+name = "aivs-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

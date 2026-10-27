@@ -7,7 +7,12 @@ publish = false
 license = "GPL-3.0-only"
 description = "Native Rust workspace for local AI video generation and Codex"
 
+[workspace]
+members = ["crates/aivs-core"]
+resolver = "3"
+
 [dependencies]
+aivs-core = { path = "crates/aivs-core" }
 egui = "0.35"
 egui-wgpu = { version = "0.35", features = ["winit"] }
 egui-winit = "0.35"

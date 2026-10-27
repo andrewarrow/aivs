@@ -2,7 +2,6 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     env,
-    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command as ProcessCommand, Stdio},
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
@@ -12,6 +11,7 @@ use std::{
 
 mod messages;
 
+use aivs_core::codex::{AppServerOutput, initialize_params, read_app_server_output, write_message};
 use messages::handle_app_server_message;
 
 const CODEX_PATH_ENV: &str = "AIVS_CODEX_PATH";
@@ -60,12 +60,6 @@ pub(crate) enum CodexCommand {
     },
     CancelChatMessage,
     Shutdown,
-}
-
-enum AppServerOutput {
-    Message(Value),
-    Invalid(String),
-    Closed,
 }
 
 #[derive(Clone, Copy)]
@@ -152,13 +146,7 @@ impl ProtocolState {
     fn initialize(&mut self) -> Result<(), String> {
         self.request(
             "initialize",
-            json!({
-                "clientInfo": {
-                    "name": "aivs",
-                    "title": "AIVS",
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-            }),
+            initialize_params(),
             PendingRequest::Initialize,
         )
     }
@@ -536,7 +524,7 @@ fn run_worker_with_executable(
                     }
                 }
             }
-            Ok(AppServerOutput::Invalid(message)) => {
+            Ok(AppServerOutput::Invalid(message) | AppServerOutput::Diagnostic(message)) => {
                 log::warn!("Codex App Server returned invalid JSON: {message}");
             }
             Ok(AppServerOutput::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -634,38 +622,6 @@ pub(crate) fn codex_executable() -> PathBuf {
     } else {
         "codex"
     })
-}
-
-fn read_app_server_output(stdout: std::process::ChildStdout, output: Sender<AppServerOutput>) {
-    for line in BufReader::new(stdout).lines() {
-        match line {
-            Ok(line) if line.trim().is_empty() => continue,
-            Ok(line) => match serde_json::from_str(&line) {
-                Ok(message) => {
-                    if output.send(AppServerOutput::Message(message)).is_err() {
-                        return;
-                    }
-                }
-                Err(error) => {
-                    let _ = output.send(AppServerOutput::Invalid(error.to_string()));
-                }
-            },
-            Err(error) => {
-                let _ = output.send(AppServerOutput::Invalid(error.to_string()));
-                break;
-            }
-        }
-    }
-    let _ = output.send(AppServerOutput::Closed);
-}
-
-fn write_message(stdin: &mut ChildStdin, message: &Value) -> Result<(), String> {
-    serde_json::to_writer(&mut *stdin, message)
-        .map_err(|error| format!("could not encode a Codex App Server request: {error}"))?;
-    stdin
-        .write_all(b"\n")
-        .and_then(|_| stdin.flush())
-        .map_err(|error| format!("could not send a request to Codex App Server: {error}"))
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-"""Mocked physical-world/sequence contracts. No GPU, subprocesses or image models.
+"""Physical-world/sequence contracts against the built Rust engine. No models.
 
 Written for explicit local execution by the user; not run during implementation.
 """

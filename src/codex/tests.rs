@@ -6,7 +6,7 @@ use super::messages::{
 };
 use super::*;
 use std::fs;
-use std::io::BufRead;
+use std::io::{BufRead, BufReader};
 
 #[cfg(unix)]
 struct ProtocolHarness {

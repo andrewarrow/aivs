@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 
 import quality_backend
+import rust_engine
 import shooting_script
 import storyboard
 import storyboard_continuity as continuity
@@ -31,12 +32,11 @@ def _read(path):
 
 def director_cache_key(request, profiles):
     """Image renderer changes never invalidate source-bound director coverage."""
-    directory = Path(__file__).resolve().parent
     files = ("shooting_script.py", "shooting-script-instructions.txt",
              "render_formats.py", "storyboard_continuity.py")
     identity = {
         "source": shooting_script.parse_request(request, profiles)["source_sha256"],
-        "implementation": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+        "implementation": {name: rust_engine.implementation_sha256(name)
                            for name in files},
         "tokenizer_revision": quality_backend.MODEL_REVISION,
     }
@@ -45,12 +45,11 @@ def director_cache_key(request, profiles):
 
 def cache_key(request, profiles):
     """Final motion direction also depends on the rendered and inspected images."""
-    directory = Path(__file__).resolve().parent
     files = ("shooting-script-review-instructions.txt", "storyboard.py", "storyboard_backend.py",
              "storyboard_mflux.py", "prop_reference.py", "preproduction.py")
     return continuity.digest({"director": director_cache_key(request, profiles),
         "backend": storyboard.storyboard_backend.configuration(),
-        "implementation": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}})
+        "implementation": {name: rust_engine.implementation_sha256(name) for name in files}})
 
 
 def _prepare_director(request, profiles, run_dir, *, fresh, options):

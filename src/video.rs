@@ -281,6 +281,9 @@ impl Worker {
         if self.cancel.load(Ordering::Relaxed) {
             return Err("Stopped".into());
         }
+        if let Ok(executable) = std::env::current_exe() {
+            command.env("AIVS_ENGINE_PATH", executable);
+        }
         command
             .current_dir(&self.root)
             .env("AIVS_WORKSPACE", &self.root)

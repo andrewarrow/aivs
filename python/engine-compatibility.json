@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "baseline_commit": "059ee24",
+  "continuity_policy": "storyboard-continuity-v2",
+  "artifact_codec": "python-json-sort-keys-utf8-compact-v1",
+  "python": {
+    "storyboard_continuity.py": {
+      "legacy_sha256": "5a66cf9e15e15768c6ebebe8cfa87afb726914fb4273c1b9c04c573dc14f30b5",
+      "migrated_sha256": "8a1fc0918be44f7d518659d237572f79d7b9d3e7ba9c99d99f6fc0165c3aca64"
+    },
+    "shooting_script.py": {
+      "legacy_sha256": "d366d925d6a01c6e7038ee8c66d1b9905b7af09adb2bb588bd293e158ef2212f",
+      "migrated_sha256": "61c326b01ede3cbbc6d99fe5207e16b12ebf7924f6afe79e1ce3b536fe290e02"
+    },
+    "preproduction.py": {
+      "legacy_sha256": "241e6f94e9f2fef09f9c0205b75f2c14519cf1220b6f3611aacdc0f589b3ca40",
+      "migrated_sha256": "c7208e7cfa86b12609161a4c6e3e864167f27c4242a1cbffa0d89205369bd1b7"
+    }
+  },
+  "bridge_sha256": "5dc200129908237b6b2a85418bcc588d93a93dbb058e4a3f34c840ecded95286",
+  "rust": {
+    "crates/aivs-core/src/lib.rs": "66b32075939fc50cba2f30a470e6709b26c2a4110fac3a5a42079bdf260003b2",
+    "crates/aivs-core/src/continuity.rs": "c5bb0b41acb818556a6a76583dafa7463ffa1e0e7a77c54ffdc6f7ae34257fdc",
+    "crates/aivs-core/src/codex.rs": "448007f9a644ac5575209a4fcf999c9ea160e5d80ea53e68dd58a5880380bc48"
+  }
+}

@@ -1,4 +1,4 @@
-"""Mocked pipeline integration: real checkpoints/hashes, no models or subprocesses.
+"""Mocked pipeline integration: real checkpoints/hashes and a built Rust engine.
 
 Run explicitly with: cd python && python -m unittest test_preproduction_pipeline
 """

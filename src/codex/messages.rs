@@ -13,15 +13,8 @@ pub(super) fn handle_app_server_message(
 ) -> Result<(), String> {
     // Requests from the server have both a method and an id. They must receive
     // a response even when this minimal client does not implement the method.
-    if message.get("method").is_some()
-        && let Some(id) = message.get("id")
-    {
-        return write_message(
-            &mut protocol.stdin,
-            &json!({"id": id, "error": {
-                "code": -32601, "message": "This client does not support this request."
-            }}),
-        );
+    if let Some(response) = aivs_core::codex::unsupported_request(&message) {
+        return write_message(&mut protocol.stdin, &response);
     }
     if let Some(id) = message.get("id").and_then(Value::as_u64) {
         let Some(pending) = protocol.pending.remove(&id) else {

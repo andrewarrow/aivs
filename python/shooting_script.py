@@ -12,7 +12,7 @@ import math
 import os
 from pathlib import Path
 import re
-import selectors
+import rust_engine
 import shutil
 import subprocess
 import tempfile
@@ -992,206 +992,29 @@ def _executable(executable) -> str:
 def _stream_codex(cmd, instruction, *, cwd, deadline, events_path, errors_path, response_path,
                   on_activity, on_activity_delta, output_schema=None, image_paths=(),
                   image_generation=False, on_image=None, on_thread=None, bootstrap_cwd=None):
-    """Use app-server notifications; exec --json only exposes completed text items."""
-    timeout_seconds = max(0.0, deadline - time.monotonic())
-    with events_path.open("wb") as events, \
-            errors_path.open("wb") as errors, selectors.DefaultSelector() as selector:
-        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, cwd=bootstrap_cwd or cwd)
-        # A large screenplay must not block pipe draining while being sent.
-        os.set_blocking(process.stdin.fileno(), False)
-        outgoing = bytearray()
-        pending = {True: b"", False: b""}
-        streamed = set()
-        messages = {}
-        phases = {}
-        finished = False
+    """Compatibility adapter; Rust owns the isolated app-server session."""
+    def receive(event):
+        kind = event["type"]
+        if kind == "activity":
+            on_activity(event["message"])
+        elif kind == "activity_delta":
+            if on_activity_delta is not None:
+                on_activity_delta(event["id"], event["delta"])
+            else:
+                on_activity("Codex: " + event["delta"])
+        elif kind == "image" and on_image is not None:
+            on_image(event["item"])
+        elif kind == "thread" and on_thread is not None:
+            on_thread(event["result"])
 
-        def send(message):
-            if not outgoing:
-                selector.register(process.stdin, selectors.EVENT_WRITE)
-            outgoing.extend((json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8"))
-
-        def stream(stream_id, text):
-            if text:
-                streamed.add(stream_id)
-                if on_activity_delta is not None:
-                    on_activity_delta(stream_id, text)
-                else:
-                    on_activity(f"Codex: {text}")
-
-        def complete_item(item):
-            item_id = item.get("id", "")
-            kind = item.get("type")
-            if kind == "agentMessage":
-                text = item.get("text", "")
-                messages[item_id] = text
-                phases[item_id] = item.get("phase")
-                if item_id not in streamed:
-                    stream(item_id, text)
-            elif kind == "reasoning":
-                for field in ("summary", "content"):
-                    for index, text in enumerate(item.get(field, [])):
-                        stream_id = f"{item_id}:{field}:{index}"
-                        if stream_id not in streamed:
-                            stream(stream_id, text)
-            elif kind == "commandExecution" and item_id not in streamed:
-                stream(item_id, item.get("aggregatedOutput") or "")
-            elif kind == "imageGeneration" and on_image is not None:
-                on_image(item)
-
-        def fail(detail):
-            raise RuntimeError(f"Codex request failed: {detail}")
-
-        def handle(event):
-            nonlocal finished
-            if not isinstance(event, dict):
-                return
-            method = event.get("method")
-            if "id" in event:
-                if method:
-                    send({"id": event["id"], "error": {
-                        "code": -32601, "message": "This client does not support this request."}})
-                    return
-                error = event.get("error")
-                if error:
-                    fail(error.get("message", str(error)) if isinstance(error, dict) else error)
-                result = event.get("result", {})
-                if event["id"] == 1:
-                    send({"method": "initialized", "params": {}})
-                    thread_params = {
-                        "cwd": str(cwd), "approvalPolicy": "never",
-                        "sandbox": "workspace-write" if image_generation else "read-only",
-                        "ephemeral": True, "serviceName": "aivs"}
-                    if image_generation:
-                        thread_params["developerInstructions"] = (
-                            "Create the requested image using the built-in image generation tool. "
-                            "Use every supplied reference image. Do not use external APIs, substitute "
-                            "programmatic drawings, or delegate. Preserve all reference files. "
-                            "Generate exactly one image, then finish. Report unavailable image tools explicitly.")
-                    send({"id": 2, "method": "thread/start", "params": thread_params})
-                elif event["id"] == 2:
-                    thread_id = result.get("thread", {}).get("id")
-                    if not thread_id:
-                        fail("Codex did not return a thread ID.")
-                    if on_thread is not None:
-                        on_thread(result)
-                    on_activity("Codex connected.")
-                    inputs = [{"type": "text", "text": instruction}]
-                    inputs.extend({"type": "localImage", "path": str(Path(path).resolve())}
-                                  for path in image_paths)
-                    turn_params = {
-                        "threadId": thread_id, "input": inputs,
-                        "cwd": str(cwd), "approvalPolicy": "never",
-                        "sandboxPolicy": ({"type": "workspaceWrite", "writableRoots": [str(cwd)],
-                                           "networkAccess": True} if image_generation else {"type": "readOnly"}),
-                        "summary": "detailed"}
-                    if not image_generation:
-                        turn_params["outputSchema"] = output_schema or _SCHEMA
-                    send({"id": 3, "method": "turn/start", "params": turn_params})
-                return
-            params = event.get("params", {})
-            item_id = params.get("itemId", "")
-            if method == "item/agentMessage/delta":
-                delta = params.get("delta", "")
-                messages[item_id] = messages.get(item_id, "") + delta
-                stream(item_id, delta)
-            elif method in ("item/reasoning/summaryTextDelta", "item/reasoning/textDelta"):
-                summary = method == "item/reasoning/summaryTextDelta"
-                field = "summary" if summary else "content"
-                index = params.get("summaryIndex" if summary else "contentIndex", 0)
-                stream(f"{item_id}:{field}:{index}", params.get("delta", ""))
-            elif method in ("item/plan/delta", "item/commandExecution/outputDelta"):
-                stream(item_id, params.get("delta", ""))
-            elif method == "item/started":
-                item = params.get("item", {})
-                if item.get("type") == "agentMessage":
-                    phases[item.get("id", "")] = item.get("phase")
-                elif item.get("type") == "commandExecution":
-                    on_activity(f"Codex running: {item.get('command', '')}")
-                elif item.get("type") == "imageGeneration":
-                    on_activity("Codex is generating the storyboard image")
-            elif method == "item/completed":
-                complete_item(params.get("item", {}))
-            elif method == "turn/completed":
-                turn = params.get("turn", {})
-                for item in turn.get("items", []):
-                    complete_item(item)
-                if turn.get("status") != "completed":
-                    error = turn.get("error") or {}
-                    fail(error.get("message") or f"Turn {turn.get('status', 'failed')}.")
-                finished = True
-            elif method == "error":
-                error = params.get("error") or {}
-                detail = error.get("message") or "Request failed."
-                if not params.get("willRetry"):
-                    fail(detail)
-                on_activity(f"Codex: {detail}")
-
-        def publish(data, protocol):
-            line = data.decode("utf-8", errors="replace").rstrip("\r")
-            if protocol:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    if line.strip():
-                        on_activity(f"Codex: {line}")
-                    return
-                handle(event)
-            elif line.strip():
-                on_activity(f"Codex: {line}")
-
-        try:
-            selector.register(process.stdout, selectors.EVENT_READ, (events, True))
-            selector.register(process.stderr, selectors.EVENT_READ, (errors, False))
-            send({"id": 1, "method": "initialize", "params": {
-                "clientInfo": {"name": "aivs", "title": "AIVS", "version": "0.1.0"}}})
-            while not finished and (selector.get_map() or process.poll() is None):
-                now = time.monotonic()
-                if now >= deadline:
-                    raise subprocess.TimeoutExpired(cmd, timeout_seconds)
-                for key, _ in selector.select(min(0.25, deadline - now)):
-                    if key.fileobj is process.stdin:
-                        try:
-                            written = os.write(key.fd, outgoing[:65536])
-                        except BrokenPipeError:
-                            outgoing.clear()
-                        else:
-                            del outgoing[:written]
-                        if not outgoing:
-                            selector.unregister(process.stdin)
-                        continue
-                    log, protocol = key.data
-                    data = os.read(key.fd, 65536)
-                    if not data:
-                        selector.unregister(key.fileobj)
-                        if pending[protocol]:
-                            publish(pending[protocol], protocol)
-                            pending[protocol] = b""
-                        continue
-                    log.write(data)
-                    log.flush()
-                    lines = (pending[protocol] + data).split(b"\n")
-                    pending[protocol] = lines.pop()
-                    for line in lines:
-                        publish(line, protocol)
-            if not finished:
-                detail = (errors_path.read_text(encoding="utf-8", errors="replace")
-                          or f"App server stopped (exit {process.wait()}).").strip()[-1000:]
-                fail(detail)
-            on_activity("Codex response received.")
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-            process.stdin.close()
-            process.stdout.close()
-            process.stderr.close()
-            # Keep partial generated output even when the turn times out or stops.
-            raw = next((text for item_id, text in reversed(messages.items())
-                        if phases.get(item_id) != "commentary"), "")
-            response_path.write_text(raw, encoding="utf-8")
-        return raw
+    return rust_engine.call(
+        "codex", on_event=receive, command=[str(part) for part in cmd], instruction=instruction,
+        cwd=str(Path(cwd).resolve()), bootstrap_cwd=str(Path(bootstrap_cwd or cwd).resolve()),
+        timeout_seconds=max(0.0, deadline - time.monotonic()),
+        events_path=str(Path(events_path).resolve()), errors_path=str(Path(errors_path).resolve()),
+        response_path=str(Path(response_path).resolve()), output_schema=output_schema or _SCHEMA,
+        image_paths=[str(Path(path).resolve()) for path in image_paths], image_generation=image_generation,
+    )
 
 
 def _atomic_json(path: Path, value: dict) -> None:
