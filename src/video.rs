@@ -418,7 +418,20 @@ fn read_output(
             {
                 match value["event"].as_str().unwrap_or_default() {
                     "progress" => {
-                        let label = value["label"].as_str().unwrap_or_default().to_owned();
+                        let mut label = value["label"].as_str().unwrap_or_default().to_owned();
+                        if let Some(downloaded) = value["downloaded_bytes"].as_u64() {
+                            let gb = 1_000_000_000.0;
+                            label.push_str(&format!(
+                                "\n{:.2} GB downloaded",
+                                downloaded as f64 / gb
+                            ));
+                            if let Some(total) = value["total_bytes"].as_u64() {
+                                label.push_str(&format!(
+                                    " · {:.2} GB remaining",
+                                    total.saturating_sub(downloaded) as f64 / gb
+                                ));
+                            }
+                        }
                         let fraction = value["fraction"]
                             .as_f64()
                             .map(|value| value.clamp(0.0, 1.0) as f32);

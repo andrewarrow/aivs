@@ -91,7 +91,8 @@ def model_path(download=False, progress_class=None, *, profile="distilled", on_p
             pass
         preflight = preflight_download(profile)
         if on_progress is not None:
-            on_progress(label="Downloading the distilled and HQ video models", fraction=0.0)
+            on_progress(label="Downloading the distilled and HQ video models", fraction=0.0,
+                        downloaded_bytes=0, total_bytes=preflight["missing_bytes"])
             progress_class = download_progress_class(preflight["missing_bytes"], on_progress)
         token = _download_token()
     else:

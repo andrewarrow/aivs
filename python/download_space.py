@@ -40,7 +40,9 @@ def download_progress_class(total_bytes, on_progress):
                 now = time.monotonic()
                 if now - last_sent >= 0.25:
                     on_progress(label="Downloading the distilled and HQ video models",
-                                fraction=min(completed / total_bytes, 0.99))
+                                fraction=min(completed / total_bytes, 0.99),
+                                downloaded_bytes=min(int(completed), total_bytes),
+                                total_bytes=total_bytes)
                     last_sent = now
 
         def update(self, n=1):

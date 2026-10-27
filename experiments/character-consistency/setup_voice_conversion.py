@@ -16,8 +16,8 @@ DEFAULT_WORKSPACE = Path(os.environ.get("AIVS_WORKSPACE", Path(__file__).resolve
 REQUIREMENTS = Path(__file__).with_name("requirements-seed-vc.txt")
 
 
-def _progress(label: str) -> None:
-    print("AIVS_EVENT " + json.dumps({"event": "progress", "label": label}), flush=True)
+def _progress(label: str, **data) -> None:
+    print("AIVS_EVENT " + json.dumps({"event": "progress", "label": label, **data}), flush=True)
 
 
 def _checkout(code: Path, pins: dict) -> None:
@@ -61,8 +61,9 @@ def setup(workspace: Path) -> None:
                 subprocess.run(["git", "clone", "--depth", "1", pins["code_repository"], str(staged)], check=True)
                 _checkout(staged, pins)
                 staged.rename(code)
-        _progress("Downloading saved-character voice models (verified files are reused)")
-        download(cache / "seed-vc-models")
+        _progress("Checking saved-character voice models and download sizes")
+        download(cache / "seed-vc-models", on_progress=lambda **data:
+                 _progress("Downloading saved-character voice models (verified files are reused)", **data))
 
 
 if __name__ == "__main__":
