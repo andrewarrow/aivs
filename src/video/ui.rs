@@ -93,7 +93,13 @@ impl VideoWorkspace {
                 ui.add(
                     egui::Label::new(format!(
                         "LTX-2.5 · {} · 24 fps · generated speech and video",
-                        self.render_format.label()
+                        match self.render_profile {
+                            crate::settings::RenderProfile::Distilled => match self.render_format {
+                                crate::settings::RenderFormat::Landscape => "320 × 180 · 16:9",
+                                crate::settings::RenderFormat::Portrait => "180 × 320 · 9:16",
+                            },
+                            crate::settings::RenderProfile::Hq => self.render_format.label(),
+                        }
                     ))
                     .wrap(),
                 );
@@ -146,7 +152,7 @@ impl VideoWorkspace {
                             .response
                             .labelled_by(label.id)
                             .on_hover_text(
-                                "Both options generate a storyboard image for every shot.",
+                                "Preview renders a small 180p video for speed. Final uses full resolution. Both use the same storyboards, shot timing, and audio workflow; generated details may differ.",
                             );
                     });
                     if profile != self.render_profile {

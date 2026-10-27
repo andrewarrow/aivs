@@ -225,7 +225,7 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     fs::write(run.join("screenplay.txt"), text(&request, "script")?).map_err(|e| e.to_string())?;
     save(&run.join("screenplay-request.json"), &request)?;
     let spec = if request.get("render_format").is_some() {
-        render_formats::resolve(&request["render_format"])?
+        render_formats::for_profile(&request["render_format"], &profile)?
     } else {
         Value::Null
     };
@@ -309,8 +309,12 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let seed = report["seed"]
         .as_i64()
         .ok_or("Cannot resume this directory: the saved cast or seed is missing.")?;
+    let profile = report["render_profile"]
+        .as_str()
+        .unwrap_or("distilled")
+        .to_owned();
     let spec = if request.get("render_format").is_some() {
-        render_formats::resolve(&request["render_format"])?
+        render_formats::for_profile(&request["render_format"], &profile)?
     } else {
         Value::Null
     };
@@ -331,10 +335,6 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     {
         return Err("Cannot change the saved voice mode on Resume; start a new render.".into());
     }
-    let profile = report["render_profile"]
-        .as_str()
-        .unwrap_or("distilled")
-        .to_owned();
     let config = model_config(&profile)?;
     if request["render_profile"].as_str().unwrap_or("distilled") != profile {
         return Err("Cannot resume a run with a different render profile.".into());

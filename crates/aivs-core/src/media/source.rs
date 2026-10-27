@@ -45,7 +45,9 @@ pub(super) fn anchors(args: &Value) -> Result<Value> {
             );
         }
         let mut info = image(&path(anchor, "file")?)?;
-        if info["width"] != width || info["height"] != height {
+        // Preview reuses the validated full-resolution anchors; the runtime
+        // resizes image conditioning to each inference stage's canvas.
+        if args["allow_resize"] != true && (info["width"] != width || info["height"] != height) {
             return Err("Image anchors must match the model dimensions.".into());
         }
         if info["source_sha256"] != anchor["sha256"] {

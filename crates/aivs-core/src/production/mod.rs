@@ -93,7 +93,7 @@ pub fn model_config(profile: &str) -> Result<Value> {
     let mut value = json!({"backend":"mlx", "model":"dgrauet/ltx-2.5-mlx-q8", "model_revision":MODEL_REVISION,
         "runtime_revision":"14a3ddd6054736beb45b4d836135fa4d44490531", "profile":profile,
         "pipeline":if profile == "hq" {"hq-two-stage"} else {"distilled-two-stage"},
-        "stage1_steps":if profile == "hq" {15} else {8}, "stage2_steps":3,
+        "stage1_steps":if profile == "hq" {15} else {8}, "stage2_steps":if profile == "hq" {3} else {1},
         "quantization":"int8", "low_memory":true, "low_ram_streaming":true});
     if profile == "hq" {
         merge(
@@ -101,6 +101,8 @@ pub fn model_config(profile: &str) -> Result<Value> {
             &json!({"sampler":"res_2s", "cfg_scale":3.0, "stg_scale":0.0, "enable_teacache":false,
                 "negative_prompt_suffix":"subtitles, captions, text overlays, on-screen text"}),
         )?;
+    } else {
+        merge(&mut value, &json!({"preview_long_edge":320}))?;
     }
     Ok(value)
 }

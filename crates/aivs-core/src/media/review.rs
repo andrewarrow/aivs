@@ -38,7 +38,11 @@ pub(super) fn sheets(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
         indices.push(total - 1);
     }
     let crop = spec.as_ref().map_or(String::new(), |s| {
-        format!("crop={}:{},", s["width"], s["height"])
+        // Use the delivery aspect ratio at either preview or final resolution.
+        format!(
+            "crop='trunc(min(iw,ih*{}/{})/2)*2':'trunc(min(ih,iw*{}/{})/2)*2',",
+            s["width"], s["height"], s["height"], s["width"]
+        )
     });
     let filter = format!(
         "select=lt(n\\,{total})*(not(mod(n\\,6))+eq(n\\,{})),{crop}scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2",
@@ -116,8 +120,17 @@ pub(super) fn sheets(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
         temporary.persist(&target).map_err(|e| e.to_string())?;
         sheets.push(target);
     }
+    let delivery_crop = if let Some(spec) = spec {
+        let frame = image::open(&full_final).map_err(|e| e.to_string())?;
+        let aspect = spec["width"].as_f64().ok_or("Invalid delivery width.")?
+            / spec["height"].as_f64().ok_or("Invalid delivery height.")?;
+        json!({"width": (f64::from(frame.width()).min(f64::from(frame.height()) * aspect) / 2.0).floor() as u64 * 2,
+            "height": (f64::from(frame.height()).min(f64::from(frame.width()) / aspect) / 2.0).floor() as u64 * 2})
+    } else {
+        Value::Null
+    };
     let evidence = json!({"sample_fps": FPS as f64/6.0, "contact_sheets": sheets, "final_frame": files.last(),
-        "full_final_frame": full_final, "delivery_crop": spec.map(|s| json!({"width": s["width"], "height": s["height"]})),
+        "full_final_frame": full_final, "delivery_crop": delivery_crop,
         "frames": indices.iter().zip(&files).map(|(frame,path)| json!({"frame": frame, "seconds": *frame as f64/FPS as f64, "file": path})).collect::<Vec<_>>()});
     atomic_json(&directory.join("frames.json"), &evidence)?;
     Ok(evidence)

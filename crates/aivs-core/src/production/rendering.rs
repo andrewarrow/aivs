@@ -91,11 +91,22 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let output = path(args, "output")?;
     let run = output.parent().ok_or("Missing output directory.")?;
     fs::create_dir_all(run).map_err(|e| e.to_string())?;
-    let (width, height) = boards::dimensions(plan)?;
+    let profile = args["profile"]
+        .as_str()
+        .or(args["render_config"]["profile"].as_str())
+        .unwrap_or("distilled");
     let spec = if plan.get("render_format").is_some() {
-        render_formats::resolve(&plan["render_format"])?
+        render_formats::for_profile(&plan["render_format"], profile)?
     } else {
         Value::Null
+    };
+    let (width, height) = if spec.is_null() {
+        boards::dimensions(plan)?
+    } else {
+        (
+            spec["model_width"].as_u64().ok_or("Invalid model width.")?,
+            spec["model_height"].as_u64().ok_or("Invalid model height.")?,
+        )
     };
     let bindings = if boards.is_null() {
         Value::Null
@@ -125,10 +136,6 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let mut last = RenderProgress::default();
     let mut completed = 0_u64;
     let started = Instant::now();
-    let profile = args["profile"]
-        .as_str()
-        .or(args["render_config"]["profile"].as_str())
-        .unwrap_or("distilled");
     let config = &args["render_config"];
     for (index, planned) in shots.iter().enumerate() {
         ctx.check()?;
@@ -434,7 +441,7 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     };
     let video = shot_renderer::storage(
         "take_assemble",
-        &json!({"clip_count":shots.len(),"output":output,"seconds":seconds,"fade_out":validated["fade_out"],"width":delivery_width,"height":delivery_height,"crop":!spec.is_null()}),
+        &json!({"clip_count":shots.len(),"output":output,"seconds":seconds,"fade_out":validated["fade_out"],"width":delivery_width,"height":delivery_height,"crop":!spec.is_null(),"profile":profile}),
         &ctx.cancelled,
     )?;
     let scene = if automatic {

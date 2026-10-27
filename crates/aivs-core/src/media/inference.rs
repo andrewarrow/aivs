@@ -27,7 +27,8 @@ pub(super) fn prepare(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
         Value::Null
     } else {
         source::anchors(
-            &json!({"anchors": args["image_anchors"], "frames": frames, "width": width, "height": height}),
+            &json!({"anchors": args["image_anchors"], "frames": frames, "width": width, "height": height,
+                "allow_resize": profile == "distilled"}),
         )?
     };
     let hold = args["hold_image_framing"] == true;
@@ -87,13 +88,14 @@ pub(super) fn prepare(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
         json!(target)
     };
     Ok(
-        json!({"image": image, "anchors": anchors, "audio": audio, "native": native,
+        json!({"profile": profile, "image": image, "anchors": anchors, "audio": audio, "native": native,
         "partial": partial, "inference_frames": inference_frames, "conditioning_audio": conditioning_audio}),
     )
 }
 
 pub(super) fn finish(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
     let prepared = &args["prepared"];
+    let preview = prepared["profile"] == "distilled";
     let frames = integer(args, "frames")?;
     let width = integer(args, "width")?;
     let height = integer(args, "height")?;
@@ -122,7 +124,7 @@ pub(super) fn finish(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
             "-c:a",
             "aac",
             "-b:a",
-            "192k",
+            if preview { "96k" } else { "192k" },
             "-ar",
             "48000",
             "-ac",
@@ -132,9 +134,9 @@ pub(super) fn finish(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
             "-c:v",
             "libx264",
             "-preset",
-            "fast",
+            if preview { "veryfast" } else { "fast" },
             "-crf",
-            "18",
+            if preview { "28" } else { "18" },
             "-pix_fmt",
             "yuv420p",
             "-movflags",

@@ -185,8 +185,11 @@ motion prompt; separate start/end notes support continuity review.
 
 **Final (HQ)** is the default Quality setting beside **Generate video**. It uses
 the full transformer for 15 stage-one steps, then the distilled transformer for
-3 stage-two steps. **Preview (distilled)** uses 8+3 steps with the same storyboard
-workflow. Neither option submits a paid video API generation.
+3 stage-two steps. **Preview (180p · fastest)** generates at 320×192 (landscape)
+or 192×320 (portrait), then crops to 320×180 or 180×320 delivery. It uses 8+1
+steps and faster encoding with the same storyboards, shot timing, 24 fps, and audio
+workflow. Low-resolution generation previews composition and timing; it can differ
+from the final HQ take. Neither option submits a paid video API generation.
 
 New plans use the `single-render-v1` policy to spend planning effort before expensive
 video inference. Each missing shot receives one generation, with no automatic rerender
@@ -242,7 +245,7 @@ From this checkout:
    planning budget if needed. Landscape and 10 minutes are the defaults.
    These settings save to `settings.json` in the workspace.
 7. Select a scene by its heading above **Generate video**, then choose
-   **Generate video**. Choose **Preview (distilled)** under Quality for faster
+   **Generate video**. Choose **Preview (180p · fastest)** under Quality for faster
    video inference; **Final (HQ)** is the default. Only the selected scene and
    its cast are sent for generation. **Activity** shows planning, storyboard,
    and rendering progress.

@@ -66,7 +66,7 @@ impl RenderProfile {
     pub fn label(self) -> &'static str {
         match self {
             Self::Hq => "Final (HQ)",
-            Self::Distilled => "Preview (distilled)",
+            Self::Distilled => "Preview (180p · fastest)",
         }
     }
 

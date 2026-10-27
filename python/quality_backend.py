@@ -46,12 +46,13 @@ def profile_config(profile="distilled"):
         "backend": "mlx", "model": MODEL_REPO, "model_revision": MODEL_REVISION,
         "runtime_revision": RUNTIME_REVISION, "profile": profile,
         "pipeline": "hq-two-stage" if profile == "hq" else "distilled-two-stage",
-        "stage1_steps": 15 if profile == "hq" else 8, "stage2_steps": 3,
+        "stage1_steps": 15 if profile == "hq" else 8,
+        "stage2_steps": 3 if profile == "hq" else 1,
         "quantization": "int8", "low_memory": True, "low_ram_streaming": True,
         **({"sampler": "res_2s", "cfg_scale": 3.0, "stg_scale": 0.0,
             "enable_teacache": False,
             "negative_prompt_suffix": "subtitles, captions, text overlays, on-screen text"}
-           if profile == "hq" else {}),
+           if profile == "hq" else {"preview_long_edge": 320}),
     }
 
 
@@ -193,6 +194,8 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
             hold_image_framing,
             anchors,
         )
+        generation_options.update(stage1_steps=config["stage1_steps"],
+                                  stage2_steps=config["stage2_steps"])
         if profile == "hq":
             from ltx_pipelines_mlx.utils.constants import DEFAULT_NEGATIVE_PROMPT
             # Extend the pinned runtime's quality exclusions instead of replacing them.

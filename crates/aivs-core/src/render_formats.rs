@@ -19,6 +19,23 @@ pub fn resolve(name: &Value) -> Result<Value> {
     }))
 }
 
+/// Keep delivery aspect ratios while reducing inference, not just the encoded file.
+pub fn for_profile(name: &Value, profile: &str) -> Result<Value> {
+    let mut spec = resolve(name)?;
+    if profile == "distilled" {
+        let (width, height) = if name == "portrait" {
+            (180_u64, 320_u64)
+        } else {
+            (320_u64, 180_u64)
+        };
+        spec["width"] = json!(width);
+        spec["height"] = json!(height);
+        spec["model_width"] = json!(width.div_ceil(64) * 64);
+        spec["model_height"] = json!(height.div_ceil(64) * 64);
+    }
+    Ok(spec)
+}
+
 pub fn framing(name: &Value) -> Value {
     json!(if name == "portrait" {
         "Compose for a vertical 9:16 portrait frame. Keep faces, active hands, and essential props inside the narrow central frame. "

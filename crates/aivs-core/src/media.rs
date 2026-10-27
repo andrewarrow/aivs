@@ -151,6 +151,7 @@ fn extract(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
 }
 
 fn assemble(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
+    let preview = args["profile"] == "distilled";
     let output = path(args, "output")?;
     if !output.is_absolute() {
         return Err("Assembly output path must be absolute.".into());
@@ -222,15 +223,15 @@ fn assemble(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
                 "-c:v",
                 "libx264",
                 "-preset",
-                "fast",
+                if preview { "veryfast" } else { "fast" },
                 "-crf",
-                "18",
+                if preview { "28" } else { "18" },
                 "-pix_fmt",
                 "yuv420p",
                 "-c:a",
                 "aac",
                 "-b:a",
-                "192k",
+                if preview { "96k" } else { "192k" },
                 "-ar",
                 "48000",
                 "-ac",
