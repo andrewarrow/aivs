@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 import rust_engine
 
-from download_space import preflight_downloads, valid_cached_file
+from download_space import download_progress_class, preflight_downloads, valid_cached_file
 
 ROOT = Path(os.environ.get("AIVS_WORKSPACE", Path(__file__).resolve().parents[1])).resolve()
 CACHE = ROOT / ".cache" / "huggingface"
@@ -79,7 +79,7 @@ def preflight_download(profile="distilled"):
                                token=_download_token())
 
 
-def model_path(download=False, progress_class=None, *, profile="distilled"):
+def model_path(download=False, progress_class=None, *, profile="distilled", on_progress=None):
     from huggingface_hub import snapshot_download
 
     profile_config(profile)
@@ -89,7 +89,10 @@ def model_path(download=False, progress_class=None, *, profile="distilled"):
             return model_path(profile=profile)
         except (OSError, RuntimeError):
             pass
-        preflight_download(profile)
+        preflight = preflight_download(profile)
+        if on_progress is not None:
+            on_progress(label="Downloading the distilled and HQ video models", fraction=0.0)
+            progress_class = download_progress_class(preflight["missing_bytes"], on_progress)
         token = _download_token()
     else:
         token = False
@@ -110,6 +113,7 @@ def model_path(download=False, progress_class=None, *, profile="distilled"):
                 hf_hub_download(
                     MODEL_REPO, exc.filename, revision=MODEL_REVISION,
                     cache_dir=str(CACHE / "hub"), token=token, force_download=True,
+                    tqdm_class=progress_class,
                 )
     validate_snapshot(snapshot, profile=profile)
     return snapshot

@@ -554,7 +554,7 @@ pub fn setup(ctx: &mut Context<'_>, download: bool, profile: &str) -> Result<Val
         ctx.activity("Downloading pinned video models; cached files are reused")?;
         ctx.worker("model_download", json!({"profile":profile}))?;
     }
-    ctx.activity("Checking Python packages and Apple GPU")?;
+    ctx.event(json!({"type":"progress","label":"Checking Python packages and Apple GPU"}))?;
     ctx.worker("model_doctor", json!({}))?;
     ctx.activity("Checking cached video, text encoder, and audio weights")?;
     ctx.worker("model_check", json!({"profile":profile}))?;

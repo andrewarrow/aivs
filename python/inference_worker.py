@@ -42,7 +42,11 @@ def main():
                     result = None
                 else:
                     result = str(quality_backend.model_path(profile=args.get("profile", "hq"),
-                                                            download=operation == "model_download"))
+                                                            download=operation == "model_download",
+                                                            on_progress=lambda **data:
+                                                                send(event={"type": "progress", **data})))
+                    if operation == "model_download":
+                        send(event={"type": "progress", "label": "Video models downloaded", "fraction": 1.0})
             elif operation == "ltx_render":
                 import quality_backend
                 result = quality_backend._render_model(**args, on_progress=lambda **data:

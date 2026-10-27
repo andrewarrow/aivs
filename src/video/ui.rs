@@ -59,9 +59,13 @@ impl VideoWorkspace {
                         ui.add_space(8.0);
                         ui.add(egui::Label::new(&self.status).wrap());
                         if self.job.is_some() {
-                            ui.add(egui::ProgressBar::new(self.fraction.unwrap_or(0.0))
+                            let mut progress = egui::ProgressBar::new(self.fraction.unwrap_or(0.0))
                                 .animate(self.fraction.is_none())
-                                .desired_width(width));
+                                .desired_width(width);
+                            if self.fraction.is_some() {
+                                progress = progress.show_percentage();
+                            }
+                            ui.add(progress);
                             ui.label("Setup checks space for the video models before downloading weights. Codex generates storyboard images. Cached files are reused. Keep AIVS open.");
                         }
                         self.error_ui(ui);

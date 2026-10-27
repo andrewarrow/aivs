@@ -2,8 +2,54 @@
 from fnmatch import fnmatchcase
 from pathlib import Path
 import shutil
+import threading
+import time
 
 import rust_engine
+
+
+def download_progress_class(total_bytes, on_progress):
+    """Report completed bytes against preflight's fixed total, including resumed bytes."""
+    from tqdm.auto import tqdm
+
+    lock = threading.RLock()
+    completed, last_sent = 0, 0.0
+
+    class DownloadProgress(tqdm):
+        def __init__(self, *args, **kwargs):
+            # HF exposes both network transfer and file reconstruction bars.
+            # Count reconstruction only so Xet transfers aren't counted twice.
+            self._count_bytes = (kwargs.get("unit") == "B"
+                                 and not kwargs.get("desc", "").lower().endswith("downloading bytes"))
+            self._reported = 0
+            kwargs["disable"] = False
+            super().__init__(*args, **kwargs)
+            self._publish()
+
+        def display(self, *args, **kwargs):
+            # Progress goes over the worker protocol, never terminal escape codes.
+            pass
+
+        def _publish(self):
+            nonlocal completed, last_sent
+            if not self._count_bytes or not total_bytes:
+                return
+            with lock:
+                completed += max(0, self.n - self._reported)
+                self._reported = self.n
+                now = time.monotonic()
+                if now - last_sent >= 0.25:
+                    on_progress(label="Downloading the distilled and HQ video models",
+                                fraction=min(completed / total_bytes, 0.99))
+                    last_sent = now
+
+        def update(self, n=1):
+            with lock:
+                result = super().update(n)
+                self._publish()
+                return result
+
+    return DownloadProgress
 
 
 def valid_cached_file(path, *, filename=None, expected_size=None):

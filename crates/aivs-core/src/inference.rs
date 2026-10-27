@@ -204,9 +204,16 @@ pub fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         if heartbeat.elapsed() >= Duration::from_secs(20) {
-            emit(
-                json!({"type": "activity", "message": if operation.starts_with("mflux_") { "Generating the storyboard image locally" } else { "Running local LTX inference" }}),
-            )?;
+            let message = match operation {
+                "model_download" => "Downloading video models; cached files are reused",
+                "model_check" => "Checking cached video model files",
+                "model_doctor" => "Checking Python packages and Apple GPU",
+                operation if operation.starts_with("mflux_") => {
+                    "Generating the storyboard image locally"
+                }
+                _ => "Running local LTX inference",
+            };
+            emit(json!({"type": "activity", "message": message}))?;
             heartbeat = Instant::now();
         }
     }
