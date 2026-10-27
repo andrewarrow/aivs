@@ -1,4 +1,6 @@
 //! Production rules and Codex sessions without a desktop, GPU, or Python runtime.
+#![recursion_limit = "256"]
+
 pub mod artifacts;
 pub mod character_conditioning;
 pub mod characters;
