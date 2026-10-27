@@ -1,22 +1,15 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, TryRecvError},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
-struct Reference {
-    path: PathBuf,
-    label: String,
-    stamp: (Option<SystemTime>, u64),
-    texture: Option<egui::TextureHandle>,
-    loading: Option<Receiver<Result<egui::ColorImage, String>>>,
-}
+use super::image_preview::ImagePreview;
 
 #[derive(Default)]
 pub(super) struct ReferencesPanel {
     project_root: PathBuf,
-    references: Vec<Reference>,
+    references: Vec<ImagePreview>,
     refreshed_at: Option<Instant>,
     load_failed: bool,
 }
@@ -49,39 +42,7 @@ impl ReferencesPanel {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for reference in &mut self.references {
-                    if let Some(receiver) = &reference.loading {
-                        match receiver.try_recv() {
-                            Ok(result) => {
-                                reference.texture = result.ok().map(|image| {
-                                    ui.ctx().load_texture(
-                                        reference.path.display().to_string(),
-                                        image,
-                                        egui::TextureOptions::LINEAR,
-                                    )
-                                });
-                                reference.loading = None;
-                            }
-                            Err(TryRecvError::Empty) => {
-                                ui.ctx().request_repaint_after(Duration::from_millis(50));
-                            }
-                            Err(TryRecvError::Disconnected) => reference.loading = None,
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.add(egui::Label::new(&reference.label).wrap())
-                        .on_hover_text(reference.path.display().to_string());
-                    if let Some(texture) = &reference.texture {
-                        let size = texture.size_vec2();
-                        let scale = (ui.available_width().max(1.0) / size.x).min(1.0);
-                        ui.add(
-                            egui::Image::new((texture.id(), size * scale))
-                                .alt_text(&reference.label),
-                        );
-                    } else if reference.loading.is_some() {
-                        ui.label("Loading image…");
-                    } else {
-                        ui.label("Reference image unavailable.");
-                    }
+                    reference.ui(ui);
                 }
             });
     }
@@ -118,23 +79,11 @@ impl ReferencesPanel {
                 .or_else(|| data["id"].as_str())
                 .map(str::to_owned)
                 .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
-            let stamp = (metadata.modified().ok(), metadata.len());
             if let Some(reference) = self.references.iter_mut().find(|item| item.path == path) {
-                reference.label = label;
-                if reference.stamp != stamp
-                    || (reference.texture.is_none() && reference.loading.is_none())
-                {
-                    reference.stamp = stamp;
-                    reference.loading = Some(load_image(path.clone()));
-                }
+                reference.refresh(label, &metadata);
             } else {
-                self.references.push(Reference {
-                    loading: Some(load_image(path.clone())),
-                    path: path.clone(),
-                    label,
-                    stamp,
-                    texture: None,
-                });
+                self.references
+                    .push(ImagePreview::new(path.clone(), label, &metadata));
             }
             paths.push(path);
         }
@@ -144,12 +93,4 @@ impl ReferencesPanel {
             .sort_by(|a, b| a.label.cmp(&b.label).then(a.path.cmp(&b.path)));
         Ok(())
     }
-}
-
-fn load_image(path: PathBuf) -> Receiver<Result<egui::ColorImage, String>> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(crate::characters::decode_image(&path));
-    });
-    receiver
 }

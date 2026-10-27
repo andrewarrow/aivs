@@ -2,6 +2,7 @@ use std::{path::PathBuf, time::Duration};
 
 use crate::codex::{ChatGptAccount, CodexClient, CodexEvent, CodexWorkStatus};
 
+mod image_preview;
 pub(crate) mod projects;
 mod references;
 mod runs;
