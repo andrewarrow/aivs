@@ -10,6 +10,7 @@ pub struct CharacterGallery {
     selected: Option<usize>,
     loading: Option<Receiver<Self>>,
     load_failed: bool,
+    deferred_root: Option<PathBuf>,
 }
 
 pub struct Character {
@@ -35,6 +36,22 @@ impl Character {
 }
 
 impl CharacterGallery {
+    pub fn new(root: &Path) -> Self {
+        Self {
+            characters: Vec::new(),
+            selected: None,
+            loading: None,
+            load_failed: false,
+            deferred_root: Some(root.to_owned()),
+        }
+    }
+
+    pub fn load_if_needed(&mut self) {
+        if let Some(root) = self.deferred_root.take() {
+            *self = Self::load_in_background(&root);
+        }
+    }
+
     pub fn load_in_background(root: &Path) -> Self {
         let root = root.to_owned();
         let (sender, receiver) = mpsc::channel();
@@ -49,6 +66,7 @@ impl CharacterGallery {
             selected: None,
             loading: Some(receiver),
             load_failed: false,
+            deferred_root: None,
         }
     }
 
@@ -97,6 +115,7 @@ impl CharacterGallery {
             selected: None,
             loading: None,
             load_failed: false,
+            deferred_root: None,
         }
     }
 

@@ -72,10 +72,10 @@ impl App {
         let mut startup = crate::startup::Timer::new();
         let video = crate::video::VideoWorkspace::new(root.clone());
         startup.mark("video workspace initialized and setup worker started");
-        let characters = crate::characters::CharacterGallery::load_in_background(&root);
-        startup.mark("character gallery worker started");
-        let sets = crate::sets::SetGallery::load_in_background(&root);
-        startup.mark("set gallery worker started");
+        let characters = crate::characters::CharacterGallery::new(&root);
+        startup.mark("character gallery deferred until opened");
+        let sets = crate::sets::SetGallery::new(&root);
+        startup.mark("set gallery deferred until opened");
         let screenplay = crate::screenplay::Screenplay::load(&root);
         startup.mark("screenplay loaded");
         Self {
@@ -83,8 +83,8 @@ impl App {
             screenplay_fraction: 0.5,
             characters,
             sets,
-            characters_open: true,
-            sets_open: true,
+            characters_open: false,
+            sets_open: false,
             screenplay,
             codex_started: false,
             root,
@@ -453,6 +453,12 @@ impl App {
                 });
             }
         });
+        if self.characters_open {
+            self.characters.load_if_needed();
+        }
+        if self.sets_open {
+            self.sets.load_if_needed();
+        }
         let gallery_count = usize::from(self.characters_open) + usize::from(self.sets_open);
         if gallery_count > 0 {
             let gallery_width = (ui.available_width() * 0.30).min(160.0 * gallery_count as f32);

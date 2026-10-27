@@ -23,9 +23,26 @@ pub struct SetGallery {
     selected: Option<usize>,
     loading: Option<Receiver<Self>>,
     load_failed: bool,
+    deferred_root: Option<PathBuf>,
 }
 
 impl SetGallery {
+    pub fn new(root: &Path) -> Self {
+        Self {
+            sets: Vec::new(),
+            selected: None,
+            loading: None,
+            load_failed: false,
+            deferred_root: Some(root.to_owned()),
+        }
+    }
+
+    pub fn load_if_needed(&mut self) {
+        if let Some(root) = self.deferred_root.take() {
+            *self = Self::load_in_background(&root);
+        }
+    }
+
     pub fn load_in_background(root: &Path) -> Self {
         let root = root.to_owned();
         let (sender, receiver) = mpsc::channel();
@@ -40,6 +57,7 @@ impl SetGallery {
             selected: None,
             loading: Some(receiver),
             load_failed: false,
+            deferred_root: None,
         }
     }
 
@@ -84,6 +102,7 @@ impl SetGallery {
             selected: None,
             loading: None,
             load_failed: false,
+            deferred_root: None,
         }
     }
 
