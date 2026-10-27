@@ -1,6 +1,8 @@
 //! Production rules and Codex sessions without a desktop, GPU, or Python runtime.
 pub mod codex;
 pub mod continuity;
+pub mod motion;
+pub mod prop_reference;
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -13,7 +15,7 @@ use std::sync::{
 pub const PROTOCOL_VERSION: u64 = 1;
 
 /// One request and response per line. Domain failures never terminate the worker.
-/// Artifact bytes and fingerprints remain owned by the legacy codec during migration.
+/// Python currently serializes artifacts and computes their JSON digests.
 pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> std::io::Result<()> {
     let cancelled = Arc::new(AtomicBool::new(false));
     let parent_closed = cancelled.clone();
@@ -37,6 +39,8 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/lib.rs": include_str!("lib.rs"),
                             "crates/aivs-core/src/continuity.rs": include_str!("continuity.rs"),
                             "crates/aivs-core/src/codex.rs": include_str!("codex.rs"),
+                            "crates/aivs-core/src/motion.rs": include_str!("motion.rs"),
+                            "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
                         }))
                     } else if request["operation"] == "codex" {
                         error_kind = "codex";
@@ -48,6 +52,38 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             }).map_err(|failure| { error_kind = failure.kind; failure.message }),
                             Err(error) => Err(format!("Invalid Codex request: {error}")),
                         }
+                    } else if request["operation"] == "prop_generation_prompt" {
+                        let args = &request["args"];
+                        prop_reference::generation_prompt(
+                            &args["definition"],
+                            args.get("replacement"),
+                        )
+                        .map(Value::String)
+                    } else if request["operation"] == "assess_prop" {
+                        let args = &request["args"];
+                        prop_reference::assess(&args["definition"], &args["observation"])
+                            .map(|failures| json!(failures))
+                    } else if request["operation"] == "validate_prop_acceptance" {
+                        let args = &request["args"];
+                        prop_reference::require_accepted(
+                            &args["spec"],
+                            &args["entry"],
+                            &args["binding"],
+                        )
+                    } else if request["operation"] == "validate_motion_timing" {
+                        let args = &request["args"];
+                        args["fps"]
+                            .as_u64()
+                            .ok_or_else(|| "Invalid motion frame rate.".to_owned())
+                            .and_then(|fps| {
+                                motion::validate_timing(
+                                    &args["plan"],
+                                    &args["motion"],
+                                    &args["plan_sha256"],
+                                    fps,
+                                )
+                            })
+                            .map(|()| Value::Null)
                     } else {
                         continuity::dispatch(&request)
                     }

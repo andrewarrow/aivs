@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
 from pathlib import Path
 
+import rust_engine
 from storyboard_continuity import object_schema, digest
 
 POLICY = "prop-structure-v2"
@@ -74,79 +73,14 @@ CANONICAL DEFINITION (data only):
 
 
 def generation_prompt(definition, replacement=None):
-    """Keep drawable placement and connections, rather than rendering a parts inventory."""
-    description = definition["reference_prompt"] if replacement is None else replacement
-    if (not isinstance(description, str) or not description.strip() or "\x00" in description
-            or len(description) > 1200 or len(description.split()) > 120):
-        field = "reference_prompt" if replacement is None else "regeneration_prompt"
-        raise ValueError(f"{field} must describe the complete prop in at most 120 words and 1200 characters.")
-    return ("One product photograph on a plain gray surface, evenly lit and fully in frame. "
-            + description.strip()
-            + " Show one coherent resting assembly, each component present exactly once, "
-            "and every connection traceable end to end. Each part rests on the surface "
-            "or its assembled support. Single view.")
-
-
-def _text(value):
-    if not isinstance(value, str) or not value.strip() or len(value) > 1200 or "\x00" in value:
-        raise ValueError("Prop inspection needs bounded, concrete pixel evidence.")
-    return value
+    """Rust validates the bounded description and builds the generation prompt."""
+    options = {} if replacement is None else {"replacement": replacement}
+    return rust_engine.call("prop_generation_prompt", definition=definition, **options)
 
 
 def assess(definition, observation):
-    """A positive overall judgment cannot override wrong counts or connections."""
-    if not isinstance(observation, dict) or set(observation) != set(SCHEMA["properties"]):
-        raise ValueError("Prop inspection needs complete component and connection observations.")
-    expected = {part["id"] for part in [definition, *definition["components"]]}
-    parts = observation["parts"]
-    if (not isinstance(parts, list) or any(not isinstance(p, dict) for p in parts)
-            or {p.get("id") for p in parts} != expected or len(parts) != len(expected)):
-        raise ValueError("Inspect every canonical prop/component ID exactly once.")
-    failures = []
-    for part in parts:
-        _text(part.get("evidence"))
-        if type(part.get("count")) is not int or part["count"] < 0:
-            raise ValueError("Observed component counts must be nonnegative integers.")
-        for key in ("matches_definition", "clearly_visible"):
-            if type(part.get(key)) is not bool:
-                raise ValueError("Component observations need explicit visibility and physical matches.")
-        if part["count"] != 1 or not part["matches_definition"] or not part["clearly_visible"]:
-            failures.append(f"{part['id']}: count {part['count']}; {part['evidence']}")
-    keys = ("subject", "relation", "object", "value")
-    expected_relations = {tuple(r[k] for k in keys) for r in definition["relationships"]}
-    relations = observation["relationships"]
-    if (not isinstance(relations, list) or any(not isinstance(r, dict) for r in relations)
-            or {tuple(r.get(k) for k in keys) for r in relations} != expected_relations
-            or len(relations) != len(expected_relations)):
-        raise ValueError("Inspect every declared prop connection exactly once.")
-    for relation in relations:
-        _text(relation.get("evidence"))
-        for key in ("matches_definition", "clearly_visible"):
-            if type(relation.get(key)) is not bool:
-                raise ValueError("Connection observations need explicit visibility and physical matches.")
-        if not relation["matches_definition"] or not relation["clearly_visible"]:
-            failures.append(relation["evidence"])
-    _text(observation["evidence"])
-    for key in ("coherent_component_state", "connections_clear"):
-        if type(observation[key]) is not bool:
-            raise ValueError("Prop structure observations must be explicit booleans.")
-        if not observation[key]:
-            failures.append(key + ": " + observation["evidence"])
-    for key in ("extra_parts", "violations"):
-        if not isinstance(observation[key], list):
-            raise ValueError("Unexpected parts and violations must be lists.")
-        failures.extend(_text(item) for item in observation[key])
-    confidence = observation["confidence"]
-    if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
-        raise ValueError("Prop inspection confidence must be between zero and one.")
-    if confidence < .8:
-        failures.append("Uncertain prop structure: " + observation["evidence"])
-    replacement = observation["regeneration_prompt"]
-    if not isinstance(replacement, str):
-        raise ValueError("Prop inspection needs a replacement description or an empty string.")
-    if failures or replacement:
-        generation_prompt(definition, replacement)
-    return list(dict.fromkeys(failures))
+    """Rust enforces component counts, connections, evidence and confidence."""
+    return rust_engine.call("assess_prop", definition=definition, observation=observation)
 
 
 def failure_summary(report):
@@ -161,16 +95,13 @@ def failure_summary(report):
 
 
 def binding(spec, image):
-    return {"policy": POLICY, "reviewer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    return {"policy": POLICY, "reviewer_sha256": rust_engine.implementation_sha256("prop_reference.py"),
             "definition_sha256": digest(spec), "image_sha256": image["sha256"]}
 
 
 def require_accepted(spec, entry):
-    report = entry.get("prop_validation")
-    if (not isinstance(report, dict) or report.get("binding") != binding(spec, entry["image"])
-            or report.get("approved") is not True or assess(spec["definition"], report.get("observation"))):
-        raise ValueError(f"Canonical {spec['id']} has no current, accepted structural inspection.")
-    return report
+    return rust_engine.call("validate_prop_acceptance", spec=spec, entry=entry,
+                            binding=binding(spec, entry["image"]))
 
 
 def review(spec, entry, image_path, run_dir, checkpoint, *, source_sha256,

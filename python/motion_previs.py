@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 from pathlib import Path
 import subprocess
 import time
 
 import quality_backend
+import rust_engine
 import storyboard
 import storyboard_backend
 import storyboard_continuity as continuity
@@ -47,6 +47,7 @@ def read(path):
 def identity():
     # New review code invalidates acceptance without touching the five-pass plan.
     return continuity.digest({"policy": POLICY, "implementation": Path(__file__).read_text(),
+                              "rust": rust_engine.implementation_sha256("motion_previs.py"),
                               "continuity": continuity.policy_fingerprint(),
                               "image_backend": storyboard_backend.configuration()})
 
@@ -55,111 +56,10 @@ def _inventory(state):
     return ({c["role"] for c in state["characters"]}, {p["id"] for p in state["props"]})
 
 
-def _physical_state(state, hand_states):
-    """Conservative structural checks; arbitrary prose is still visually reviewed."""
-    continuity.facts(state)
-    roles, props = _inventory(state)
-    hands, docked = {}, {}
-    by_id = {p["id"]: p for p in state["props"]}
-    if (not isinstance(hand_states, list) or len(hand_states) != 2 * len(roles)
-            or {(h["role"], h["hand"]) for h in hand_states} != {(r, side) for r in roles for side in ("left", "right")}):
-        raise ValueError("Every character needs one left-hand and one right-hand object state.")
-    for h in hand_states:
-        if h["object"] not in props | {"none", "unknown", "not-visible"}:
-            raise ValueError("Each hand holds one tracked component, none, or an explicit unknown.")
-        if h["object"] in props:
-            if by_id[h["object"]]["owner"] != h["role"]:
-                raise ValueError("The hand's object owner contradicts the physical state.")
-            if by_id[h["object"]]["support"] != f"{h['role']}:{h['hand']}-hand":
-                raise ValueError("Every held component must be supported by the same tracked hand, not a cradle/base.")
-            hands[h["role"], "holds-" + h["hand"]] = h["object"]
-    for p in state["props"]:
-        if p["owner"] not in roles | continuity.UNKNOWN | {"none"}:
-            raise ValueError("A prop owner must be a tracked character or none/unknown.")
-    for r in state["relationships"]:
-        subject, relation, obj, value = (r[k] for k in ("subject", "relation", "object", "value"))
-        if subject not in roles | props or obj not in roles | props:
-            raise ValueError("Motion relationships must reference tracked characters or prop components.")
-        if relation in ("holds-left", "holds-right"):
-            if subject not in roles or obj not in props or value not in ("yes", "no"):
-                raise ValueError("Hand relationships require a role, holds-left/right, component ID and yes/no.")
-            if value == "no" and hands.get((subject, relation)) == obj:
-                raise ValueError("A negative holding relationship contradicts its explicit hand state.")
-            if value == "yes":
-                key = subject, relation
-                if key in hands and hands[key] != obj:
-                    raise ValueError("Hand-object relationships contradict the explicit hand state.")
-                if next(h["object"] for h in hand_states if (h["role"], "holds-" + h["hand"]) == key) != obj:
-                    raise ValueError("A holding relationship must match its hand state.")
-                hands[key] = obj
-                if by_id[obj]["owner"] != subject or by_id[obj]["support"] != subject + (":left-hand" if relation == "holds-left" else ":right-hand"):
-                    raise ValueError("Hand ownership and component support contradict the grip.")
-        if relation == "docked-in" and value == "yes":
-            if subject not in props or obj not in props or by_id[subject]["support"] != obj:
-                raise ValueError("A docked component must be supported by its tracked cradle/base.")
-            docked[subject] = obj
-    if set(hands.values()) & set(docked):
-        raise ValueError("A component cannot be both held and docked.")
-    for prop in state["props"]:
-        for suffix, relation in ((":left-hand", "holds-left"), (":right-hand", "holds-right")):
-            if prop["support"].endswith(suffix):
-                role = prop["support"][:-len(suffix)]
-                if hands.get((role, relation)) != prop["id"]:
-                    raise ValueError("A hand-supported component needs a matching explicit grip.")
-
-
 def validate_timing(plan, motion):
-    """Expand intervals into existing source-backed continuity contracts."""
-    if motion.get("version") != 1 or motion.get("policy") != POLICY:
-        raise ValueError("Unsupported motion plan.")
-    if motion.get("plan_sha256") != continuity.digest(plan):
-        raise ValueError("Motion keyframes belong to a different finalized shooting plan.")
-    rows = motion.get("shots")
-    if not isinstance(rows, list) or [s.get("shot") for s in rows] != list(range(1, len(plan["shots"]) + 1)):
-        raise ValueError("Motion plans must cover every shot exactly once in order.")
-    expanded = []
-    for shot, row in zip(plan["shots"], rows):
-        frames = row["keyframes"]
-        if not isinstance(frames, list) or len(frames) not in (1, 3, 4):
-            raise ValueError("Use one static frame or three/four movement keyframes per shot.")
-        times = [f["frame"] for f in frames]
-        if (any(type(n) is not int for n in times) or times[0] != 0
-                or any(a >= b for a, b in zip(times, times[1:]))
-                or (len(frames) > 1 and times[-1] != shot["seconds"] * quality_backend.FPS - 1)):
-            raise ValueError("Motion timestamps must be ordered output frames, from zero to the last visible frame.")
-        if frames[0]["state"] != shot["continuity"]["opening"] or frames[0]["transitions"]:
-            raise ValueError("The opening must retain the approved state with no preceding motion transitions.")
-        if frames[-1]["state"] != shot["continuity"]["ending"]:
-            raise ValueError("The final keyframe must reach the existing approved ending state.")
-        keys = set(continuity.facts(frames[0]["state"]))
-        inventory = _inventory(frames[0]["state"])
-        authorized_physical = {(t["entity"], t["field"]) for t in shot["continuity"]["transitions"]
-                               if t["timing"] == "during-shot"}
-        for frame in frames:
-            if (set(continuity.facts(frame["state"])) != keys or _inventory(frame["state"]) != inventory):
-                raise ValueError("Keyframes must retain every component, character, attribute and relationship, including offscreen ones.")
-            _physical_state(frame["state"], frame["hands"])
-            for event in frame["transitions"]:
-                field = event["field"]
-                if (field.startswith(("morphology.", "physical.", "attached-to:", "connected-to:"))
-                        and (event["entity"], field) not in authorized_physical):
-                    raise ValueError("Motion refinement cannot invent physical transformations or detach canonical connections.")
-            for key in ("composition", "action"):
-                continuity._text(frame[key])
-            strength = frame["strength"]
-            if type(strength) not in (int, float) or not 0 < strength <= 1:
-                raise ValueError("Keyframe strengths must be in (0, 1].")
-        intervals = list(zip(frames, frames[1:])) or [(frames[0], frames[0])]
-        for index, (before, after) in enumerate(intervals):
-            transitions = copy.deepcopy(after["transitions"]) if len(frames) > 1 else []
-            if any(t["timing"] != "during-shot" for t in transitions):
-                raise ValueError("Keyframe interval transitions must occur during the shot.")
-            if index == 0:
-                transitions = [t for t in shot["continuity"]["transitions"] if t["timing"] == "across-cut"] + transitions
-            state = before["state"]
-            expanded.append(dict(shot, continuity={"opening": state, "ending": after["state"], "transitions": transitions},
-                                 opening_visible_roles=[c["role"] for c in state["characters"] if c["presence"] == "visible"))
-    continuity.validate_plan(dict(plan, shots=expanded))
+    """Rust validates timed states against the source-backed continuity contracts."""
+    rust_engine.call("validate_motion_timing", plan=plan, motion=motion,
+                     plan_sha256=continuity.digest(plan), fps=quality_backend.FPS)
     return motion
 
 

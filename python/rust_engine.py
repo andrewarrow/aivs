@@ -124,23 +124,13 @@ def call(operation, *, on_event=None, **args):
 
 
 def implementation_sha256(name):
-    """Retain legacy identities only for the exact recorded migration sources.
-
-    Changing any migrated Python file, bridge, or compiled rule source invalidates
-    the compatibility mapping. JSON artifact serialization stays unchanged.
-    """
+    """Bind cached work to the current Python, bridge, and compiled Rust sources."""
     with _lock:
-        # Also ensures the worker matches the checkout before accepting cached work.
         if _process is None or _owner != os.getpid() or _process.poll() is not None:
             call("implementation")
-        actual = hashlib.sha256((ROOT / "python" / name).read_bytes()).hexdigest()
-        compatibility = json.loads(Path(__file__).with_name("engine-compatibility.json").read_text(encoding="utf-8"))
-        migrated = compatibility["python"].get(name)
-        if migrated is None:
-            return actual
-        bridge = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-        if (compatibility["version"] == VERSION and _implementation == compatibility["rust"]
-                and bridge == compatibility["bridge_sha256"] and actual == migrated["migrated_sha256"]):
-            return migrated["legacy_sha256"]
-        identity = {"python": actual, "rust": _implementation, "bridge": bridge}
+        identity = {
+            "python": hashlib.sha256((ROOT / "python" / name).read_bytes()).hexdigest(),
+            "rust": _implementation,
+            "bridge": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        }
         return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

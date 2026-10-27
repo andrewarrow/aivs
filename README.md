@@ -473,12 +473,12 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [src/app.rs](src/app.rs) | Desktop workspace, setup gate, and optional chat UI. |
 | [src/screenplay.rs](src/screenplay.rs) | Screenplay editor, casting, and document persistence. |
 | [src/video.rs](src/video.rs) | Starts setup/render workers, handles cancellation, and reads Python progress events. |
-| [crates/aivs-core](crates/aivs-core) | Headless Rust continuity rules, sequence acceptance, repair dependencies, and shared Codex transport/production sessions. |
-| [python/rust_engine.py](python/rust_engine.py) | Versioned JSON transport to the Rust engine and migration cache compatibility. |
+| [crates/aivs-core](crates/aivs-core) | Headless Rust continuity, prop acceptance, motion state validation, repair dependencies, and shared Codex sessions. |
+| [python/rust_engine.py](python/rust_engine.py) | Versioned JSON transport to the Rust engine and current-source cache fingerprints. |
 | [python/video.py](python/video.py) | Pipeline entry point; `generate_screenplay()` coordinates planning and rendering. |
 | [python/preproduction.py](python/preproduction.py) | Coordinates both planning passes, storyboard generation, and shared preproduction reuse. |
 | [python/shooting_script.py](python/shooting_script.py) | Parses story beats, requests Codex work through Rust, validates screenplay coverage, and saves shooting scripts. |
-| [python/storyboard_continuity.py](python/storyboard_continuity.py) | Schema definitions and legacy artifact codec; continuity decisions run in Rust. |
+| [python/storyboard_continuity.py](python/storyboard_continuity.py) | Schema definitions and artifact serialization; continuity decisions run in Rust. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
 | [python/storyboard.py](python/storyboard.py) | Generates and validates shot-bound storyboard images and their provenance. |
 | [python/storyboard_backend.py](python/storyboard_backend.py) | Generates reference-aware images through the signed-in Codex app-server. |
@@ -519,8 +519,8 @@ Change story direction in the director instructions. Continuity rules belong in
 
 ### Rust engine migration
 
-The first migration slice moves deterministic continuity and production Codex
-sessions into Rust. `aivs-core` has no desktop or model dependencies. The desktop
+Deterministic continuity, canonical prop acceptance, motion keyframe timing and
+hand-object constraints, and production Codex sessions run in Rust. `aivs-core` has no desktop or model dependencies. The desktop
 launches itself with `--engine` before initializing the UI and passes that path
 to Python as `AIVS_ENGINE_PATH`.
 
@@ -548,21 +548,24 @@ the same request ID. A persistent worker serves the Python pipeline. Each Codex
 request creates its own app-server process and ephemeral thread; parent EOF or a
 deadline ends the session and reaps the child.
 
-Python retains the existing JSON serialization and fingerprint algorithms for
-artifacts. [engine-compatibility.json](python/engine-compatibility.json) maps this
-exact migration snapshot to the previous implementation hashes so existing
-director caches, accepted reviews, and Resume bindings keep their identities.
-The mapping is conditional on the migrated Python, bridge, and compiled Rust
-source hashes. Any later change to those sources invalidates that mapping; do
-not refresh it automatically when changing production behavior. Existing assets
-still pass Rust's acceptance rules before inference. Compatibility and the
-five-second telephone experiment require local execution; they were not run as
-part of this change.
+Python currently serializes artifacts and computes their JSON digests. Cache and
+review identities include the current Python source, bridge, and compiled Rust
+sources. There is no compatibility mapping for older implementations: changing
+these sources invalidates earlier identities. Rebuild the engine after changing
+Rust code.
 
-Preproduction scheduling, repair orchestration, motion planning, artifact I/O,
-and video assembly still run in Python. Moving that state machine and narrowing
-Python to isolated inference workers are the next migration phases. LTX/MLX,
-Seed-VC, and optional MFLUX inference are unchanged by this slice.
+`prop_reference` in Rust validates generation descriptions, observed component
+counts and connections, evidence, confidence, and structural acceptance. The
+Python module keeps inspection instructions, schemas, Codex calls and checkpoints.
+`motion` in Rust validates frame timing, endpoint states, component inventories,
+hand ownership/support, docking, and source-backed interval transitions using the
+shared continuity rules. Python still plans and generates keyframes and assesses
+pixel-review findings.
+
+Preproduction scheduling, repair orchestration, artifact I/O, take recovery,
+visual review orchestration, and FFmpeg assembly remain in Python. Moving that
+state machine and narrowing Python to isolated inference workers are the next
+migration phases. LTX/MLX, Seed-VC, and optional MFLUX remain Python inference code.
 
 ## Inspect and debug a run
 
