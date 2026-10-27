@@ -38,8 +38,8 @@ fn prepare_director(
 ) -> Result<Value> {
     let key = director_key(ctx, request, profiles)?;
     let index = ctx
-        .root
-        .join(".cache/preproduction/directors")
+        .preproduction_root()
+        .join("directors")
         .join(format!("{key}.json"));
     let draft = run.join("storyboard-plan.json");
     if ctx.options["fresh"] != true && !draft.exists() && index.is_file() {
@@ -288,10 +288,7 @@ pub fn prepare(
 ) -> Result<Value> {
     fs::create_dir_all(run).map_err(|e| e.to_string())?;
     let key = cache_key(ctx, request, profiles)?;
-    let index = ctx
-        .root
-        .join(".cache/preproduction")
-        .join(format!("{key}.json"));
+    let index = ctx.preproduction_root().join(format!("{key}.json"));
     if run.join("shooting-script.json").is_file() {
         let (plan, _, boards) = load_final(ctx, run, request, profiles)?;
         save(&run.join("storyboards.json"), &boards)?;
@@ -316,9 +313,15 @@ pub fn prepare(
     {
         if let Ok(record) = read(&index) {
             if record["key"] == key {
-                source = record["directory"]
-                    .as_str()
-                    .and_then(|p| Path::new(p).canonicalize().ok());
+                source = record["directory"].as_str().and_then(|p| {
+                    let path = Path::new(p);
+                    let path = if path.is_absolute() {
+                        path.to_owned()
+                    } else {
+                        ctx.project_root()?.join(path)
+                    };
+                    path.canonicalize().ok()
+                });
             }
         }
     }
@@ -448,7 +451,11 @@ pub fn prepare(
         &run.join("preproduction.json"),
         &json!({"cache_key":key,"reused":false,"storyboard_seconds":storyboard_seconds,"planning_budget":budget}),
     )?;
-    if let Err(error) = save(&index, &json!({"key":key,"directory":run})) {
+    let directory = ctx
+        .project_root()
+        .and_then(|root| run.strip_prefix(root).ok().map(Path::to_owned))
+        .unwrap_or_else(|| run.to_owned());
+    if let Err(error) = save(&index, &json!({"key":key,"directory":directory})) {
         ctx.activity(format!("Preproduction is saved in this run; the shared cache index could not be updated: {error}"))?;
     }
     Ok(json!({"plan":plan,"boards":boards}))

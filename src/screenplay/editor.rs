@@ -103,7 +103,9 @@ impl Screenplay {
             );
             if ui.button("Retry loading screenplay").clicked() {
                 let root = self.path.as_ref().unwrap().parent().unwrap().to_owned();
+                let autosave = self.autosave;
                 *self = Self::load(&root);
+                self.autosave = autosave;
             }
             return;
         }
@@ -136,22 +138,19 @@ impl Screenplay {
                 history_navigation = true;
             }
         }
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            self.save();
-        }
         ui.horizontal_wrapped(|ui| {
             ui.strong("Screenplay");
             if self.path.is_some() {
                 let status = if self.save_error.is_some() {
                     "Not saved"
-                } else if self.pending_save.is_some() {
-                    "Saving…"
+                } else if self.modified || self.pending_save.is_some() {
+                    "Unsaved changes"
+                } else if self.autosave {
+                    "Unsaved project"
                 } else {
-                    "Saved locally"
+                    "Saved"
                 };
-                ui.weak(status).on_hover_text(
-                    "Saved to screenplay.json in your workspace. ⌘/Ctrl+S saves now.",
-                );
+                ui.weak(status).on_hover_text("⌘/Ctrl+S saves the project.");
             }
             ui.menu_button("Help", |ui| {
                 ui.label("Click any text to edit.");
@@ -578,7 +577,9 @@ impl Screenplay {
         if self.focus.is_some() {
             ui.ctx().request_repaint();
         }
-        if let Some(at) = self.pending_save {
+        if self.autosave
+            && let Some(at) = self.pending_save
+        {
             if at.elapsed() >= Duration::from_millis(600) {
                 self.save();
             } else {

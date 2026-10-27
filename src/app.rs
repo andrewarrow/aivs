@@ -2,6 +2,7 @@ use std::{path::PathBuf, time::Duration};
 
 use crate::codex::{ChatGptAccount, CodexClient, CodexEvent, CodexWorkStatus};
 
+mod projects;
 mod toolbar;
 
 struct Message {
@@ -11,6 +12,11 @@ struct Message {
 
 #[derive(Clone, Copy)]
 pub(crate) enum AppCommand {
+    NewProject,
+    OpenProject,
+    SaveProject,
+    SaveProjectAs,
+    Quit,
     Settings,
     Import,
     Resume,
@@ -24,7 +30,12 @@ pub(crate) enum AppCommand {
 
 impl AppCommand {
     #[cfg(target_os = "macos")]
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 14] = [
+        Self::NewProject,
+        Self::OpenProject,
+        Self::SaveProject,
+        Self::SaveProjectAs,
+        Self::Quit,
         Self::Settings,
         Self::Import,
         Self::Resume,
@@ -45,6 +56,8 @@ pub struct App {
     sets_open: bool,
     screenplay: crate::screenplay::Screenplay,
     video: crate::video::VideoWorkspace,
+    project: crate::project::Project,
+    pending_project_action: Option<projects::ProjectAction>,
     screenplay_fraction: f32,
     codex_started: bool,
     client: Option<CodexClient>,
@@ -68,18 +81,26 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf) -> Result<Self, String> {
         let mut startup = crate::startup::Timer::new();
-        let video = crate::video::VideoWorkspace::new(root.clone());
+        let project = crate::project::Project::untitled(&root, true)?;
+        let mut video = crate::video::VideoWorkspace::new(root.clone());
+        video.set_project(project.root(), true);
         startup.mark("video workspace initialized and setup worker started");
-        let characters = crate::characters::CharacterGallery::new(&root);
+        let characters = crate::characters::CharacterGallery::new(project.root());
         startup.mark("character gallery deferred until opened");
-        let sets = crate::sets::SetGallery::new(&root);
+        let sets = crate::sets::SetGallery::new(project.root());
         startup.mark("set gallery deferred until opened");
-        let screenplay = crate::screenplay::Screenplay::load(&root);
+        let screenplay = if project.root().join("screenplay.json").is_file() {
+            crate::screenplay::Screenplay::load(project.root())
+        } else {
+            crate::screenplay::Screenplay::untitled(project.root())
+        };
         startup.mark("screenplay loaded");
-        Self {
+        Ok(Self {
             video,
+            project,
+            pending_project_action: None,
             screenplay_fraction: 0.5,
             characters,
             sets,
@@ -106,7 +127,7 @@ impl App {
             settings_open: false,
             settings_error: None,
             quit: false,
-        }
+        })
     }
 
     fn reconnect(&mut self) {
@@ -123,7 +144,7 @@ impl App {
         self.status.clear();
         // A new connection starts a new conversation; keep any unsent draft.
         self.messages.clear();
-        match CodexClient::new(&self.root, false) {
+        match CodexClient::new(self.project.root(), false) {
             Ok(client) => self.client = Some(client),
             Err(error) => {
                 self.checking = false;
@@ -264,9 +285,27 @@ impl App {
     }
 
     pub(crate) fn command_enabled(&self, command: AppCommand) -> bool {
+        if self.pending_project_action.is_some() || self.settings_open {
+            return false;
+        }
+        match command {
+            AppCommand::NewProject | AppCommand::OpenProject | AppCommand::SaveProjectAs => {
+                return !self.video.has_job() && !self.busy;
+            }
+            AppCommand::SaveProject => {
+                return !self.busy && (!self.project.is_untitled() || !self.video.has_job());
+            }
+            AppCommand::Quit => return true,
+            _ => {}
+        }
         self.video.is_ready()
             && !self.settings_open
             && match command {
+                AppCommand::NewProject
+                | AppCommand::OpenProject
+                | AppCommand::SaveProject
+                | AppCommand::SaveProjectAs
+                | AppCommand::Quit => unreachable!(),
                 AppCommand::Settings => true,
                 AppCommand::Import => self.screenplay.can_import(),
                 AppCommand::Resume | AppCommand::Previsualization | AppCommand::FinalRender => {
@@ -291,19 +330,32 @@ impl App {
             return;
         }
         match command {
+            AppCommand::NewProject => self.request_project_action(projects::ProjectAction::New),
+            AppCommand::OpenProject => match crate::project::choose_open() {
+                Ok(Some(path)) => self.request_project_action(projects::ProjectAction::Open(path)),
+                Ok(None) => {}
+                Err(error) => self.import_error = Some(error),
+            },
+            AppCommand::SaveProject | AppCommand::SaveProjectAs => {
+                if let Err(error) = self.save_project(matches!(command, AppCommand::SaveProjectAs))
+                {
+                    self.import_error = Some(error);
+                }
+            }
+            AppCommand::Quit => self.request_close(),
             AppCommand::Settings => {
                 self.settings_open = true;
                 self.settings_error = None;
             }
             AppCommand::Import => {
-                self.import_error = match select_fountain(&self.root) {
+                self.import_error = match select_fountain(self.project.root()) {
                     Ok(Some(path)) => self.screenplay.import_fountain(&path).err(),
                     Ok(None) => None,
                     Err(error) => Some(error),
                 };
             }
             AppCommand::Resume | AppCommand::Previsualization | AppCommand::FinalRender => {
-                self.import_error = match select_resume(&self.root.join("outputs")) {
+                self.import_error = match select_resume(&self.project.root().join("runs")) {
                     Ok(Some(directory)) => {
                         match command {
                             AppCommand::Previsualization => self.video.previsualize(directory),
@@ -331,7 +383,10 @@ impl App {
     pub(crate) fn command_visible(&self, command: AppCommand) -> bool {
         match command {
             AppCommand::SignIn => {
-                !self.checking && !self.login_pending && self.account.is_none() && self.client.is_some()
+                !self.checking
+                    && !self.login_pending
+                    && self.account.is_none()
+                    && self.client.is_some()
             }
             AppCommand::CancelSignIn => !self.checking && self.login_pending,
             AppCommand::Reconnect => self.client.is_none() || self.error.is_some(),
@@ -353,9 +408,15 @@ impl App {
         } else if let Some(account) = &self.account {
             (
                 Some(
-                    account.email.clone().unwrap_or_else(|| "ChatGPT connected".into()),
+                    account
+                        .email
+                        .clone()
+                        .unwrap_or_else(|| "ChatGPT connected".into()),
                 ),
-                account.plan_type.as_ref().map(|plan| format!("Plan: {plan}")),
+                account
+                    .plan_type
+                    .as_ref()
+                    .map(|plan| format!("Plan: {plan}")),
             )
         } else {
             (None, None)
@@ -368,11 +429,13 @@ impl App {
             .ctx()
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q))
         {
-            self.quit = true;
+            self.request_close();
         }
+        self.project_shortcuts(ui.ctx());
         self.video.poll(ui.ctx());
         if !self.video.is_ready() {
             self.video.setup_ui(ui);
+            self.project_confirmation(ui.ctx());
             return;
         }
         if !self.codex_started {
@@ -388,6 +451,18 @@ impl App {
             egui::MenuBar::new().ui(ui, |ui| {
                 #[cfg(not(target_os = "macos"))]
                 ui.menu_button("File", |ui| {
+                    for (command, label) in [
+                        (AppCommand::NewProject, "New Project"),
+                        (AppCommand::OpenProject, "Open Project…"),
+                        (AppCommand::SaveProject, "Save"),
+                        (AppCommand::SaveProjectAs, "Save As…"),
+                    ] {
+                        if ui.add_enabled(self.command_enabled(command), egui::Button::new(label)).clicked() {
+                            ui.close();
+                            self.execute_command(command);
+                        }
+                    }
+                    ui.separator();
                     if ui.button("Settings…").clicked() {
                         ui.close();
                         self.execute_command(AppCommand::Settings);
@@ -502,6 +577,7 @@ impl App {
             egui::CentralPanel::default().show(ui, |ui| self.workspace_ui(ui));
         }
         self.settings_ui(ui.ctx());
+        self.project_confirmation(ui.ctx());
     }
 
     fn settings_ui(&mut self, ctx: &egui::Context) {
@@ -522,7 +598,7 @@ impl App {
                 ui.radio_value(&mut format, option, option.label());
             }
             if format != self.video.render_format {
-                self.settings_error = format.save(&self.root).err();
+                self.settings_error = format.save(self.project.root()).err();
                 if self.settings_error.is_none() {
                     self.video.render_format = format;
                 }
@@ -544,7 +620,8 @@ impl App {
             let budget_seconds = (budget_minutes * 60.0).round() as u64;
             if budget_seconds != self.video.planning_budget_seconds {
                 self.settings_error =
-                    crate::settings::save_planning_budget(&self.root, budget_seconds).err();
+                    crate::settings::save_planning_budget(self.project.root(), budget_seconds)
+                        .err();
                 if self.settings_error.is_none() {
                     self.video.planning_budget_seconds = budget_seconds;
                 }

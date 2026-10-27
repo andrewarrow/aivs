@@ -15,6 +15,7 @@ pub mod motion;
 pub mod planning;
 pub mod preproduction;
 pub mod production;
+pub mod project;
 pub mod prop_reference;
 pub mod render_estimate;
 pub mod render_formats;

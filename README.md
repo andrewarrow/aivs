@@ -243,7 +243,7 @@ From this checkout:
    and **Eli as Joe**. Casting keeps the script's role names and dialogue intact.
 6. Choose **File → Settings…** to select landscape or portrait and adjust the
    planning budget if needed. Landscape and 10 minutes are the defaults.
-   These settings save to `settings.json` in the workspace.
+   These settings save to `settings.json` in the current project.
 7. Select a scene by its heading above **Generate video**, then choose
    **Generate video**. Choose **Preview (180p · fastest)** under Quality for faster
    video inference; **Final (HQ)** is the default. Only the selected scene and
@@ -263,8 +263,9 @@ Notifications use macOS AppleScript so they also work with `cargo run`; allow
 Script Editor notifications in System Settings → Notifications if banners do
 not appear. Focus settings and system sound volume still apply.
 
-Choose **File → Resume…** and select an existing `outputs/<timestamp>_<seed>/`
-directory to continue that run in place. Resume uses its saved screenplay, cast,
+Choose **File → Resume…** and select a directory under the project's `runs/`
+to continue that run in place. Existing `outputs/<timestamp>_<seed>/` directories
+can also be selected. Resume uses its saved screenplay, cast,
 seed, render format, inference profile, and shooting script. It reuses completed
 planning passes and storyboard images before continuing missing work. New
 storyboard plans do not rewrite upcoming shots after video generation begins.
@@ -285,8 +286,8 @@ alternative is available; Resume does not silently spend a rerender.
 Storyboard-conditioned shots are reused only when their recorded frame and plan
 still match. Legacy continuation shots also require the same preceding take.
 
-By default, the current directory is the workspace. To keep scripts, caches,
-and outputs elsewhere, pass an existing directory:
+By default, the current directory is the shared runtime workspace. To keep model
+caches, Python environments, and credentials elsewhere, pass an existing directory:
 
 ```sh
 cargo run -- /path/to/workspace
@@ -298,10 +299,47 @@ Put `.env` in the selected workspace. Keep this checkout's `python/` and
 `experiments/character-consistency/` directories alongside the source when
 building; they contain the runtime pipeline and saved-voice setup.
 
+### Projects
+
+AIVS opens an **Untitled** project. If the runtime workspace has an existing
+`screenplay.json`, the initial untitled project imports a copy; the original stays
+intact. **File → New Project** starts with a blank screenplay.
+
+**File → Save** (⌘/Ctrl+S) first asks for a project name and location, defaulting to
+the operating system's Documents directory. A project is an ordinary directory,
+named `My Film.aivs` by default:
+
+```text
+My Film.aivs/
+  project.json       Project format and layout
+  screenplay.json    Screenplay, casting, and scene assignments
+  settings.json      Render format, quality, and planning allowance
+  characters/        Portraits, character profiles, and saved voices
+  sets/              Set profiles and reference images
+  references/        Reusable generated references and their provenance
+  preproduction/     Project planning and completed-preproduction indexes
+  runs/              Individual runs, storyboards, logs, shots, and videos
+```
+
+**File → Open Project…** (⌘/Ctrl+O) accepts the directory or its `project.json`.
+**Save As…** (⌘/Ctrl+Shift+S) copies the complete project to a new directory and
+switches to that copy. It preserves the original project. Project assets and
+preproduction indexes use relative paths, so the directory can be moved together.
+Model environments, model downloads, and credentials stay in the shared runtime
+workspace and are not copied into projects.
+
+Untitled projects use temporary storage until saved. New, Open, Close, and Quit
+ask whether to save unsaved work. Save or stop a current generation before moving
+an untitled project; project switching and Save As wait for active jobs to finish.
+Generated references live at project level and can be reused when their design,
+input images, and backend match, independently of a new run's seed. Run-local
+character and set snapshots retain the exact assets used by that run.
+
 ### Editing and casting
 
-Scripts and cast assignments autosave to `screenplay.json` in the workspace.
-**⌘/Ctrl+S** saves immediately. Click text to edit; use the element selector,
+Scripts and cast assignments belong to the project's `screenplay.json`.
+**⌘/Ctrl+S** saves changes; untitled edits are also staged in temporary storage.
+Click text to edit; use the element selector,
 **+ Insert**, and **Edit** for formatting, insertion, deletion, and role renaming.
 
 Use **File → Import…** to choose a `.fountain` screenplay. Import replaces the
@@ -310,8 +348,8 @@ action, character cues, parentheticals, dialogue, and transitions become editabl
 elements. Centered text and lyrics retain their text in action/dialogue elements;
 simultaneous dialogue is imported in source order. Title-page metadata, outline
 sections, notes, omitted passages, page breaks, and emphasis formatting are omitted.
-The original Fountain file is preserved, and the imported screenplay autosaves to
-`screenplay.json`. Full-length scripts can be imported; video generation uses
+The original Fountain file is preserved. Save the project to persist the imported
+screenplay. Full-length scripts can be imported; video generation uses
 one selected scene at a time, within a 100,000-character limit per scene.
 
 Fountain is a plain-text screenplay format; [nyousefi/Fountain](https://github.com/nyousefi/Fountain)
@@ -517,8 +555,8 @@ protocol follows the [official app-server documentation](https://learn.chatgpt.c
 
 The client in `src/codex.rs` handles login and optional chat in a separate session,
 sharing the Rust wire protocol with production work.
-**Show chat** opens that panel; chat threads use `workspace-write` in the selected
-workspace, with network access disabled and `approvalPolicy: never`. Reconnecting
+**Show chat** opens that panel; chat threads use `workspace-write` in the current
+project directory, with network access disabled and `approvalPolicy: never`. Reconnecting
 starts a fresh chat. The Codex CLI owns credentials, and AIVS inherits its model
 and reasoning defaults.
 
@@ -589,14 +627,17 @@ not being maintained as a second filmmaking pipeline.
 
 ## Inspect and debug a run
 
-Each run writes to `outputs/<timestamp>_<seed>/` in the workspace:
+Desktop runs write to `<project>/runs/<timestamp>_<seed>/`. CLI runs use
+`outputs/<timestamp>_<seed>/` in the runtime workspace unless
+`--project-dir "/path/to/My Film.aivs"` selects an existing project. Resume discovers the project
+from its run directory. The following run artifacts remain available:
 
 | Artifact | What to inspect |
 | --- | --- |
 | `screenplay.txt`, `screenplay-request.json` | Original script and cast bindings. |
 | `storyboard-plan.json`, `storyboard-plan.txt` | First-pass shot design and still-image prompts. |
 | `storyboards.json`, `storyboards/` | Verified first-frame images, prompts, reference hashes, and generation provenance. |
-| `storyboard-references.json`, `storyboards/references/` | Canonical environment, prop/component and body reference images. |
+| `storyboard-references.json` | Bindings to canonical environment, prop/component and body images in the project's `references/`; legacy runs keep `storyboards/references/`. |
 | `storyboard-review.json` | Expected/observed opening states, source evidence, physical/sequence violations, uncertainty, and exact acceptance binding. |
 | `storyboard-repairs.json`, `storyboard-review-before-repair-*.json`, `storyboard-diagnostic.json` | Bounded repair journal, preserved findings, and terminal rejection diagnostics. |
 | `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |

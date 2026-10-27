@@ -15,7 +15,9 @@ fn lock(root: &Path, name: &str) -> Result<File> {
     Ok(file)
 }
 fn character_root(ctx: &Context<'_>) -> PathBuf {
-    if ctx.root.join("characters").is_dir() {
+    if let Some(project) = ctx.project_root() {
+        project
+    } else if ctx.root.join("characters").is_dir() {
         ctx.root.clone()
     } else {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -32,7 +34,7 @@ fn seed(value: &Value) -> Result<i64> {
         value.as_i64().ok_or("seed must be an integer.".into())
     }
 }
-fn new_run(root: &Path, seed: i64) -> Result<PathBuf> {
+fn new_run(ctx: &Context<'_>, seed: i64) -> Result<PathBuf> {
     let date = Command::new("date")
         .arg("+%Y-%m-%d_%H-%M-%S")
         .output()
@@ -41,7 +43,11 @@ fn new_run(root: &Path, seed: i64) -> Result<PathBuf> {
         return Err("Cannot determine production timestamp.".into());
     }
     let date = String::from_utf8_lossy(&date.stdout).trim().to_owned();
-    let path = root.join("outputs").join(format!(
+    let directory = ctx
+        .project_root()
+        .map(|root| root.join("runs"))
+        .unwrap_or_else(|| ctx.root.join("outputs"));
+    let path = directory.join(format!(
         "{date}-{:06}_{seed}",
         (artifacts::timestamp() / 1000) % 1_000_000
     ));
@@ -204,7 +210,10 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         "character_resolve",
         &json!({"prompt":"","explicit":cast,"root":root,"references_only":true}),
     )?;
-    let assigned_set = crate::sets::resolve(&ctx.root, &request["set"])?;
+    let assigned_set = crate::sets::resolve(
+        &ctx.project_root().unwrap_or_else(|| ctx.root.clone()),
+        &request["set"],
+    )?;
     if let Some((set, _)) = &assigned_set {
         request["set"] = set.clone();
     }
@@ -214,7 +223,7 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     }
     let seed = seed(&args["seed"])?;
     let _lock = lock(&ctx.root, ".render.lock")?;
-    let run = new_run(&ctx.root, seed)?;
+    let run = new_run(ctx, seed)?;
     if let Some((set, image)) = &assigned_set {
         crate::sets::snapshot(set, image, &run)?;
     }
@@ -485,7 +494,7 @@ fn prompt(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let timing = dialogue::estimate(prompt)?;
     let seed = seed(&args["seed"])?;
     let _lock = lock(&ctx.root, ".render.lock")?;
-    let run = new_run(&ctx.root, seed)?;
+    let run = new_run(ctx, seed)?;
     let profiles = characters::dispatch(
         "character_snapshot",
         &json!({"profiles":profiles,"run_dir":run,"root":root}),

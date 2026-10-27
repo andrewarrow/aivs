@@ -34,7 +34,7 @@ fn cancellation() -> Arc<AtomicBool> {
     flag
 }
 fn usage() -> &'static str {
-    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize> [options]\n\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
+    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize> [options]\n\nProject: --project-dir PATH (stores new runs and reusable references in an existing project)\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
 }
 fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     let mut args = arguments.into_iter();
@@ -52,6 +52,7 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     ]);
     let values = BTreeSet::from([
         "output-dir",
+        "project-dir",
         "seed",
         "profile",
         "planning-budget-seconds",
@@ -93,6 +94,9 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     let get = |key: &str| flags.get(key).and_then(|v| v.last()).cloned();
     let has = |key: &str| flags.contains_key(key);
     let mut payload = json!({});
+    if let Some(project) = get("project-dir") {
+        payload["project_dir"] = json!(expand(&project)?);
+    }
     for key in switches {
         payload[key.replace('-', "_")] = json!(has(key));
     }
@@ -301,7 +305,7 @@ pub fn main(arguments: Vec<String>) -> i32 {
         Ok(()) => 0,
         Err(error) => {
             let _ = emit(
-                json!({"type":"error","message":if flag.load(Ordering::Relaxed){"Stopped. Partial output is kept in outputs."}else{&error}}),
+                json!({"type":"error","message":if flag.load(Ordering::Relaxed){"Stopped. Partial output is kept in the run directory."}else{&error}}),
                 &token,
             );
             if flag.load(Ordering::Relaxed) { 130 } else { 1 }

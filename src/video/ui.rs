@@ -160,7 +160,7 @@ impl VideoWorkspace {
                             );
                     });
                     if profile != self.render_profile {
-                        match profile.save(&self.root) {
+                        match profile.save(self.project_root.as_deref().unwrap_or(&self.root)) {
                             Ok(()) => self.render_profile = profile,
                             Err(error) => self.error = Some(error),
                         }

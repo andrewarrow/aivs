@@ -7,6 +7,8 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
     (
         App {
             video: crate::video::VideoWorkspace::ready_for_test(PathBuf::from("/workspace")),
+            project: crate::project::Project::for_test(Path::new("/workspace")),
+            pending_project_action: None,
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(Path::new("/workspace")),
             sets: crate::sets::SetGallery::load(Path::new("/workspace")),
@@ -56,6 +58,7 @@ fn file_settings_modal_selects_and_persists_format_at_supported_sizes() {
         let root = tempfile::tempdir().unwrap();
         let (mut app, _commands) = app();
         app.root = root.path().to_owned();
+        app.project = crate::project::Project::for_test(root.path());
         app.video = crate::video::VideoWorkspace::ready_for_test(app.root.clone());
         app.video.output_for_test(app.root.join("video.mp4"));
         let ctx = egui::Context::default();

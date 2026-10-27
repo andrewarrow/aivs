@@ -179,9 +179,8 @@ pub fn contracts(ctx: &mut Context<'_>, plan: &Value, boards: &Value) -> Result<
                 // An accepted run keeps the reviewer that inspected these
                 // pixels. Definition/image hashes and the actual observations
                 // are still checked against the current contracts below.
-                binding["reviewer_sha256"] = entry["prop_validation"]["binding"]
-                    ["reviewer_sha256"]
-                    .clone();
+                binding["reviewer_sha256"] =
+                    entry["prop_validation"]["binding"]["reviewer_sha256"].clone();
             }
             bindings[id] = binding;
         }
@@ -330,6 +329,27 @@ fn image_asset(file: &Path, run: &Path, info: &Value) -> Result<Value> {
         json!({"file":file.strip_prefix(run).map_err(|e|e.to_string())?,"sha256":info["source_sha256"],"width":info["width"],"height":info["height"]}),
     )
 }
+
+fn reference_key(ctx: &mut Context<'_>, request: &Value) -> Result<String> {
+    // Video seeds do not invalidate a reusable design reference.
+    let mut identity = request.clone();
+    remove(
+        &mut identity,
+        &["seed", "prompt", "structure_retry", "repair_of"],
+    );
+    ctx.digest(&identity)
+}
+
+fn reference_index(ctx: &mut Context<'_>, request: &Value) -> Result<Option<PathBuf>> {
+    let Some(root) = ctx.project_root() else {
+        return Ok(None);
+    };
+    Ok(Some(
+        root.join("references/index")
+            .join(format!("{}.json", reference_key(ctx, request)?)),
+    ))
+}
+
 fn reference_attempt(
     ctx: &mut Context<'_>,
     spec: &Value,
@@ -337,7 +357,31 @@ fn reference_attempt(
     run: &Path,
 ) -> Result<(Value, PathBuf)> {
     let hash = ctx.digest(request)?;
-    let folder = run.join("storyboards/references").join(&hash);
+    let project = crate::project::for_run(run);
+    if let Some(index) = reference_index(ctx, request)?
+        && index.is_file()
+    {
+        let entry = read(&index)?;
+        if reference_key(ctx, &entry["generation"])? == reference_key(ctx, request)?
+            && entry["generation_sha256"] == ctx.digest(&entry["generation"])?
+            && entry["definition_sha256"] == ctx.digest(spec)?
+            && let Ok(image) = storyboard::resolve_image(&entry, run)
+        {
+            ctx.activity(format!("Reusing project {} reference", text(spec, "id")?))?;
+            return Ok((
+                entry,
+                image
+                    .parent()
+                    .ok_or("Missing reference directory.")?
+                    .to_owned(),
+            ));
+        }
+    }
+    let folder = project
+        .as_ref()
+        .map(|root| root.join("references"))
+        .unwrap_or_else(|| run.join("storyboards/references"))
+        .join(&hash);
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let checkpoint = folder.join("reference.json");
     if checkpoint.is_file() {
@@ -369,7 +413,11 @@ fn reference_attempt(
     if info["source_sha256"] != runtime["sha256"] {
         return Err("Physical reference changed during generation.".into());
     }
-    let entry = json!({"id":spec["id"],"kind":spec["kind"],"definition_sha256":ctx.digest(spec)?,"generation_sha256":hash,"generation":request,"image":image_asset(&target,run,&info)?,"runtime":runtime});
+    let mut image = image_asset(&target, project.as_deref().unwrap_or(run), &info)?;
+    if project.is_some() {
+        image["scope"] = json!("project");
+    }
+    let entry = json!({"id":spec["id"],"kind":spec["kind"],"definition_sha256":ctx.digest(spec)?,"generation_sha256":hash,"generation":request,"image":image,"runtime":runtime});
     save(&checkpoint, &entry)?;
     Ok((entry, folder))
 }
@@ -443,14 +491,8 @@ pub fn generate_references(
         let count = if spec["kind"] == "prop" { 3 } else { 1 };
         let mut folder = PathBuf::new();
         if attempt == 0
-            && let Some(shared) = reuse_prop_reference(
-                ctx,
-                spec,
-                rows(&specs)?,
-                &entries,
-                rows(repair_ids)?,
-                run,
-            )?
+            && let Some(shared) =
+                reuse_prop_reference(ctx, spec, rows(&specs)?, &entries, rows(repair_ids)?, run)?
         {
             last = shared;
             approved = true;
@@ -472,6 +514,9 @@ pub fn generate_references(
                 (i128::from(seed) + 100003 + i as i128 + i128::from(attempt) * 1009 + retry * 7919)
                     .rem_euclid(1 << 31) as i64;
             let mut request = json!({"policy":POLICY,"spec":spec,"inputs":inputs,"prompt":prompt,"seed":request_seed,"backend":backend(ctx)?});
+            if attempt > 0 {
+                request["reference_revision"] = json!(attempt);
+            }
             if retry > 0 {
                 request["structure_retry"] = json!(retry);
                 request["repair_of"] = last["image"]["sha256"].clone();
@@ -512,6 +557,11 @@ pub fn generate_references(
                 prop_reference::failure_summary(&last["prop_validation"])?,
                 folder.join("structure-review.json").display()
             ));
+        }
+        if last["image"]["scope"] == "project"
+            && let Some(index) = reference_index(ctx, &last["generation"])?
+        {
+            save(&index, &last)?;
         }
         if let Some(old) = entries.iter_mut().find(|r| r["id"] == spec["id"]) {
             *old = last;

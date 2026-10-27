@@ -143,6 +143,8 @@ pub struct Screenplay {
     pending_save: Option<Instant>,
     save_error: Option<String>,
     load_failed: bool,
+    modified: bool,
+    autosave: bool,
     rename: Option<(String, String)>,
 }
 
@@ -172,6 +174,8 @@ impl Default for Screenplay {
             pending_save: None,
             save_error: None,
             load_failed: false,
+            modified: false,
+            autosave: true,
             rename: None,
         }
     }
@@ -182,6 +186,19 @@ fn role_name(text: &str) -> String {
 }
 
 impl Screenplay {
+    pub fn untitled(root: &Path) -> Self {
+        let mut screenplay = Self::default();
+        screenplay.document.blocks = vec![Block {
+            id: 0,
+            kind: Element::Heading,
+            text: String::new(),
+        }];
+        screenplay.next_id = 1;
+        screenplay.path = Some(root.join("screenplay.json"));
+        screenplay.pending_save = Some(Instant::now());
+        screenplay
+    }
+
     pub fn can_import(&self) -> bool {
         !self.load_failed
     }
@@ -216,7 +233,9 @@ impl Screenplay {
         self.focus = Some((self.active, 0));
         self.rename = None;
         self.record(before, None);
-        self.save();
+        if self.autosave {
+            self.save();
+        }
         Ok(())
     }
 
@@ -304,14 +323,14 @@ impl Screenplay {
         Ok(Document { blocks, cast, sets })
     }
 
-    fn save(&mut self) {
-        let Some(path) = &self.path else {
-            return;
-        };
+    pub fn project_document(&self) -> Result<serde_json::Value, String> {
         if self.load_failed {
-            return;
+            return Err(self
+                .save_error
+                .clone()
+                .unwrap_or_else(|| "Reload the screenplay before saving.".into()));
         }
-        let value = serde_json::json!({
+        Ok(serde_json::json!({
             "version": 1,
             "blocks": self.document.blocks.iter().map(|b| serde_json::json!({
                 "type": b.kind.label(), "text": b.text,
@@ -325,13 +344,41 @@ impl Screenplay {
             "cast": self.document.cast.iter().map(|(role, c)| serde_json::json!({
                 "role": role, "id": c.id, "name": c.name,
             })).collect::<Vec<_>>(),
-        });
-        let result = (|| -> Result<(), String> {
-            let bytes = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
-            let temporary = path.with_file_name(".screenplay.json.tmp");
-            fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
-            fs::rename(temporary, path).map_err(|e| e.to_string())
-        })();
+        }))
+    }
+
+    pub fn has_changes(&self) -> bool {
+        self.modified
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.modified = false;
+        self.pending_save = None;
+        self.save_error = None;
+    }
+
+    pub fn set_project(&mut self, root: &Path, untitled: bool) {
+        self.path = Some(root.join("screenplay.json"));
+        self.autosave = untitled;
+    }
+
+    pub fn flush(&mut self) -> Result<(), String> {
+        let path = self
+            .path
+            .as_ref()
+            .ok_or("The screenplay has no project location.")?;
+        let value = self.project_document()?;
+        aivs_core::artifacts::atomic_json(path, &value)?;
+        self.pending_save = None;
+        self.save_error = None;
+        Ok(())
+    }
+
+    fn save(&mut self) {
+        if self.path.is_none() || self.load_failed {
+            return;
+        }
+        let result = self.flush();
         self.pending_save = None;
         self.save_error = result
             .err()
@@ -696,6 +743,7 @@ impl Screenplay {
             }
         }
         self.redo.clear();
+        self.modified = true;
         self.typing = typed.map(|id| (id, Instant::now()));
         self.pending_save = Some(Instant::now());
     }
@@ -719,6 +767,7 @@ impl Screenplay {
     }
 
     fn restored(&mut self) {
+        self.modified = true;
         self.active = self.document.blocks[self.active_index()].id;
         self.focus = Some((
             self.active,
@@ -734,7 +783,7 @@ impl Screenplay {
 
 impl Drop for Screenplay {
     fn drop(&mut self) {
-        if self.pending_save.is_some() {
+        if self.autosave && self.pending_save.is_some() {
             self.save();
         }
     }

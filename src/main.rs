@@ -9,6 +9,7 @@ mod characters;
 mod codex;
 #[cfg(target_os = "macos")]
 mod macos;
+mod project;
 mod screenplay;
 mod sets;
 mod settings;
@@ -136,6 +137,7 @@ impl DesktopWindow {
             event_loop,
             output.platform_output,
         );
+        self.window.set_title(&app.window_title());
         let primitives = self
             .context
             .tessellate(output.shapes, output.pixels_per_point);
@@ -248,7 +250,10 @@ impl ApplicationHandler<DesktopEvent> for Desktop {
             desktop.window.request_redraw();
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.app.request_close();
+                desktop.window.request_redraw();
+            }
             WindowEvent::Focused(true) => self.alerts.clear(&desktop.window),
             WindowEvent::Resized(size) => {
                 if let (Some(width), Some(height)) =
@@ -261,7 +266,8 @@ impl ApplicationHandler<DesktopEvent> for Desktop {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(deadline) = desktop.redraw(event_loop, &mut self.app, &mut self.startup) {
+                if let Some(deadline) = desktop.redraw(event_loop, &mut self.app, &mut self.startup)
+                {
                     self.schedule_repaint(deadline);
                 }
             }
@@ -311,7 +317,9 @@ impl ApplicationHandler<DesktopEvent> for Desktop {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut startup = startup::Timer::new();
     if std::env::args().nth(1).as_deref() == Some("--production") {
-        std::process::exit(aivs_core::production::cli::main(std::env::args().skip(2).collect()));
+        std::process::exit(aivs_core::production::cli::main(
+            std::env::args().skip(2).collect(),
+        ));
     }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--engine")) {
         aivs_core::serve(
@@ -341,7 +349,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let event_loop = builder.build()?;
     startup.mark("native event loop created");
-    let app = app::App::new(root);
+    let app = app::App::new(root)?;
     startup.mark("application initialized");
     let mut desktop = Desktop {
         startup,

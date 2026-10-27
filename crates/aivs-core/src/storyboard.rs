@@ -37,13 +37,15 @@ pub fn resolve_image(binding: &Value, root: &Path) -> Result<PathBuf> {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         })
         .ok_or("Storyboard images need a lowercase SHA-256 digest.")?;
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let root = crate::project::image_root(asset, root)?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
     let path = root
         .join(filename)
         .canonicalize()
         .map_err(|_| format!("Storyboard image is missing: {filename}"))?;
     if !path.starts_with(&root) {
-        return Err("Storyboard images must remain inside the run directory.".into());
+        return Err("Storyboard images must remain inside their asset directory.".into());
     }
     if !path.is_file() {
         return Err(format!("Storyboard image is missing: {filename}"));

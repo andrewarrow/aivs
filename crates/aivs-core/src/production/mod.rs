@@ -108,6 +108,16 @@ pub fn model_config(profile: &str) -> Result<Value> {
 }
 
 impl Context<'_> {
+    pub fn project_root(&self) -> Option<PathBuf> {
+        self.options["project_dir"].as_str().map(PathBuf::from)
+    }
+
+    pub fn preproduction_root(&self) -> PathBuf {
+        self.project_root()
+            .map(|root| root.join("preproduction"))
+            .unwrap_or_else(|| self.root.join(".cache/preproduction"))
+    }
+
     pub fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Relaxed) {
             Err("Production interrupted; saved work is preserved.".into())
@@ -321,10 +331,19 @@ pub fn dispatch(
         .as_str()
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".venv/bin/python"));
+    let mut options = args.clone();
+    if let Some(project) = args["project_dir"].as_str() {
+        options["project_dir"] = json!(crate::project::validate(Path::new(project))?);
+    } else if let Some(project) = args["run_dir"]
+        .as_str()
+        .and_then(|run| crate::project::for_run(Path::new(run)))
+    {
+        options["project_dir"] = json!(project);
+    }
     let mut context = Context {
         root,
         python,
-        options: args.clone(),
+        options,
         cancelled,
         emit,
         identities: HashMap::new(),

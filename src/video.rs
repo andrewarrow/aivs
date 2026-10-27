@@ -211,17 +211,27 @@ impl Worker {
 
     fn render(&self, request: &str) -> Result<(), String> {
         self.progress("Preparing shooting script…");
-        let value: serde_json::Value = serde_json::from_str(request)
+        let mut value: serde_json::Value = serde_json::from_str(request)
             .map_err(|error| format!("Cannot read screenplay request: {error}"))?;
+        let project = value
+            .as_object_mut()
+            .and_then(|object| object.remove("project_dir"));
         let profile = value["render_profile"].as_str().unwrap_or("hq");
         let mut request_file = tempfile::NamedTempFile::new()
             .map_err(|error| format!("Cannot create screenplay request file: {error}"))?;
         request_file
-            .write_all(request.as_bytes())
+            .write_all(
+                serde_json::to_string(&value)
+                    .map_err(|e| e.to_string())?
+                    .as_bytes(),
+            )
             .map_err(|error| format!("Cannot write screenplay request file: {error}"))?;
         let mut command = self.production("render");
         command.arg("--screenplay-file").arg(request_file.path());
         command.args(["--profile", profile]);
+        if let Some(project) = project.as_ref().and_then(serde_json::Value::as_str) {
+            command.arg("--project-dir").arg(project);
+        }
         let output = self.run(command)?;
         if let Some(path) = output.output.filter(|path| path.is_file()) {
             self.send(Event::Complete(path));
@@ -250,7 +260,9 @@ impl Worker {
             "Resuming output directory: {}",
             directory.display()
         )));
-        let mut planning_budget = crate::settings::load_planning_budget(&self.root);
+        let project = aivs_core::project::for_run(directory);
+        let mut planning_budget =
+            crate::settings::load_planning_budget(project.as_deref().unwrap_or(&self.root));
         for (filename, key) in [
             ("screenplay-request.json", "planning_budget_seconds"),
             ("planning-budget.json", "limit_seconds"),
@@ -485,6 +497,7 @@ fn read_output(
 
 pub struct VideoWorkspace {
     root: PathBuf,
+    project_root: Option<PathBuf>,
     pub render_format: crate::settings::RenderFormat,
     pub render_profile: crate::settings::RenderProfile,
     pub planning_budget_seconds: u64,
@@ -519,6 +532,7 @@ impl VideoWorkspace {
             render_profile: crate::settings::RenderProfile::load(&root),
             planning_budget_seconds: crate::settings::load_planning_budget(&root),
             root,
+            project_root: None,
             setup: Setup::Checking,
             job: None,
             selected_scene: None,
@@ -550,7 +564,7 @@ impl VideoWorkspace {
         self.remaining_seconds = None;
         self.started_at = Instant::now();
         self.stopping = false;
-        self.rendering = matches!(task, Task::Render(_) | Task::Resume(_));
+        self.rendering = !matches!(task, Task::Setup);
         if !self.rendering {
             self.setup = Setup::Checking;
         }
@@ -703,7 +717,7 @@ impl VideoWorkspace {
             Event::Stopped => {
                 self.rendering = false;
                 self.status = if self.is_ready() {
-                    "Stopped. Partial output is kept in outputs."
+                    "Stopped. Partial output is kept in the run directory."
                 } else {
                     self.setup = Setup::Failed;
                     "Setup stopped. Choose Retry setup to check again."
@@ -717,6 +731,38 @@ impl VideoWorkspace {
 
     pub fn is_ready(&self) -> bool {
         self.setup == Setup::Ready
+    }
+
+    pub fn set_project(&mut self, root: &Path, clear: bool) {
+        self.project_root = Some(root.to_owned());
+        self.render_format = crate::settings::RenderFormat::load(root);
+        self.render_profile = crate::settings::RenderProfile::load(root);
+        self.planning_budget_seconds = crate::settings::load_planning_budget(root);
+        if clear {
+            self.output = None;
+            self.selected_scene = None;
+            self.error = None;
+            self.logs.clear();
+            self.reveal_output = false;
+            self.failure_alert = None;
+            self.current_log_stream = None;
+            if !self.has_job() && self.is_ready() {
+                self.status.clear();
+                self.fraction = None;
+                self.remaining_seconds = None;
+            }
+        }
+    }
+
+    pub fn relocate_project(&mut self, old: &Path, new: &Path) {
+        if let Some(relative) = self
+            .output
+            .as_ref()
+            .and_then(|output| output.strip_prefix(old).ok())
+        {
+            self.output = Some(new.join(relative));
+        }
+        self.set_project(new, false);
     }
 
     pub fn is_checking_setup(&self) -> bool {
@@ -756,6 +802,9 @@ impl VideoWorkspace {
         value["render_format"] = self.render_format.id().into();
         value["render_profile"] = self.render_profile.id().into();
         value["planning_budget_seconds"] = self.planning_budget_seconds.into();
+        if let Some(project) = &self.project_root {
+            value["project_dir"] = serde_json::json!(project);
+        }
         serde_json::to_string(&value).map_err(|error| error.to_string())
     }
 

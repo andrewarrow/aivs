@@ -3,7 +3,7 @@ use std::cell::Cell;
 use objc2::rc::Retained;
 use objc2::runtime::Sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
+use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
 use objc2_foundation::{NSObject, NSString, ns_string};
 use winit::event_loop::EventLoopProxy;
 
@@ -93,8 +93,49 @@ impl NativeMenu {
         application_menu.insertItem_atIndex(&settings, 2);
         application_menu.insertItem_atIndex(&NSMenuItem::separatorItem(main_thread), 3);
 
+        let quit = command_item(
+            main_thread,
+            &target,
+            AppCommand::Quit,
+            ns_string!("Quit AIVS"),
+            ns_string!("q"),
+        );
+        // Route Quit through the same unsaved-project check as window closing.
+        let last = application_menu.numberOfItems() - 1;
+        application_menu.removeItemAtIndex(last);
+        application_menu.addItem(&quit);
+
         let file_menu = NSMenu::new(main_thread);
         file_menu.setTitle(ns_string!("File"));
+        let mut items = vec![(AppCommand::Settings, settings), (AppCommand::Quit, quit)];
+        for (command, title, key) in [
+            (
+                AppCommand::NewProject,
+                ns_string!("New Project"),
+                ns_string!("n"),
+            ),
+            (
+                AppCommand::OpenProject,
+                ns_string!("Open Project…"),
+                ns_string!("o"),
+            ),
+            (AppCommand::SaveProject, ns_string!("Save"), ns_string!("s")),
+            (
+                AppCommand::SaveProjectAs,
+                ns_string!("Save As…"),
+                ns_string!("s"),
+            ),
+        ] {
+            let item = command_item(main_thread, &target, command, title, key);
+            if matches!(command, AppCommand::SaveProjectAs) {
+                item.setKeyEquivalentModifierMask(
+                    NSEventModifierFlags::Command | NSEventModifierFlags::Shift,
+                );
+            }
+            file_menu.addItem(&item);
+            items.push((command, item));
+        }
+        file_menu.addItem(&NSMenuItem::separatorItem(main_thread));
         let import = command_item(
             main_thread,
             &target,
@@ -123,15 +164,15 @@ impl NativeMenu {
         file_item.setSubmenu(Some(&file_menu));
         main_menu.insertItem_atIndex(&file_item, 1);
 
-        let mut items = vec![
-            (AppCommand::Settings, settings),
-            (AppCommand::Import, import),
-            (AppCommand::Resume, resume),
-        ];
+        items.push((AppCommand::Import, import));
+        items.push((AppCommand::Resume, resume));
         let motion_menu = NSMenu::new(main_thread);
         motion_menu.setTitle(ns_string!("Motion"));
         for (command, title) in [
-            (AppCommand::Previsualization, ns_string!("Previsualization…")),
+            (
+                AppCommand::Previsualization,
+                ns_string!("Previsualization…"),
+            ),
             (AppCommand::FinalRender, ns_string!("Final Render…")),
         ] {
             let item = command_item(main_thread, &target, command, title, ns_string!(""));

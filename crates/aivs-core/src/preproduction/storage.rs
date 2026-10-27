@@ -57,8 +57,11 @@ pub(super) fn copy_final(args: &Value) -> Result<Value> {
         .unwrap_or_default();
     for entry in shots.iter().chain(references) {
         let original = storyboard::resolve_image(entry, &source)?;
-        let relative = original.strip_prefix(&source).map_err(|e| e.to_string())?;
-        let target = destination.join(relative);
+        let relative = entry["image"]["file"]
+            .as_str()
+            .ok_or("Missing storyboard image path.")?;
+        let asset_root = crate::project::image_root(&entry["image"], &destination)?;
+        let target = asset_root.join(relative);
         let parent = target
             .parent()
             .ok_or("Missing storyboard destination directory.")?;
@@ -66,7 +69,7 @@ pub(super) fn copy_final(args: &Value) -> Result<Value> {
         if !parent
             .canonicalize()
             .map_err(|e| e.to_string())?
-            .starts_with(&destination)
+            .starts_with(&asset_root)
         {
             return Err("Storyboard destination escapes its run directory.".into());
         }
@@ -78,7 +81,7 @@ pub(super) fn copy_final(args: &Value) -> Result<Value> {
             {
                 return Err(format!(
                     "A different storyboard already exists: {}",
-                    relative.display()
+                    relative
                 ));
             }
         } else {
