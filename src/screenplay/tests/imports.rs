@@ -243,7 +243,7 @@ fn imports_the_big_fountain_sample_into_editable_elements() {
                 )),
                 ..Default::default()
             },
-            |ui| screenplay.ui(ui, &[]),
+            |ui| screenplay.ui(ui, &[], &[]),
         );
         assert!(!output.shapes.is_empty());
     }

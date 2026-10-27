@@ -9,6 +9,7 @@ use crate::characters::CastCharacter;
 
 mod editor;
 mod fountain;
+mod sets;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Element {
@@ -117,6 +118,7 @@ struct Block {
 struct Document {
     blocks: Vec<Block>,
     cast: BTreeMap<String, CastCharacter>,
+    sets: BTreeMap<u64, crate::sets::SceneSet>,
 }
 
 struct Snapshot {
@@ -158,6 +160,7 @@ impl Default for Screenplay {
                     })
                     .collect(),
                 cast: BTreeMap::new(),
+                sets: BTreeMap::new(),
             },
             active: 0,
             next_id: SCENE.len() as u64,
@@ -207,6 +210,7 @@ impl Screenplay {
                 })
                 .collect(),
             cast: BTreeMap::new(),
+            sets: BTreeMap::new(),
         };
         self.active = self.document.blocks[0].id;
         self.focus = Some((self.active, 0));
@@ -279,7 +283,25 @@ impl Screenplay {
                 },
             );
         }
-        Ok(Document { blocks, cast })
+        let mut sets = BTreeMap::new();
+        if let Some(assignments) = value.get("sets") {
+            for item in assignments.as_array().ok_or_else(invalid)? {
+                let index = item["block"].as_u64().ok_or_else(invalid)?;
+                let block = blocks
+                    .iter()
+                    .find(|block| block.id == index)
+                    .filter(|block| block.kind == Element::Heading)
+                    .ok_or_else(invalid)?;
+                sets.insert(
+                    block.id,
+                    crate::sets::SceneSet {
+                        id: item["id"].as_str().ok_or_else(invalid)?.into(),
+                        name: item["name"].as_str().ok_or_else(invalid)?.into(),
+                    },
+                );
+            }
+        }
+        Ok(Document { blocks, cast, sets })
     }
 
     fn save(&mut self) {
@@ -294,6 +316,12 @@ impl Screenplay {
             "blocks": self.document.blocks.iter().map(|b| serde_json::json!({
                 "type": b.kind.label(), "text": b.text,
             })).collect::<Vec<_>>(),
+            "sets": self.document.blocks.iter().enumerate().filter_map(|(index, block)| {
+                if block.kind != Element::Heading { return None; }
+                self.document.sets.get(&block.id).map(|set| serde_json::json!({
+                    "block": index, "id": set.id, "name": set.name,
+                }))
+            }).collect::<Vec<_>>(),
             "cast": self.document.cast.iter().map(|(role, c)| serde_json::json!({
                 "role": role, "id": c.id, "name": c.name,
             })).collect::<Vec<_>>(),

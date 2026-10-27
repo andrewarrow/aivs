@@ -9,6 +9,7 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
             video: crate::video::VideoWorkspace::ready_for_test(PathBuf::from("/workspace")),
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(Path::new("/workspace")),
+            sets: crate::sets::SetGallery::load(Path::new("/workspace")),
             screenplay: crate::screenplay::Screenplay::default(),
             codex_started: true,
             root: PathBuf::from("/workspace"),
@@ -273,7 +274,7 @@ fn sample_screenplay_fits_one_letter_page_at_supported_scales() {
                 )),
                 ..Default::default()
             },
-            |ui| crate::screenplay::Screenplay::default().ui(ui, &[]),
+            |ui| crate::screenplay::Screenplay::default().ui(ui, &[], &[]),
         );
         let page = output
             .shapes

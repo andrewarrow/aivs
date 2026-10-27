@@ -59,7 +59,7 @@ fn every_cue_parenthetical_and_dialogue_accepts_a_drop_for_the_whole_role() {
                 events,
                 ..Default::default()
             },
-            |ui| screenplay.ui(ui, &[character("Ava"), character("Eli")]),
+            |ui| screenplay.ui(ui, &[character("Ava"), character("Eli")], &[]),
         )
     };
     let pointer = |pos, pressed| egui::Event::PointerButton {

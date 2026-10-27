@@ -87,7 +87,12 @@ impl Screenplay {
         ));
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, characters: &[CastCharacter]) {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        characters: &[CastCharacter],
+        sets: &[crate::sets::SceneSet],
+    ) {
         if self.load_failed {
             ui.strong("Screenplay");
             ui.colored_label(
@@ -447,6 +452,42 @@ impl Screenplay {
                                     ],
                                     (2.0, egui::Color32::from_rgb(35, 90, 165)),
                                 );
+                            }
+                            if kind == Element::Heading {
+                                let label_pos =
+                                    origin + egui::vec2(108.0 * scale, y + height + 2.0);
+                                let annotation = self.document.sets.get(&id).map_or_else(
+                                    || "Set: Unassigned".to_owned(),
+                                    |set| format!("Set: {}", set.name),
+                                );
+                                let galley = ui.painter().layout(
+                                    annotation,
+                                    egui::FontId::proportional(10.0 * scale),
+                                    egui::Color32::from_gray(85),
+                                    432.0 * scale,
+                                );
+                                let label_rect = egui::Rect::from_min_size(
+                                    label_pos - egui::vec2(2.0, 2.0),
+                                    galley.size() + egui::vec2(4.0, 4.0),
+                                );
+                                ui.painter().galley(
+                                    label_pos,
+                                    galley,
+                                    egui::Color32::from_gray(85),
+                                );
+                                let dragging = egui::DragAndDrop::has_payload_of_type::<
+                                    crate::sets::SceneSet,
+                                >(ui.ctx());
+                                let target = if dragging {
+                                    egui::Rect::from_min_max(
+                                        output.response.rect.min - egui::vec2(2.0, 2.0),
+                                        egui::pos2(origin.x + 540.0 * scale, label_rect.bottom()),
+                                    )
+                                } else {
+                                    label_rect
+                                };
+                                self.scene_set_ui(ui, id, target, sets);
+                                y += label_rect.height() + 4.0;
                             }
                             match kind {
                                 Element::Character => {

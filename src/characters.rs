@@ -163,7 +163,7 @@ impl CharacterGallery {
     }
 }
 
-fn decode_image(path: &Path) -> Result<egui::ColorImage, String> {
+pub(crate) fn decode_image(path: &Path) -> Result<egui::ColorImage, String> {
     let image = image::ImageReader::open(path)
         .map_err(|_| "could not open image")?
         .decode()

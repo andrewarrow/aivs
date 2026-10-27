@@ -10,6 +10,7 @@ struct Message {
 pub struct App {
     root: PathBuf,
     characters: crate::characters::CharacterGallery,
+    sets: crate::sets::SetGallery,
     screenplay: crate::screenplay::Screenplay,
     video: crate::video::VideoWorkspace,
     screenplay_fraction: f32,
@@ -40,6 +41,7 @@ impl App {
             video: crate::video::VideoWorkspace::new(root.clone()),
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(&root),
+            sets: crate::sets::SetGallery::load(&root),
             screenplay: crate::screenplay::Screenplay::load(&root),
             codex_started: false,
             root,
@@ -323,12 +325,19 @@ impl App {
                 });
             }
         });
-        let gallery_width = (ui.available_width() * 0.30).min(160.0);
+        let gallery_width = (ui.available_width() * 0.30).min(320.0);
         egui::Panel::right("characters")
             .exact_size(gallery_width)
             .resizable(false)
             .show(ui, |ui| {
-                self.characters.ui(ui);
+                ui.columns(2, |columns| {
+                    columns[0].push_id("characters", |ui| {
+                        self.characters.ui(ui);
+                    });
+                    columns[1].push_id("sets", |ui| {
+                        self.sets.ui(ui);
+                    });
+                });
             });
         if self.chat_open {
             if ui.available_width() < 680.0 {
@@ -485,8 +494,11 @@ impl App {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         screenplay.set_clip_rect(ui.clip_rect().intersect(top));
-        self.screenplay
-            .ui(&mut screenplay, &self.characters.cast_choices());
+        self.screenplay.ui(
+            &mut screenplay,
+            &self.characters.cast_choices(),
+            &self.sets.choices(),
+        );
         let mut context = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("video_context")

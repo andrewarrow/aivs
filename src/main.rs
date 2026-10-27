@@ -9,6 +9,7 @@ mod characters;
 mod codex;
 mod playback;
 mod screenplay;
+mod sets;
 mod settings;
 mod video;
 

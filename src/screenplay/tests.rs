@@ -38,7 +38,7 @@ impl Editor {
                 events,
                 ..Default::default()
             },
-            |ui| screenplay.ui(ui, &[character("Ava"), character("Eli")]),
+            |ui| screenplay.ui(ui, &[character("Ava"), character("Eli")], &[]),
         )
     }
 
