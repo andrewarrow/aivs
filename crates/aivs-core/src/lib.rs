@@ -38,6 +38,13 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                         Ok(json!({
                             "crates/aivs-core/src/lib.rs": include_str!("lib.rs"),
                             "crates/aivs-core/src/continuity.rs": include_str!("continuity.rs"),
+                            "crates/aivs-core/src/continuity/acceptance.rs": include_str!("continuity/acceptance.rs"),
+                            "crates/aivs-core/src/continuity/dispatch.rs": include_str!("continuity/dispatch.rs"),
+                            "crates/aivs-core/src/continuity/facts.rs": include_str!("continuity/facts.rs"),
+                            "crates/aivs-core/src/continuity/plan.rs": include_str!("continuity/plan.rs"),
+                            "crates/aivs-core/src/continuity/review.rs": include_str!("continuity/review.rs"),
+                            "crates/aivs-core/src/continuity/types.rs": include_str!("continuity/types.rs"),
+                            "crates/aivs-core/src/continuity/world.rs": include_str!("continuity/world.rs"),
                             "crates/aivs-core/src/codex.rs": include_str!("codex.rs"),
                             "crates/aivs-core/src/motion.rs": include_str!("motion.rs"),
                             "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
