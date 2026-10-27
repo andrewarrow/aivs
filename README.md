@@ -136,7 +136,7 @@ Exhausted repairs save `storyboard-diagnostic.json` and stop before video.
 The former five-pass planner remains removed.
 
 Both Codex passes share a **10-minute planning budget** by default. Change
-**File → Settings… → Planning budget** to allow 1–30 minutes, or use
+**File → Settings… → Planning budget** to allow 1–60 minutes, or use
 `--planning-budget-seconds` from the CLI. The budget measures Codex planning time,
 including validation corrections; local image and video generation are outside
 it. Usage is cumulative across Resume. If the allowance is exhausted, increase

@@ -206,9 +206,14 @@ def validate_world(plan):
             raise ValueError("Canonical props need their relevant source scene IDs.")
         facts({"characters": [], "props": [], "reveals": [], "relationships": prop["relationships"]})
     for prop in world["props"]:
-        for relation in prop["relationships"]:
-            if relation["subject"] not in ids or relation["object"] not in ids:
-                raise ValueError("Canonical component relationships must bind real physical entity IDs.")
+        for index, relation in enumerate(prop["relationships"]):
+            missing = sorted({relation["subject"], relation["object"]} - ids)
+            if missing:
+                raise ValueError(
+                    f"Canonical component relationships must bind real physical entity IDs. "
+                    f"Prop {prop['id']!r}, relationships[{index}] references undefined IDs: {', '.join(missing)}. "
+                    "Use exact declared prop/component IDs or declare the missing physical components."
+                )
     scenes = {s["scene_id"] for s in plan["shots"]}
     if (not isinstance(world["environments"], list)
             or {e.get("scene_id") for e in world["environments"]} != scenes
@@ -276,7 +281,11 @@ def validate_plan(plan):
         expected = ([] if previous is None else [("across-cut", key, a, b)
                     for key, a, b in _changes(history, opening)])
         current = dict(history)
-        current.update({key: value for key, value in opening.items() if value not in UNKNOWN})
+        # Unknown facts are still tracked and can become known during a shot.
+        # Keep them when first declared, without overwriting established facts
+        # when an entity is concealed or leaves the frame.
+        current.update({key: value for key, value in opening.items()
+                        if value not in UNKNOWN or key not in current})
         expected += [("during-shot", key, a, b) for key, a, b in _changes(current, ending)]
         recorded = set()
         paths = {}
@@ -322,7 +331,10 @@ def validate_plan(plan):
         for (timing, key), events in paths.items():
             start_facts, end_facts = (history, opening) if timing == "across-cut" else (current, ending)
             if key not in start_facts or key not in end_facts:
-                raise ValueError("A transition must name a tracked entity and field.")
+                raise ValueError(
+                    f"Shot {number} {timing} transition must name a tracked entity and field: {key}. "
+                    "Use the exact entity ID and field key present in both endpoint states."
+                )
             cursor = start_facts[key]
             for event in events:
                 if cursor not in UNKNOWN and event["before"] != cursor:

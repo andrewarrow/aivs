@@ -105,8 +105,8 @@ pub fn load_planning_budget(root: &Path) -> u64 {
         }
         value["planning_budget_seconds"]
             .as_u64()
-            .filter(|seconds| (60..=1800).contains(seconds))
-            .ok_or_else(|| std::io::Error::other("Planning budget must be 60–1800 seconds"))
+            .filter(|seconds| (60..=3600).contains(seconds))
+            .ok_or_else(|| std::io::Error::other("Planning budget must be 60–3600 seconds"))
     });
     match result {
         Ok(seconds) => seconds,
@@ -120,8 +120,8 @@ pub fn load_planning_budget(root: &Path) -> u64 {
 }
 
 pub fn save_planning_budget(root: &Path, seconds: u64) -> Result<(), String> {
-    if !(60..=1800).contains(&seconds) {
-        return Err("Planning budget must be 1–30 minutes.".into());
+    if !(60..=3600).contains(&seconds) {
+        return Err("Planning budget must be 1–60 minutes.".into());
     }
     save_setting(root, "planning_budget_seconds", seconds)
 }

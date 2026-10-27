@@ -357,7 +357,7 @@ impl App {
                 let label = ui.label("Planning budget");
                 ui.add(
                     egui::DragValue::new(&mut budget_minutes)
-                        .range(1.0..=30.0)
+                        .range(1.0..=60.0)
                         .speed(1.0)
                         .max_decimals(1)
                         .suffix(" min"),
