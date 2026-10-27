@@ -3,6 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use crate::codex::{ChatGptAccount, CodexClient, CodexEvent, CodexWorkStatus};
 
 pub(crate) mod projects;
+mod references;
 mod runs;
 mod toolbar;
 
@@ -57,6 +58,8 @@ pub struct App {
     sets_open: bool,
     runs_open: bool,
     runs: runs::RunsPanel,
+    references_open: bool,
+    references: references::ReferencesPanel,
     screenplay: crate::screenplay::Screenplay,
     video: crate::video::VideoWorkspace,
     project: crate::project::Project,
@@ -111,6 +114,8 @@ impl App {
             sets_open: false,
             runs_open: false,
             runs: runs::RunsPanel::default(),
+            references_open: false,
+            references: references::ReferencesPanel::default(),
             screenplay,
             codex_started: false,
             root,
@@ -520,6 +525,7 @@ impl App {
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    toolbar::GalleryIcon::References.toggle(ui, &mut self.references_open);
                     toolbar::GalleryIcon::Runs.toggle(ui, &mut self.runs_open);
                     toolbar::GalleryIcon::Sets.toggle(ui, &mut self.sets_open);
                     toolbar::GalleryIcon::Characters.toggle(ui, &mut self.characters_open);
@@ -534,6 +540,13 @@ impl App {
                 });
             }
         });
+        if self.references_open {
+            let width = (ui.available_width() * 0.30).min(280.0);
+            egui::Panel::right("references")
+                .exact_size(width)
+                .resizable(false)
+                .show(ui, |ui| self.references.ui(ui, self.project.root()));
+        }
         if self.runs_open {
             let width = (ui.available_width() * 0.30).min(280.0);
             egui::Panel::right("runs")

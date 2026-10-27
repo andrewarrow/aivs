@@ -2,6 +2,7 @@ pub(super) enum GalleryIcon {
     Characters,
     Sets,
     Runs,
+    References,
 }
 
 impl GalleryIcon {
@@ -10,6 +11,7 @@ impl GalleryIcon {
             Self::Characters => "Characters",
             Self::Sets => "Sets",
             Self::Runs => "Runs",
+            Self::References => "References",
         };
         let mut response =
             ui.add(egui::Button::selectable(*visible, "").min_size(egui::vec2(44.0, 44.0)));
@@ -80,6 +82,29 @@ impl GalleryIcon {
                     painter.circle_filled(point(-9.0, y), 1.5, stroke.color);
                     painter.line_segment([point(-3.0, y), point(10.0, y)], stroke);
                 }
+            }
+            Self::References => {
+                painter.add(egui::Shape::line(
+                    vec![point(-7.0, -10.0), point(-11.0, -10.0), point(-11.0, 7.0)],
+                    stroke,
+                ));
+                painter.rect_stroke(
+                    egui::Rect::from_min_max(point(-7.0, -6.0), point(11.0, 10.0)),
+                    2.0,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+                painter.circle_stroke(point(-2.0, -1.0), 2.0, stroke);
+                painter.add(egui::Shape::line(
+                    vec![
+                        point(-4.0, 7.0),
+                        point(1.0, 2.0),
+                        point(4.0, 5.0),
+                        point(7.0, 2.0),
+                        point(9.0, 7.0),
+                    ],
+                    stroke,
+                ));
             }
         }
         response.on_hover_text(format!(
