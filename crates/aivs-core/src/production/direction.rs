@@ -54,12 +54,7 @@ pub fn director(
     let mut images = rows(profiles)?
         .iter()
         .filter(|p| p["image"].is_object())
-        .map(|p| {
-            Ok(run
-                .join("characters")
-                .join(text(p, "id")?)
-                .join(text(&p["image"], "file")?))
-        })
+        .map(|p| Ok(characters::directory(run, text(p, "id")?)?.join(text(&p["image"], "file")?)))
         .collect::<Result<Vec<_>>>()?;
     if let Some(set) = source.get("set") {
         crate::sets::verify(set, run)?;

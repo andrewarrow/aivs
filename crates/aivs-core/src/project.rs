@@ -25,11 +25,37 @@ pub fn for_run(run: &Path) -> Option<PathBuf> {
     root.join("project.json").is_file().then(|| root.to_owned())
 }
 
-/// Project-scoped assets stay under references/. Legacy run-local assets retain
-/// their existing paths and hashes, including when resuming old outputs/ runs.
+/// New runs record shared library locations instead of copying their assets.
+/// Runs created before this metadata existed retain their local asset paths.
+pub fn library_root(run: &Path, library: &str) -> Result<PathBuf> {
+    let report = run.join("render.json");
+    if report.is_file() {
+        let report = artifacts::read_json(&report)?;
+        if let Some(root) = report["libraries"].get(library) {
+            let root = PathBuf::from(root.as_str().ok_or("Invalid shared library path.")?);
+            if !root.is_absolute() {
+                return Err("Shared library roots must be absolute paths.".into());
+            }
+            return Ok(root);
+        }
+    }
+    Ok(run.to_owned())
+}
+
+/// Project references stay under references/; character and set paths resolve
+/// against the shared libraries recorded by the run.
 pub fn image_root(asset: &Value, run: &Path) -> Result<PathBuf> {
     match asset["scope"].as_str() {
-        None | Some("run") => Ok(run.to_owned()),
+        None => {
+            let file = Path::new(asset["file"].as_str().unwrap_or_default());
+            for library in ["characters", "sets"] {
+                if file.starts_with(library) {
+                    return library_root(run, library);
+                }
+            }
+            Ok(run.to_owned())
+        }
+        Some("run") => Ok(run.to_owned()),
         Some("project") => {
             let file = Path::new(
                 asset["file"]

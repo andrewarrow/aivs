@@ -203,13 +203,15 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
                 .ok_or("Screenplay cast must list role and saved character bindings.".into())
         })
         .collect::<Result<Vec<_>>>()?;
-    let root = character_root(ctx);
+    let root = character_root(ctx)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
     let profiles = characters::dispatch(
         "character_resolve",
         &json!({"prompt":"","explicit":cast,"root":root,"references_only":true}),
     )?;
     let assigned_set = crate::sets::resolve(&ctx.root, &request["set"])?;
-    if let Some((set, _)) = &assigned_set {
+    if let Some(set) = &assigned_set {
         request["set"] = set.clone();
     }
     ctx.source(&request, &profiles)?;
@@ -219,13 +221,6 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let seed = seed(&args["seed"])?;
     let _lock = lock(&ctx.root, ".render.lock")?;
     let run = new_run(ctx, seed)?;
-    if let Some((set, image)) = &assigned_set {
-        crate::sets::snapshot(set, image, &run)?;
-    }
-    let profiles = characters::dispatch(
-        "character_snapshot",
-        &json!({"profiles":profiles,"run_dir":run,"root":root}),
-    )?;
     fs::write(run.join("screenplay.txt"), text(&request, "script")?).map_err(|e| e.to_string())?;
     save(&run.join("screenplay-request.json"), &request)?;
     let spec = if request.get("render_format").is_some() {
@@ -234,6 +229,8 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         Value::Null
     };
     let mut report = json!({"status":"planning","original_script":request["script"],"cast":request["cast"],"seed":seed,"fps":24,"width":spec["width"].as_u64().unwrap_or(1280),"height":spec["height"].as_u64().unwrap_or(704),"audio":if voice=="native"{"native-generated"}else{"native-with-saved-voice-conversion"},"voice_mode":voice,"characters":profiles,"shooting_script":"shooting-script.json","character_conditioning":character_conditioning::POLICY,"render_profile":profile,"render_config":config,"storyboard_policy":STORYBOARD_POLICY,"storyboards":"storyboards.json","planning_budget_seconds":allowance});
+    report["libraries"] = json!({"characters":root,
+        "sets":crate::sets::library_root(&ctx.root).canonicalize().map_err(|e| e.to_string())?});
     if !spec.is_null() {
         for (from, to) in [
             ("name", "render_format"),
@@ -244,6 +241,7 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         }
     }
     save(&run.join("render.json"), &report)?;
+    crate::sets::verify(&request["set"], &run)?;
     ctx.options["planning_budget_seconds"] = json!(allowance);
     ctx.options["update_run_report"] = json!(true);
     let outcome = (|| -> Result<Value> {
@@ -472,7 +470,9 @@ fn prompt(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         .as_str()
         .unwrap_or(include_str!("../../../../python/default-prompt.txt"))
         .trim();
-    let root = character_root(ctx);
+    let root = character_root(ctx)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
     let profiles = characters::dispatch(
         "character_resolve",
         &json!({"prompt":prompt,"explicit":args.get("character").unwrap_or(&json!([])),"root":root,"references_only":args["character_references_only"]==true}),
@@ -490,16 +490,13 @@ fn prompt(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let seed = seed(&args["seed"])?;
     let _lock = lock(&ctx.root, ".render.lock")?;
     let run = new_run(ctx, seed)?;
-    let profiles = characters::dispatch(
-        "character_snapshot",
-        &json!({"profiles":profiles,"run_dir":run,"root":root}),
-    )?;
+    characters::verify(rows(&profiles)?, &root)?;
     let image = if args["character_text_only"] == true || rows(&profiles)?.is_empty() {
         Value::Null
     } else {
         characters::dispatch(
             "character_reference_image",
-            &json!({"profiles":profiles,"run_dir":run}),
+            &json!({"profiles":profiles,"run_dir":root}),
         )?
     };
     let hold = !image.is_null()
@@ -511,9 +508,10 @@ fn prompt(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         &json!({"prompt":prompt,"profiles":profiles,"image_conditioned":!image.is_null()}),
     )?;
     let mut report = json!({"status":"rendering","original_prompt":prompt,"prompt":expanded,"seed":seed,"seconds":timing["seconds"],"fps":24,"width":1280,"height":704,"audio":"generated","dialogue_timing":timing,"characters":profiles,"character_text_only":args["character_text_only"]==true,"character_references_only":args["character_references_only"]==true});
+    report["libraries"] = json!({"characters":root});
     if let Some(file) = image.as_str() {
         let file = Path::new(file);
-        report["image_source"] = json!({"file":file.strip_prefix(&run).map_err(|e|e.to_string())?,"conditioning":if hold{"whole-first-and-last-frame"}else{"whole-first-frame"}});
+        report["image_source"] = json!({"file":file.strip_prefix(&root).map_err(|e|e.to_string())?,"conditioning":if hold{"whole-first-and-last-frame"}else{"whole-first-frame"}});
         if hold {
             let frames = timing["seconds"].as_u64().ok_or("Invalid duration.")? * 24;
             report["image_source"]["anchor_frames"] = if frames <= 1 {

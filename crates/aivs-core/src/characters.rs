@@ -1,4 +1,4 @@
-//! Saved performer profiles, asset validation and immutable run snapshots.
+//! Shared performer profiles and asset validation.
 mod prompt;
 use crate::{artifacts::*, continuity::Result};
 use regex::Regex;
@@ -156,67 +156,29 @@ pub fn read_profile(path: &Path) -> Result<Value> {
     Ok(profile)
 }
 
+pub fn directory(run_dir: &Path, id: &str) -> Result<PathBuf> {
+    if !ID.is_match(id) {
+        return Err("Invalid character id.".into());
+    }
+    Ok(crate::project::library_root(run_dir, "characters")?
+        .join("characters")
+        .join(id))
+}
+
 pub fn verify(profiles: &[Value], run_dir: &Path) -> Result<()> {
     for supplied in profiles {
         if !supplied.is_object() {
-            return Err("Invalid snapshot profile.".into());
+            return Err("Invalid character profile.".into());
         }
         let (id, _) = slug(&supplied["name"])?;
-        let saved = read_profile(&run_dir.join("characters").join(&id).join("character.json"))?;
+        let saved = read_profile(&directory(run_dir, &id)?.join("character.json"))?;
         if saved != *supplied {
             return Err(format!(
-                "Character snapshot does not match run metadata: {id}"
+                "Character profile does not match run metadata: {id}"
             ));
         }
     }
     Ok(())
-}
-
-fn snapshot(profiles: &[Value], run_dir: &Path, root: &Path) -> Result<Value> {
-    let directory = run_dir.join("characters");
-    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let mut snapshots = Vec::new();
-    for supplied in profiles {
-        let (id, _) = slug(&supplied["name"])?;
-        let source = root.join("characters").join(&id);
-        let current = read_profile(&source.join("character.json"))?;
-        if *supplied != current {
-            return Err(format!("Character profile changed before snapshot: {id}"));
-        }
-        let target = directory.join(&id);
-        if target.exists() {
-            return Err(format!(
-                "Character snapshot already exists: {}",
-                target.display()
-            ));
-        }
-        let staging = tempfile::Builder::new()
-            .prefix(&format!(".{id}-"))
-            .tempdir_in(&directory)
-            .map_err(|e| e.to_string())?;
-        for (field, filename) in ASSETS {
-            if !current[field].is_null() {
-                fs::copy(source.join(filename), staging.path().join(filename))
-                    .map_err(|e| e.to_string())?;
-                validate_asset(
-                    &current[field],
-                    filename,
-                    staging.path(),
-                    &field.replace('_', " "),
-                )?;
-            }
-        }
-        atomic_json(&staging.path().join("character.json"), &current)?;
-        if target.exists() {
-            return Err(format!(
-                "Character snapshot already exists: {}",
-                target.display()
-            ));
-        }
-        fs::rename(staging.path(), &target).map_err(|e| e.to_string())?;
-        snapshots.push(current);
-    }
-    Ok(json!(snapshots))
 }
 
 pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
@@ -244,11 +206,6 @@ pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
             profiles(args)?
         )?)),
         "character_expand_prompt" => prompt::expand(args),
-        "character_snapshot" => snapshot(
-            profiles(args)?,
-            &path(args, "run_dir")?,
-            &path(args, "root")?,
-        ),
         "character_verify_snapshots" => {
             verify(profiles(args)?, &path(args, "run_dir")?)?;
             Ok(Value::Null)
@@ -273,10 +230,7 @@ pub fn dispatch(operation: &str, args: &Value) -> Result<Value> {
                 &profile["scene_image"]
             };
             Ok(json!(
-                run_dir
-                    .join("characters")
-                    .join(text(profile, "id")?)
-                    .join(text(image, "file")?)
+                directory(&run_dir, text(profile, "id")?)?.join(text(image, "file")?)
             ))
         }
         _ => Err(format!("Unknown character operation: {operation}")),

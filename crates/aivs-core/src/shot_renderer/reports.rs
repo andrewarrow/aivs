@@ -43,8 +43,13 @@ pub(super) fn prepare(args: &Value) -> Result<Value> {
         Some(storyboard::resolve_image(binding, &root)?)
     } else if previous {
         Some(shot_dir.join("start-frame.png"))
+    } else if assets["image"]["file"].is_string() {
+        Some(storyboard::resolve_image(
+            &json!({"image":assets["image"]}),
+            &root,
+        )?)
     } else {
-        assets["image"]["file"].as_str().map(|file| root.join(file))
+        None
     };
     let clip = shot_dir.join("video.mp4");
     let convert_voice = assets["voice"].get("file").is_some();

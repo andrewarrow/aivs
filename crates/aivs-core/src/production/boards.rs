@@ -243,9 +243,7 @@ pub fn accepted(ctx: &mut Context<'_>, plan: &Value, boards: &Value, run: &Path)
     let mut profiles = Vec::new();
     for supplied in rows(&plan["source"]["characters"])? {
         profiles.push(characters::read_profile(
-            &run.join("characters")
-                .join(text(supplied, "id")?)
-                .join("character.json"),
+            &characters::directory(run, text(supplied, "id")?)?.join("character.json"),
         )?);
     }
     let screenplay = run.join("screenplay.txt");

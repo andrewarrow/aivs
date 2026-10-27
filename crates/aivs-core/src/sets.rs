@@ -1,9 +1,9 @@
-//! Assigned set references and immutable, run-local snapshots.
+//! Assigned references from the shared set library.
 use crate::{artifacts, continuity::Result, media, storyboard};
 use serde_json::{Value, json};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -24,7 +24,12 @@ pub(crate) fn validate(set: &Value) -> Result<()> {
     }
     text(set, "name")?;
     text(set, "description")?;
-    if set["image"]["file"] != format!("sets/{id}/reference.png")
+    let image = Path::new(text(&set["image"], "file")?);
+    if !image.starts_with("sets")
+        || image.components().count() != 3
+        || !image
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
         || !text(&set["image"], "sha256")?
             .bytes()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
@@ -37,7 +42,15 @@ pub(crate) fn validate(set: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn resolve(root: &Path, selection: &Value) -> Result<Option<(Value, PathBuf)>> {
+pub(crate) fn library_root(root: &Path) -> PathBuf {
+    if root.join("sets").is_dir() {
+        root.to_owned()
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+}
+
+pub(crate) fn resolve(root: &Path, selection: &Value) -> Result<Option<Value>> {
     if selection.is_null() {
         return Ok(None);
     }
@@ -45,11 +58,7 @@ pub(crate) fn resolve(root: &Path, selection: &Value) -> Result<Option<(Value, P
         .as_str()
         .or_else(|| selection["id"].as_str())
         .ok_or("Assigned set must identify a saved set.")?;
-    let directory = if root.join("sets").is_dir() {
-        root.join("sets")
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sets")
-    };
+    let directory = library_root(root).join("sets");
     for entry in fs::read_dir(&directory).map_err(|e| format!("Cannot load assigned set: {e}"))? {
         let folder = entry.map_err(|e| e.to_string())?.path();
         if !folder.is_dir() {
@@ -69,25 +78,19 @@ pub(crate) fn resolve(root: &Path, selection: &Value) -> Result<Option<(Value, P
         }
         let image = storyboard::resolve_image(&json!({"image":saved["image"]}), &folder)?;
         let info = media::source_image(&image)?;
+        let folder_name = folder
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Assigned set has an invalid folder name.")?;
         let profile = json!({"id":id,"name":saved["name"],"description":saved["description"],
-            "image":{"file":format!("sets/{id}/reference.png"),"sha256":info["source_sha256"],
+            "image":{"file":format!("sets/{folder_name}/{filename}"),"sha256":info["source_sha256"],
                 "width":info["width"],"height":info["height"]}});
         validate(&profile)?;
-        return Ok(Some((profile, image)));
+        return Ok(Some(profile));
     }
     Err(format!(
         "Assigned set {id:?} is unavailable. Choose another set before generating."
     ))
-}
-
-pub(crate) fn snapshot(set: &Value, image: &Path, run: &Path) -> Result<()> {
-    validate(set)?;
-    let bytes = fs::read(image).map_err(|e| e.to_string())?;
-    if artifacts::hash(&bytes) != set["image"]["sha256"] {
-        return Err("Assigned set image changed before production. Generate again.".into());
-    }
-    artifacts::exclusive_bytes(&run.join(text(&set["image"], "file")?), &bytes)?;
-    verify(set, run)
 }
 
 pub(crate) fn verify(set: &Value, run: &Path) -> Result<()> {

@@ -333,8 +333,11 @@ Untitled projects use temporary storage until saved. New, Open, Close, and Quit
 ask whether to save unsaved work. Save or stop a current generation before moving
 an untitled project; project switching and Save As wait for active jobs to finish.
 Generated references live at project level and can be reused when their design,
-input images, and backend match, independently of a new run's seed. Run-local
-character and set snapshots retain the exact assets used by that run.
+input images, and backend match, independently of a new run's seed. Runs read
+portraits, voices, and assigned set images directly from the global libraries;
+they do not copy characters or sets into the project. Each run records library
+roots and asset hashes in its metadata, and resuming detects changed assets.
+Older runs with local snapshots continue to use those snapshots.
 
 ### Editing and casting
 
@@ -369,12 +372,12 @@ and render scene by scene.
   removes it. One blank scene heading remains when the script is cleared.
 - **⌘/Ctrl+Z** and **⌘/Ctrl+Shift+Z** undo and redo edits, including casting.
 
-New GUI screenplay renders use the gallery's actual saved assets. Snapshotted
+New GUI screenplay renders use the gallery's actual saved assets. Saved
 portraits guide Codex's generation of each shot's first frame, including shots
 with multiple visible performers. Codex receives the portraits when designing
 shots, then the generated images when writing motion directions. A shot with
 one speaking performer has its native soundtrack converted with Seed-VC toward
-that performer's snapshotted voice sample. The video stream is copied unchanged.
+that performer's saved voice sample. The video stream is copied unchanged.
 This preserves native picture timing; it does not prove voice identity or lip sync.
 
 Generated compositions do not guarantee cast identity. Shots with multiple
@@ -521,7 +524,7 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [crates/aivs-core/src/media.rs](crates/aivs-core/src/media.rs) | FFmpeg frame extraction, shot assembly, FFprobe checks and full media decoding, with child cleanup on cancellation. |
 | [crates/aivs-core/src/continuity](crates/aivs-core/src/continuity) | Continuity schemas, state rules, sequence review, snapshot comparisons, and acceptance bindings. |
 | [crates/aivs-core/src/render_formats.rs](crates/aivs-core/src/render_formats.rs) | Delivery dimensions, aligned model canvases, and framing guidance. |
-| [crates/aivs-core/src/characters.rs](crates/aivs-core/src/characters.rs) | Performer lookup, quote-aware references, profile/asset validation and run snapshots. |
+| [crates/aivs-core/src/characters.rs](crates/aivs-core/src/characters.rs) | Performer lookup, quote-aware references, and shared profile/asset validation. |
 | [crates/aivs-core/src/dialogue.rs](crates/aivs-core/src/dialogue.rs) | Dialogue and screenplay action duration estimates. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
 | [python/storyboard.py](python/storyboard.py) | Compatibility calls into Rust storyboard production. |

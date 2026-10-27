@@ -157,15 +157,22 @@ fn preflight(
             let asset = characters::validate_asset(
                 &profile[field],
                 filename,
-                &run_dir.join("characters").join(text(profile, "id")?),
+                &characters::directory(&run_dir, text(profile, "id")?)?,
                 &field.replace('_', " "),
             )?;
             if !asset
                 .canonicalize()
                 .map_err(|e| e.to_string())?
-                .starts_with(&run_dir)
+                .starts_with(
+                    crate::project::library_root(&run_dir, "characters")?
+                        .join("characters")
+                        .canonicalize()
+                        .map_err(|e| e.to_string())?,
+                )
             {
-                return Err("Saved character assets must remain inside the run directory.".into());
+                return Err(
+                    "Saved character assets must remain inside the character library.".into(),
+                );
             }
             if field == "image" {
                 media::source_image(&asset)?;
@@ -310,11 +317,14 @@ fn apply_voice(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let voice = &args["voice"];
-    let reference = run_dir
+    let library = crate::project::image_root(voice, &run_dir)?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let reference = library
         .join(text(voice, "file")?)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    if !reference.starts_with(&run_dir) || json!(file_hash(&reference)?) != voice["sha256"] {
+    if !reference.starts_with(&library) || json!(file_hash(&reference)?) != voice["sha256"] {
         return Err("Saved character voice changed before conversion.".into());
     }
     let seconds = args["seconds"]
