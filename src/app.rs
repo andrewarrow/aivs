@@ -14,6 +14,27 @@ pub(crate) enum AppCommand {
     Settings,
     Import,
     Resume,
+    Previsualization,
+    FinalRender,
+    SignIn,
+    CancelSignIn,
+    Reconnect,
+    ToggleChat,
+}
+
+impl AppCommand {
+    #[cfg(target_os = "macos")]
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Settings,
+        Self::Import,
+        Self::Resume,
+        Self::Previsualization,
+        Self::FinalRender,
+        Self::SignIn,
+        Self::CancelSignIn,
+        Self::Reconnect,
+        Self::ToggleChat,
+    ];
 }
 
 pub struct App {
@@ -239,7 +260,20 @@ impl App {
             && match command {
                 AppCommand::Settings => true,
                 AppCommand::Import => self.screenplay.can_import(),
-                AppCommand::Resume => self.video.can_resume(),
+                AppCommand::Resume | AppCommand::Previsualization | AppCommand::FinalRender => {
+                    self.video.can_resume()
+                }
+                AppCommand::SignIn => {
+                    !self.checking
+                        && !self.login_pending
+                        && self.account.is_none()
+                        && self.client.is_some()
+                }
+                AppCommand::CancelSignIn => !self.checking && self.login_pending,
+                AppCommand::Reconnect => {
+                    !self.busy && (self.client.is_none() || self.error.is_some())
+                }
+                AppCommand::ToggleChat => true,
             }
     }
 
@@ -259,17 +293,65 @@ impl App {
                     Err(error) => Some(error),
                 };
             }
-            AppCommand::Resume => {
+            AppCommand::Resume | AppCommand::Previsualization | AppCommand::FinalRender => {
                 self.import_error = match select_resume(&self.root.join("outputs")) {
                     Ok(Some(directory)) => {
-                        self.video.resume(directory);
+                        match command {
+                            AppCommand::Previsualization => self.video.previsualize(directory),
+                            AppCommand::FinalRender => self.video.final_render(directory),
+                            _ => self.video.resume(directory),
+                        }
                         None
                     }
                     Ok(None) => None,
                     Err(error) => Some(error),
                 };
             }
+            AppCommand::SignIn => self.begin_login(),
+            AppCommand::CancelSignIn | AppCommand::Reconnect => self.reconnect(),
+            AppCommand::ToggleChat => {
+                self.chat_open = !self.chat_open;
+                if self.chat_open {
+                    self.open_chat();
+                }
+            }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn command_visible(&self, command: AppCommand) -> bool {
+        match command {
+            AppCommand::SignIn => {
+                !self.checking && !self.login_pending && self.account.is_none() && self.client.is_some()
+            }
+            AppCommand::CancelSignIn => !self.checking && self.login_pending,
+            AppCommand::Reconnect => self.client.is_none() || self.error.is_some(),
+            _ => true,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn command_checked(&self, command: AppCommand) -> bool {
+        matches!(command, AppCommand::ToggleChat) && self.chat_open
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn codex_menu_status(&self) -> [Option<String>; 3] {
+        let (status, plan) = if self.checking {
+            (Some("Connecting to Codex…".into()), None)
+        } else if self.login_pending {
+            (Some("Finish signing in in your browser.".into()), None)
+        } else if let Some(account) = &self.account {
+            (
+                Some(
+                    account.email.clone().unwrap_or_else(|| "ChatGPT connected".into()),
+                ),
+                account.plan_type.as_ref().map(|plan| format!("Plan: {plan}")),
+            )
+        } else {
+            (None, None)
+        };
+        [status, plan, self.error.clone()]
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
@@ -323,34 +405,29 @@ impl App {
                         self.execute_command(AppCommand::Resume);
                     }
                 });
+                #[cfg(not(target_os = "macos"))]
                 ui.menu_button("Motion", |ui| {
-                    if ui.add_enabled(self.video.can_resume(), egui::Button::new("Previsualization…"))
+                    if ui.add_enabled(self.command_enabled(AppCommand::Previsualization), egui::Button::new("Previsualization…"))
                         .on_hover_text("Select a run with completed storyboards. Generate timed keyframes and a silent animatic without LTX.")
                         .clicked()
                     {
                         ui.close();
-                        self.import_error = match select_resume(&self.root.join("outputs")) {
-                            Ok(Some(directory)) => { self.video.previsualize(directory); None }
-                            Ok(None) => None,
-                            Err(error) => Some(error),
-                        };
+                        self.execute_command(AppCommand::Previsualization);
                     }
-                    if ui.add_enabled(self.video.can_resume(), egui::Button::new("Final Render…"))
+                    if ui.add_enabled(self.command_enabled(AppCommand::FinalRender), egui::Button::new("Final Render…"))
                         .on_hover_text("Select a run with accepted motion keyframes. Render with timed image guides and preserve prior takes.")
                         .clicked()
                     {
                         ui.close();
-                        self.import_error = match select_resume(&self.root.join("outputs")) {
-                            Ok(Some(directory)) => { self.video.final_render(directory); None }
-                            Ok(None) => None,
-                            Err(error) => Some(error),
-                        };
+                        self.execute_command(AppCommand::FinalRender);
                     }
                 });
+                #[cfg(not(target_os = "macos"))]
                 ui.menu_button("Codex", |ui| {
                     self.connection_ui(ui);
-                    if ui.checkbox(&mut self.chat_open, "Show chat").changed() && self.chat_open {
-                        self.open_chat();
+                    let mut chat_open = self.chat_open;
+                    if ui.checkbox(&mut chat_open, "Show chat").changed() {
+                        self.execute_command(AppCommand::ToggleChat);
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -597,7 +674,7 @@ impl App {
         } else if self.login_pending {
             ui.label("Finish signing in in your browser.");
             if ui.button("Cancel sign-in").clicked() {
-                self.reconnect();
+                self.execute_command(AppCommand::CancelSignIn);
             }
         } else if let Some(account) = &self.account {
             ui.label(account.email.as_deref().unwrap_or("ChatGPT connected"));
@@ -605,7 +682,7 @@ impl App {
                 ui.label(format!("Plan: {plan}"));
             }
         } else if self.client.is_some() && ui.button("Sign in with ChatGPT").clicked() {
-            self.begin_login();
+            self.execute_command(AppCommand::SignIn);
         }
         if self.client.is_none() || self.error.is_some() {
             if let Some(error) = &self.error {
@@ -615,7 +692,7 @@ impl App {
                 .add_enabled(!self.busy, egui::Button::new("Reconnect"))
                 .clicked()
             {
-                self.reconnect();
+                self.execute_command(AppCommand::Reconnect);
             }
         }
     }

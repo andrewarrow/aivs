@@ -12,7 +12,7 @@ use crate::app::{App, AppCommand};
 
 struct MenuTargetIvars {
     proxy: EventLoopProxy<DesktopEvent>,
-    enabled: Cell<[bool; 3]>,
+    enabled: Cell<[bool; AppCommand::ALL.len()]>,
 }
 
 define_class!(
@@ -42,7 +42,8 @@ define_class!(
 pub(crate) struct NativeMenu {
     // AppKit does not retain a menu item's target.
     target: Retained<MenuTarget>,
-    items: [(AppCommand, Retained<NSMenuItem>); 3],
+    items: Vec<(AppCommand, Retained<NSMenuItem>)>,
+    codex_status: [Retained<NSMenuItem>; 3],
 }
 
 impl NativeMenu {
@@ -64,7 +65,7 @@ impl NativeMenu {
 
         let this = MenuTarget::alloc(main_thread).set_ivars(MenuTargetIvars {
             proxy,
-            enabled: Cell::new([false; 3]),
+            enabled: Cell::new([false; AppCommand::ALL.len()]),
         });
         // SAFETY: NSObject's initializer is valid for this initialized subclass.
         let target: Retained<MenuTarget> = unsafe { msg_send![super(this), init] };
@@ -122,34 +123,83 @@ impl NativeMenu {
         file_item.setSubmenu(Some(&file_menu));
         main_menu.insertItem_atIndex(&file_item, 1);
 
+        let mut items = vec![
+            (AppCommand::Settings, settings),
+            (AppCommand::Import, import),
+            (AppCommand::Resume, resume),
+        ];
+        let motion_menu = NSMenu::new(main_thread);
+        motion_menu.setTitle(ns_string!("Motion"));
+        for (command, title) in [
+            (AppCommand::Previsualization, ns_string!("Previsualization…")),
+            (AppCommand::FinalRender, ns_string!("Final Render…")),
+        ] {
+            let item = command_item(main_thread, &target, command, title, ns_string!(""));
+            motion_menu.addItem(&item);
+            items.push((command, item));
+        }
+        let motion_item = NSMenuItem::new(main_thread);
+        motion_item.setTitle(ns_string!("Motion"));
+        motion_item.setSubmenu(Some(&motion_menu));
+        main_menu.insertItem_atIndex(&motion_item, 2);
+
+        let codex_menu = NSMenu::new(main_thread);
+        codex_menu.setTitle(ns_string!("Codex"));
+        let codex_status = std::array::from_fn(|_| {
+            let item = NSMenuItem::new(main_thread);
+            item.setEnabled(false);
+            item.setHidden(true);
+            codex_menu.addItem(&item);
+            item
+        });
+        for (command, title) in [
+            (AppCommand::SignIn, ns_string!("Sign in with ChatGPT")),
+            (AppCommand::CancelSignIn, ns_string!("Cancel Sign-In")),
+            (AppCommand::Reconnect, ns_string!("Reconnect")),
+            (AppCommand::ToggleChat, ns_string!("Show Chat")),
+        ] {
+            if matches!(command, AppCommand::ToggleChat) {
+                codex_menu.addItem(&NSMenuItem::separatorItem(main_thread));
+            }
+            let item = command_item(main_thread, &target, command, title, ns_string!(""));
+            codex_menu.addItem(&item);
+            items.push((command, item));
+        }
+        let codex_item = NSMenuItem::new(main_thread);
+        codex_item.setTitle(ns_string!("Codex"));
+        codex_item.setSubmenu(Some(&codex_menu));
+        main_menu.insertItem_atIndex(&codex_item, 3);
+
         Some(Self {
             target,
-            items: [
-                (AppCommand::Settings, settings),
-                (AppCommand::Import, import),
-                (AppCommand::Resume, resume),
-            ],
+            items,
+            codex_status,
         })
     }
 
     pub(crate) fn update(&self, app: &App) {
-        let mut enabled = [false; 3];
+        let mut enabled = [false; AppCommand::ALL.len()];
         for (command, item) in &self.items {
             let available = app.command_enabled(*command);
             enabled[*command as usize] = available;
             item.setEnabled(available);
+            item.setHidden(!app.command_visible(*command));
+            item.setState(if app.command_checked(*command) { 1 } else { 0 });
         }
         self.target.ivars().enabled.set(enabled);
+        for (item, text) in self.codex_status.iter().zip(app.codex_menu_status()) {
+            item.setHidden(text.is_none());
+            if let Some(text) = text {
+                item.setTitle(&NSString::from_str(&text));
+            }
+        }
     }
 }
 
 fn command_for_tag(tag: isize) -> Option<AppCommand> {
-    match tag {
-        0 => Some(AppCommand::Settings),
-        1 => Some(AppCommand::Import),
-        2 => Some(AppCommand::Resume),
-        _ => None,
-    }
+    usize::try_from(tag)
+        .ok()
+        .and_then(|index| AppCommand::ALL.get(index).copied())
 }
 
 fn command_item(
