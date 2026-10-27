@@ -122,6 +122,11 @@ pub(super) fn compile(
     storyboard: bool,
     number: usize,
 ) -> Result<String> {
+    if regex(r"(?i)-{3,}>\s*done!").is_match(template) {
+        return Err(format!(
+            "Shot {number} template contains a chat completion footer. Remove the footer; keep only film direction and source dialogue placeholders."
+        ));
+    }
     if template.contains(['"', '“', '”']) {
         return Err(format!(
             "Shot {number} template contains quoted text outside source dialogue placeholders."
@@ -195,7 +200,7 @@ pub(super) fn compile(
         }
         (false, true) => "There is no spoken dialogue in this shot. ",
         (true, false) => {
-            "Deliver the quoted dialogue exactly once in order. During each line, listeners' lips rest. After the final line, mouths rest except for explicitly staged source actions. Nonverbal vocal sounds occur only at their specified source moments. "
+            "The only spoken words are the quoted dialogue, delivered exactly once in order. During each line, listeners' lips rest. After the final line, mouths rest except for explicitly staged source actions. Nonverbal vocal sounds occur only at their specified source moments. "
         }
         (true, true) => {
             "No spoken words. Only the staged environmental sounds and source nonverbal vocal actions are audible. "
@@ -221,7 +226,7 @@ pub(super) fn compile(
         ""
     };
     Ok(format!(
-        "{image}{action} {}{cast}{speech}{voice}No subtitles, captions, or text overlays.",
+        "{image}{action} {}{cast}{speech}{voice}",
         framing.as_str().unwrap_or_default()
     ))
 }
