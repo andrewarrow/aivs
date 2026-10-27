@@ -26,6 +26,10 @@ FFmpeg assembly → video.mp4
 
 The desktop app and core production rules are Rust. Python still coordinates parts
 of the pipeline, while Rust launches isolated Python workers for MLX inference.
+Rust also owns shot report creation, saved-take selection and restoration,
+native-picture recovery, and validated final-video publication. Python still
+sequences rendering and preproduction; a complete Rust production run remains
+the next architectural step. Existing artifact fingerprint codecs stay in Python.
 Codex planning and automatic visual review use your configured Codex service and
 login. Planning sends saved cast portraits and storyboard images to Codex;
 visual review sends sampled rendered frames. Storyboard image generation also uses

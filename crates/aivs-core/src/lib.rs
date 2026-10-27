@@ -60,6 +60,8 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/preproduction/storage.rs": include_str!("preproduction/storage.rs"),
                             "crates/aivs-core/src/storyboard.rs": include_str!("storyboard.rs"),
                             "crates/aivs-core/src/shot_renderer/storage.rs": include_str!("shot_renderer/storage.rs"),
+                            "crates/aivs-core/src/shot_renderer/recovery.rs": include_str!("shot_renderer/recovery.rs"),
+                            "crates/aivs-core/src/shot_renderer/reports.rs": include_str!("shot_renderer/reports.rs"),
                             "crates/aivs-core/src/prop_reference/production.rs": include_str!("prop_reference/production.rs"),
                             "crates/aivs-core/src/prop_reference/schema.json": include_str!("prop_reference/schema.json"),
                             "crates/aivs-core/src/prop_reference/instructions.txt": include_str!("prop_reference/instructions.txt"),

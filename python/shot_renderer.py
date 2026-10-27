@@ -5,14 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 import tempfile
 import time
 
 import quality_backend
 import rust_engine
 import storyboard as storyboard_assets
-from validation import validate_video
 from rust_engine import resolve_format
 
 FPS = quality_backend.FPS
@@ -57,46 +55,14 @@ def _planned_shot_sha256(plan: dict, shot: dict) -> str:
     return storyboard_assets.planned_shot_sha256(plan, shot)
 
 
-def _take_seed(base_seed: int, take: int) -> int:
-    return rust_engine.call("take_seed", base_seed=base_seed, take=take)
-
-
-def _saved_report(shot_dir: Path) -> dict | None:
-    return rust_engine.call("take_saved_report", shot_dir=str(Path(shot_dir).resolve()))
-
-
-def _last_archived_take(archive_dir: Path) -> int:
-    return rust_engine.call("take_last_archive", archive_dir=str(Path(archive_dir).resolve()))
-
-
-def _archive_take(shot_dir: Path, archive_dir: Path, take: int) -> int:
-    return rust_engine.call("take_archive", shot_dir=str(Path(shot_dir).resolve()),
-                            archive_dir=str(Path(archive_dir).resolve()), take=take)
-
-
-def _matches_saved_take(saved: dict, report: dict, clip: Path,
-                        previous_clip: Path | None) -> bool:
-    return rust_engine.call("take_matches", saved=saved, report=report, clip=str(Path(clip).resolve()),
-        previous_clip=str(Path(previous_clip).resolve()) if previous_clip is not None else None)
-
-
-def _restore_take(source: Path, shot_dir: Path, archive_dir: Path, saved: dict) -> None:
-    rust_engine.call("take_restore", source=str(Path(source).resolve()),
-        shot_dir=str(Path(shot_dir).resolve()), archive_dir=str(Path(archive_dir).resolve()), saved=saved)
-
-
 def _assemble(clips: list[Path], output: Path, seconds: int, fade_out: bool, *,
               width=None, height=None, crop=False) -> dict:
     width = WIDTH if width is None else width
     height = HEIGHT if height is None else height
-    assembled = rust_engine.call(
-        "assemble_shots", clip_count=len(clips), output=str(output.resolve()),
+    return rust_engine.call(
+        "take_assemble", clip_count=len(clips), output=str(output.resolve()),
         seconds=seconds, fade_out=fade_out, width=width, height=height, crop=crop,
     )
-    partial = Path(assembled["partial"])
-    info = validate_video(partial, assembled["frames"], width, height, expect_audio=True)
-    partial.replace(output)
-    return info
 
 
 def render_shooting_script(
@@ -200,7 +166,7 @@ def render_shooting_script(
 
     def save_shot(index, report):
         shot_report = shots_dir / f"{index + 1:03d}" / "render.json"
-        _atomic_json(shot_report, report)
+        rust_engine.call("take_save", shot_dir=str(shot_report.parent.resolve()), report=report)
         if on_shot is not None:
             on_shot(index, report)
 
@@ -208,103 +174,40 @@ def render_shooting_script(
         for index, shot in enumerate(shots):
             planned_shot = shot
             shot = execution_plan["shots"][index]
-            shot_dir = shots_dir / f"{index + 1:03d}"
-            shot_dir.mkdir(parents=True, exist_ok=True)
-            clip = shot_dir / "video.mp4"
-            frames = shot["seconds"] * FPS
-            base_seed = (seed + index) % _SEED_MODULUS
-            archive_dir = output.parent / "takes" / f"{index + 1:03d}"
-            take = _last_archived_take(archive_dir) + 1
             frame_binding = storyboard_bindings[index] if storyboard_bindings is not None else None
             motion_row = motion_manifest["shots"][index] if motion_manifest is not None else None
-            use_previous_frame = frame_binding is None and _uses_previous_frame(shots, index)
-            previous_clip = clips[-1] if use_previous_frame else None
-            image_file = shot_dir / "start-frame.png" if use_previous_frame else None
             assets = asset_bindings[index] if asset_bindings is not None else None
             portrait = assets["image"] if assets is not None else {}
             voice = assets["voice"] if assets is not None else {}
-            convert_voice = "file" in voice
-            native_clip = shot_dir / "video.source.mp4" if convert_voice else clip
-            if frame_binding is not None:
-                image_file = storyboard_assets.resolve_image(frame_binding, output.parent)
-            elif not use_previous_frame and "file" in portrait:
-                image_file = output.parent / portrait["file"]
-            source_frame = shots[index - 1]["seconds"] * FPS - 1 if use_previous_frame else None
-            continuity = {
-                "conditioning": ("storyboard-first-frame" if frame_binding is not None else
-                                 "previous-shot-last-frame" if use_previous_frame else
-                                 "saved-character-portrait" if image_file is not None else "none"),
-                "source_shot": index if use_previous_frame else None,
-                "source_frame": source_frame,
-                "source_image": str(image_file) if image_file is not None else None,
-                "source_clip_sha256": summaries[-1]["sha256"] if use_previous_frame else None,
-                **({"source_image_sha256": frame_binding["image"]["sha256"]}
-                   if frame_binding is not None else {}),
-            }
-            report = {
-                "prompt": shot["prompt"],
-                "base_seed": base_seed,
-                "seed": _take_seed(base_seed, take),
-                "take": take,
-                "seconds": shot["seconds"],
-                "width": width,
-                "height": height,
-                "status": "running",
-                "runtime": None,
-                "start_state": shot["start_state"],
-                "end_state": shot["end_state"],
-                "beat_ids": shot["beat_ids"],
-                "scene_id": shot.get("scene_id"),
-                "continuity": continuity,
-                **({"character_assets": assets} if assets is not None else {}),
-                **({"storyboard": frame_binding, "planned_storyboard": frame_binding,
-                    "storyboard_prompt": shot.get("storyboard_prompt")}
-                   if frame_binding is not None else {}),
-                **({"render_config": render_config} if render_config is not None else {}),
-                **({"motion_keyframes": motion_row} if motion_row is not None else {}),
-                **({"storyboard_acceptance": storyboard["continuity_acceptance"]} if requires_storyboard_review else {}),
-            }
-            if automatic_review:
-                report.update(planned_prompt=planned_shot["prompt"],
-                              planned_shot_sha256=_planned_shot_sha256(plan, planned_shot),
-                              prompt_template=shot["prompt_template"],
-                              observed_source_clip_sha256=summaries[-1]["sha256"] if summaries else None)
-
-            reused = False
-            saved = _saved_report(shot_dir)
+            frames = shot["seconds"] * FPS
+            base_seed = (seed + index) % _SEED_MODULUS
+            prepared = rust_engine.call(
+                "take_prepare", plan=plan, shot=shot, index=index, base_seed=base_seed,
+                run_dir=str(output.parent.resolve()), width=width, height=height,
+                frame_binding=frame_binding, motion_row=motion_row, assets=assets,
+                previous_summary=summaries[-1] if summaries else None,
+                render_config=render_config, automatic_review=automatic_review,
+                planned_shot_sha256=_planned_shot_sha256(plan, planned_shot) if automatic_review else None,
+                storyboard_acceptance=storyboard["continuity_acceptance"] if requires_storyboard_review else None,
+            )
+            shot_dir, archive_dir, clip, native_clip = (
+                Path(prepared[key]) for key in ("shot_dir", "archive_dir", "clip", "native_clip"))
+            convert_voice = prepared["convert_voice"]
+            use_previous_frame = prepared["use_previous_frame"]
+            previous_clip = clips[-1] if use_previous_frame else None
+            source_frame = prepared["source_frame"]
+            report = prepared["report"]
+            continuity = report["continuity"]
+            image_file = Path(prepared["image_file"]) if prepared["image_file"] is not None else None
             report_committed = False
 
-            def restore_storyboard(candidate):
-                nonlocal frame_binding, image_file
-                binding = candidate.get("storyboard")
-                if binding is None or binding == frame_binding:
-                    return
-                if requires_storyboard_review:
-                    raise ValueError("Saved adapted storyboard has no acceptance for this exact sequence.")
-                execution_shot = dict(planned_shot, prompt=candidate["prompt"],
-                                      prompt_template=candidate["prompt_template"],
-                                      storyboard_prompt=candidate["storyboard_prompt"])
-                if binding.get("planned_shot_sha256") != _planned_shot_sha256(plan, execution_shot):
-                    raise ValueError("Saved adapted storyboard belongs to different execution directions.")
-                image_file = storyboard_assets.resolve_image(binding, output.parent)
-                frame_binding = binding
-                shot["storyboard_prompt"] = candidate["storyboard_prompt"]
-                report.update(storyboard=binding, storyboard_prompt=shot["storyboard_prompt"])
-                continuity.update(source_image=str(image_file), source_image_sha256=binding["image"]["sha256"])
-
             def save_failure(status, error=None):
-                # Verification must not relabel old footage with the seed and
-                # metadata of a proposed new take if it fails or is stopped.
-                checkpoint = report if report_committed else _saved_report(shot_dir)
-                failed = dict(checkpoint or report, status=status)
-                if error is not None:
-                    failed["error"] = str(error)
-                if checkpoint is None and clip.is_file():
-                    # Do not invent provenance for an unidentifiable clip.
-                    if on_shot is not None:
-                        on_shot(index, failed)
-                else:
-                    save_shot(index, failed)
+                failed = rust_engine.call(
+                    "take_failure", shot_dir=str(shot_dir), report=report,
+                    committed=report_committed, status=status,
+                    error=str(error) if error is not None else None)
+                if on_shot is not None:
+                    on_shot(index, failed)
 
             shot_started = time.monotonic()
 
@@ -327,108 +230,35 @@ def render_shooting_script(
                 )
 
             try:
+                # Keep the legacy JSON codec at this boundary. Rust owns candidate
+                # selection, byte checks, restoration, and allocation of new takes.
+                fingerprints = []
                 if resume:
-                    candidates = [(shot_dir, saved)]
-                    if archive_dir.is_dir():
-                        candidates.extend((path, _saved_report(path)) for path in sorted(
-                            (path for path in archive_dir.iterdir()
-                             if path.is_dir() and path.name.isdecimal()),
-                            key=lambda path: int(path.name),
-                        ))
-                    failures = []
-                    for candidate_dir, candidate in candidates:
-                        candidate_clip = candidate_dir / "video.mp4"
-                        if not candidate_clip.is_file():
-                            continue
-                        if candidate is None:
-                            failures.append((candidate_dir, candidate, RuntimeError(
-                                "Saved video has no valid render report; its provenance needs review.")))
-                            continue
-                        try:
-                            if not _matches_saved_take(candidate, report, candidate_clip, previous_clip):
-                                continue
-                            emit_progress(last_fraction,
-                                          f"Shot {index + 1}/{total_shots}: Checking saved take {candidate.get('take', 1)}")
-                            validate_video(candidate_clip, frames, width, height, expect_audio=True)
-                            restore_storyboard(candidate)
-                        except (ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as exc:
-                            failures.append((candidate_dir, candidate, exc))
-                            continue
-                        # A historical speech mismatch does not invalidate a
-                        # technically sound take with matching provenance.
-                        if candidate_dir != shot_dir:
-                            _restore_take(candidate_dir, shot_dir, archive_dir, candidate)
-                            report["restored_from"] = str(candidate_dir)
-                        report.update(take=candidate.get("take", 1), seed=candidate["seed"],
-                                      runtime=candidate.get("runtime"), reused=True)
-                        for key in ("native_sha256", "voice_conversion"):
-                            if key in candidate:
-                                report[key] = candidate[key]
-                        if automatic_review:
-                            shot.update(prompt=candidate["prompt"],
-                                        prompt_template=candidate.get("prompt_template", shot["prompt_template"]))
-                            report.update(prompt=shot["prompt"], prompt_template=shot["prompt_template"])
-                            if isinstance(candidate.get("adaptation"), dict):
-                                shot["adaptation"] = candidate["adaptation"]
-                                report["adaptation"] = candidate["adaptation"]
-                        reused = True
-                        report_committed = True
-                        break
-                    if not reused and failures:
-                        candidate_dir, candidate, failure = failures[0]
-                        message = (f"Shot {index + 1} needs review: {failure} "
-                                   f"Saved take: {candidate_dir / 'video.mp4'}. "
-                                   "No automatic retake was made. Resume rechecks saved footage.")
-                        raise RuntimeError(message) from failure
-
+                    emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking saved takes")
+                    for candidate in rust_engine.call(
+                            "take_candidates", shot_dir=str(shot_dir), archive_dir=str(archive_dir)):
+                        saved = candidate["report"]
+                        if saved is not None and saved.get("storyboard") not in (None, frame_binding):
+                            execution_shot = dict(planned_shot, **{
+                                key: saved.get(key) for key in ("prompt", "prompt_template", "storyboard_prompt")})
+                            fingerprints.append({"report": saved,
+                                "fingerprint": _planned_shot_sha256(plan, execution_shot)})
+                recovered = rust_engine.call(
+                    "take_recover", run_dir=str(output.parent.resolve()), index=index,
+                    shot_dir=str(shot_dir), archive_dir=str(archive_dir), native_clip=str(native_clip),
+                    report=report, shot=shot, resume=resume, convert_voice=convert_voice,
+                    automatic_review=automatic_review, adapted_fingerprints=fingerprints,
+                    previous_clip=str(previous_clip) if previous_clip is not None else None)
+                report, shot = recovered["report"], recovered["shot"]
+                execution_plan["shots"][index] = shot
+                continuity = report["continuity"]
+                frame_binding = report.get("storyboard")
+                image_file = Path(continuity["source_image"]) if continuity["source_image"] is not None else None
+                reused, reuse_native, pending = (recovered[key] for key in ("reused", "reuse_native", "pending"))
+                report_committed = True
+                if on_shot is not None:
+                    on_shot(index, report)
                 if not reused:
-                    # A completed native picture survives failed/interrupted
-                    # conversion. Resume must finish its soundtrack, not infer
-                    # the expensive video again or assign it a new seed.
-                    reuse_native = (resume and convert_voice and saved is not None
-                                    and native_clip.is_file() and saved.get("runtime") is not None
-                                    and saved.get("native_sha256") == _file_sha256(native_clip)
-                                    and _matches_saved_take(dict(saved, sha256=None), report,
-                                                            native_clip, previous_clip))
-                    if reuse_native:
-                        validate_video(native_clip, frames, width, height, expect_audio=True)
-                    if (resume and convert_voice and native_clip.is_file() and saved is not None
-                            and saved.get("native_sha256") is not None
-                            and saved["native_sha256"] != _file_sha256(native_clip)):
-                        raise ValueError(f"Saved native video changed: {native_clip}. Review it before resuming.")
-                    pending = reuse_native or (
-                        resume and saved is not None and not clip.exists()
-                        and saved.get("runtime") is None and saved.get("sha256") is None
-                        and _matches_saved_take(saved, report, clip, previous_clip)
-                    )
-                    if pending:
-                        # An interruption during text planning did not consume a
-                        # video take. Keep its seed, frame and adaptation cache.
-                        report.update(take=saved.get("take", 1), seed=saved["seed"])
-                        restore_storyboard(saved)
-                        if reuse_native:
-                            report.update(runtime=saved["runtime"], native_sha256=saved["native_sha256"])
-                        if automatic_review:
-                            shot.update(prompt=saved["prompt"],
-                                        prompt_template=saved.get("prompt_template", shot["prompt_template"]))
-                            report.update(prompt=shot["prompt"], prompt_template=shot["prompt_template"])
-                            if isinstance(saved.get("adaptation"), dict):
-                                shot["adaptation"] = saved["adaptation"]
-                                report["adaptation"] = saved["adaptation"]
-                    elif any(shot_dir.iterdir()):
-                        if (shot_dir / "cloud-job.json").exists():
-                            raise ValueError(
-                                "A saved cloud job cannot be matched to this take. "
-                                "Its checkpoint is preserved to prevent a duplicate paid submission; "
-                                "inspect the candidate and provider job before creating another candidate."
-                            )
-                        saved_take = saved.get("take", 1) if saved is not None else 1
-                        if type(saved_take) is not int or saved_take < 1:
-                            saved_take = 1
-                        take = _archive_take(shot_dir, archive_dir, saved_take) + 1
-                        report.update(take=take, seed=_take_seed(base_seed, take))
-                    report_committed = True
-                    save_shot(index, report)
                     if use_previous_frame and not reuse_native:
                         _extract_last_frame(previous_clip, source_frame, image_file)
                     if (automatic_review and storyboard_bindings is None and _uses_previous_frame(shots, index) and visual_reviews and not reuse_native
@@ -447,40 +277,6 @@ def render_shooting_script(
                                     or any(not isinstance(adapted.get(key), str) or not adapted[key].strip()
                                            for key in ("prompt", "prompt_template"))):
                                 raise ValueError("Continuity adaptation returned no valid directions")
-                            if frame_binding is not None and adapted.get("adaptation", {}).get("status") == "applied":
-                                if character_profiles is None:
-                                    raise ValueError("Storyboard adaptation needs the saved character profiles.")
-                                frame_shot = {key: value for key, value in adapted.items() if key != "adaptation"}
-                                frame_plan = dict(execution_plan, shots=list(execution_plan["shots"]))
-                                frame_plan["shots"][index] = frame_shot
-                                frame_key = hashlib.sha256(json.dumps(
-                                    [frame_shot, summaries[-1]["sha256"]], sort_keys=True).encode()).hexdigest()
-                                directory = output.parent / "storyboard-adaptations" / f"{index + 1:03d}" / frame_key
-                                evidence = visual_reviews[-1].get("evidence", {})
-                                prior_frame = evidence.get("full_final_frame", evidence.get("final_frame"))
-                                prior = None
-                                if prior_frame and Path(prior_frame).is_file():
-                                    prior_path = Path(prior_frame).resolve()
-                                    prior = {"image": {"file": prior_path.relative_to(output.parent.resolve()).as_posix(),
-                                                       "sha256": _file_sha256(prior_path)}}
-                                replacement = storyboard_assets.regenerate_shot(
-                                    frame_plan, character_profiles, output.parent, seed, index,
-                                    reason=adapted["adaptation"]["reason"], directory=directory,
-                                    prior_image=prior, on_activity=activity,
-                                )
-                                replacement_image = storyboard_assets.resolve_image(replacement, output.parent)
-                                checked = review_backend.review_adapted_storyboard(
-                                    execution_plan, index, adapted, visual_reviews[-1], replacement_image,
-                                    directory / "visual-review", on_activity=activity,
-                                    on_activity_delta=on_activity_delta,
-                                )
-                                if not checked["approved"]:
-                                    raise ValueError("Regenerated storyboard was rejected: " + checked["source_preservation"])
-                                adapted["adaptation"]["storyboard_review"] = checked
-                                frame_binding, image_file = replacement, replacement_image
-                                report.update(storyboard=frame_binding, storyboard_prompt=adapted["storyboard_prompt"])
-                                continuity.update(source_image=str(image_file),
-                                                  source_image_sha256=frame_binding["image"]["sha256"])
                             shot = adapted
                         except Exception as exc:
                             shot = dict(shot, adaptation={"status": "unavailable", "reason": str(exc)})
@@ -522,12 +318,15 @@ def render_shooting_script(
                             width=width, height=height,
                         )
                 runtime = report["runtime"]
-                report["sha256"] = _file_sha256(clip)
-                report["status"] = "verifying"
-                save_shot(index, report)
                 if not reused:
                     emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Checking video file")
-                    validate_video(clip, frames, width, height, expect_audio=True)
+                # Verification writes its hash before decoding. On failure, use
+                # that Rust checkpoint rather than this older in-memory report.
+                report_committed = False
+                report = rust_engine.call("take_complete", shot_dir=str(shot_dir), report=report, reused=reused)
+                report_committed = True
+                if on_shot is not None:
+                    on_shot(index, report)
                 if automatic_review:
                     emit_progress(last_fraction, f"Shot {index + 1}/{total_shots}: Inspecting rendered action")
                     try:

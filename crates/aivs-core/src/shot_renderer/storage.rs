@@ -23,13 +23,13 @@ fn read(path: &Path) -> Result<Option<Value>> {
     }
 }
 
-fn saved(directory: &Path) -> Result<Value> {
+pub(super) fn saved(directory: &Path) -> Result<Value> {
     Ok(read(&directory.join("render.json"))?
         .filter(valid_saved_report)
         .unwrap_or(Value::Null))
 }
 
-fn last(directory: &Path) -> Result<u64> {
+pub(super) fn last(directory: &Path) -> Result<u64> {
     if !directory.is_dir() {
         return Ok(0);
     }
@@ -49,7 +49,10 @@ fn last(directory: &Path) -> Result<u64> {
     Ok(take)
 }
 
-fn archive(shot: &Path, archive: &Path, take: u64) -> Result<u64> {
+pub(super) fn archive(shot: &Path, archive: &Path, take: u64) -> Result<u64> {
+    if shot.join("cloud-job.json").exists() {
+        return Err("A saved cloud job cannot be matched to this take. Its checkpoint is preserved to prevent a duplicate paid submission; inspect the candidate and provider job before creating another candidate.".into());
+    }
     let take = take.max(
         last(archive)?
             .checked_add(1)
@@ -100,7 +103,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn restore(args: &Value) -> Result<Value> {
+pub(super) fn restore(args: &Value) -> Result<Value> {
     let source = path(args, "source")?;
     let shot = path(args, "shot_dir")?;
     let archive_dir = path(args, "archive_dir")?;
@@ -144,7 +147,7 @@ fn restore(args: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn matches(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
+pub(super) fn matches(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
     let clip = path(args, "clip")?;
     let mut evidence = json!({"saved": args["saved"], "report": args["report"], "clip_path": clip,
         "is_final_clip": clip.file_name().is_some_and(|s| s == "video.mp4") && clip.is_file(),

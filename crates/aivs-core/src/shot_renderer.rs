@@ -1,5 +1,7 @@
 //! Shot execution policy, saved-take provenance, and run-local recovery.
 //! Legacy artifact JSON fingerprints remain adapter-owned.
+mod recovery;
+mod reports;
 mod storage;
 use crate::continuity::Result;
 use serde_json::{Value, json};
@@ -12,7 +14,16 @@ pub fn storage(
     args: &Value,
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<Value> {
-    storage::dispatch(operation, args, cancelled)
+    match operation {
+        "take_prepare" => reports::prepare(args),
+        "take_candidates" => recovery::candidates(args),
+        "take_recover" => recovery::recover(args, cancelled),
+        "take_save" => reports::save(args),
+        "take_failure" => reports::failure(args),
+        "take_complete" => reports::complete(args, cancelled),
+        "take_assemble" => reports::assemble(args, cancelled),
+        _ => storage::dispatch(operation, args, cancelled),
+    }
 }
 
 fn take_number(saved: &Value) -> Option<u64> {
