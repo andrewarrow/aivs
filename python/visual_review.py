@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 
+import rust_engine
 import shooting_script
 from render_formats import resolve_format
 
@@ -120,15 +121,10 @@ def _record(path, report):
     return report
 
 
-def _text(value, label, limit=4000):
-    if not isinstance(value, str) or not value.strip() or len(value) > limit:
-        raise ValueError(f"Invalid {label} in visual review.")
-    return value
-
-
-def _timestamp(value, seconds):
-    return (type(value) in (int, float) and math.isfinite(value)
-            and 0 <= value <= seconds)
+def _policy_identity():
+    # Review/adaptation caches must track the compiled Rust rules as well.
+    return _fingerprint({"policy": POLICY_VERSION,
+                         "implementation": rust_engine.implementation_sha256("visual_review.py")})
 
 
 def _call(instruction, schema, directory, name, validate, *, images=(),
@@ -167,14 +163,7 @@ def _call(instruction, schema, directory, name, validate, *, images=(),
 
 
 def _contract(shot):
-    visual = shot.get("visual_contract") or [
-        "The assigned source action and dramatic purpose are visibly conveyed.",
-        "People, garments and handled objects retain plausible identity and motion throughout.",
-        "The final visible state agrees with the planned end state.",
-    ]
-    return list(visual) + [
-        f"Source action {part['beat_id']}, part {part['part']}/{part['parts']}: {part['action']}"
-        for part in shot.get("action_coverage", [])]
+    return rust_engine.call("visual_contract", shot=shot)
 
 
 def _sheets(clip, directory, seconds, shot_number, render_format=None):
@@ -240,43 +229,7 @@ def _sheets(clip, directory, seconds, shot_number, render_format=None):
 
 
 def _validate_shot(value, shot):
-    if not isinstance(value, dict) or value.get("status") not in ("passed", "issues_detected"):
-        raise ValueError("Visual shot review needs a status.")
-    _text(value.get("summary"), "summary")
-    _text(value.get("observed_end_state"), "observed end state", 2400)
-    if type(value.get("continuity_risk")) is not bool:
-        raise ValueError("Visual review needs an explicit continuation risk.")
-    issues = value.get("issues")
-    if not isinstance(issues, list) or len(issues) > 24:
-        raise ValueError("Visual issues must be a bounded list.")
-    for issue in issues:
-        if (not isinstance(issue, dict) or issue.get("severity") not in ("minor", "major", "uncertain")
-                or issue.get("category") not in ("physics", "continuity", "action", "tone", "framing", "text")
-                or type(issue.get("affects_continuation")) is not bool
-                or not _timestamp(issue.get("start_seconds"), shot["seconds"])
-                or not _timestamp(issue.get("end_seconds"), shot["seconds"])
-                or issue["end_seconds"] < issue["start_seconds"]):
-            raise ValueError("Visual issues require valid evidence intervals and severity.")
-        _text(issue.get("evidence"), "issue evidence")
-    contract = value.get("contract_evidence")
-    if (not isinstance(contract, list) or len(contract) != len(_contract(shot))
-            or any(not isinstance(item, dict) for item in contract)):
-        raise ValueError("Review every visual requirement exactly once.")
-    for requirement, item in zip(_contract(shot), contract):
-        if (item.get("requirement") != requirement
-                or item.get("status") not in ("satisfied", "missing", "uncertain")
-                or not isinstance(item.get("timestamps"), list)
-                or not item["timestamps"] or len(item["timestamps"]) > 16
-                or any(not _timestamp(t, shot["seconds"]) for t in item["timestamps"])):
-            raise ValueError("Visual contract evidence needs exact requirements and timestamps.")
-        _text(item.get("evidence"), "contract evidence")
-    detected = bool(issues or value["continuity_risk"]
-                    or any(item["status"] != "satisfied" for item in contract))
-    if (value["status"] == "issues_detected") != detected:
-        raise ValueError("Review status contradicts its evidence.")
-    if value["continuity_risk"] != any(item["affects_continuation"] for item in issues):
-        raise ValueError("Continuation risk must agree with its timestamped issues.")
-    return value
+    return rust_engine.call("validate_visual_shot", value=value, shot=shot)
 
 
 def review_shot(plan, shot_index, clip, review_dir, *, on_activity=None,
@@ -292,7 +245,7 @@ def review_shot(plan, shot_index, clip, review_dir, *, on_activity=None,
     try:
         shot = plan["shots"][shot_index]
         digest = _file_hash(clip)
-        key = _fingerprint([POLICY_VERSION, digest, plan.get("source_sha256"), shot])
+        key = _fingerprint([_policy_identity(), digest, plan.get("source_sha256"), shot])
         report.update(clip_sha256=digest, cache_key=key)
         cached = _cache(directory / "review.json", key)
         if cached is not None:
@@ -333,25 +286,7 @@ def review_shot(plan, shot_index, clip, review_dir, *, on_activity=None,
 
 
 def _validate_preservation(value, requirements):
-    if not isinstance(value, dict) or type(value.get("approved")) is not bool:
-        raise ValueError("Adaptation preservation needs an explicit decision.")
-    _text(value.get("source_preservation"), "source preservation")
-    _text(value.get("continuity"), "adaptation continuity")
-    evidence = value.get("requirements")
-    if not isinstance(evidence, list) or len(evidence) != len(requirements):
-        raise ValueError("Independently account for every unchanged visual and action requirement.")
-    for requirement, item in zip(requirements, evidence):
-        if (not isinstance(item, dict) or item.get("requirement") != requirement
-                or item.get("status") not in ("preserved", "missing", "uncertain")):
-            raise ValueError("Preservation evidence must match the original requirements.")
-        _text(item.get("evidence"), "preservation evidence")
-    if not isinstance(value.get("issues"), list) or len(value["issues"]) > 24:
-        raise ValueError("Preservation review needs a bounded issues list.")
-    for issue in value["issues"]:
-        _text(issue, "preservation issue")
-    if value["approved"] and (value["issues"] or any(item["status"] != "preserved" for item in evidence)):
-        raise ValueError("Preservation approval contradicts missing or uncertain evidence.")
-    return value
+    return rust_engine.call("validate_visual_preservation", value=value, requirements=requirements)
 
 
 def adapt_shot(plan, shot_index, previous_review, review_dir, *, token_counter=None,
@@ -371,24 +306,17 @@ def adapt_shot(plan, shot_index, previous_review, review_dir, *, token_counter=N
                   "source_clip_sha256": previous_review.get("clip_sha256"),
                   "previous_review_sha256": _fingerprint(previous_review),
                   "reason": "The approved staging remains in use."}
-    key = _fingerprint([POLICY_VERSION, plan.get("source_sha256"), original, provenance, storyboard_mode])
-    provenance["cache_key"] = key
-    requirements = _contract(original)
 
     def compile_change(value):
-        if (not isinstance(value, dict) or type(value.get("safe_to_apply")) is not bool
-                or type(value.get("preserves_source_contract")) is not bool):
-            raise ValueError("Adaptation needs explicit safety and source-preservation decisions.")
-        _text(value.get("reason"), "adaptation reason")
+        value = rust_engine.call("validate_visual_adaptation", value=value, storyboard_mode=storyboard_mode)
         if not value["safe_to_apply"] or not value["preserves_source_contract"]:
             return dict(original, adaptation=dict(provenance, reason=value["reason"]))
-        template = _text(value.get("prompt_template"), "adapted template")
+        template = value["prompt_template"]
         candidate = copy.deepcopy(plan)
         candidate["shots"][shot_index].pop("prompt", None)
         candidate["shots"][shot_index]["prompt_template"] = template
         if storyboard_mode:
-            candidate["shots"][shot_index]["storyboard_prompt"] = _text(
-                value.get("storyboard_prompt"), "adapted storyboard composition", 1200)
+            candidate["shots"][shot_index]["storyboard_prompt"] = value["storyboard_prompt"]
         source = plan["source"]
         request = shooting_script._source_request(source)
         compiled = shooting_script.validate_shooting_script(
@@ -415,6 +343,9 @@ def adapt_shot(plan, shot_index, previous_review, review_dir, *, token_counter=N
         return dict(proposed, adaptation=details)
 
     try:
+        key = _fingerprint([_policy_identity(), plan.get("source_sha256"), original, provenance, storyboard_mode])
+        provenance["cache_key"] = key
+        requirements = _contract(original)
         cached = _cache(directory / "review.json", key)
         if cached is not None and isinstance(cached.get("response"), dict):
             proposed = compile_change(cached["response"])
@@ -510,7 +441,7 @@ def review_adapted_storyboard(plan, shot_index, proposed, previous_review, image
     directory = Path(review_dir)
     original = plan["shots"][shot_index]
     requirements = _contract(original)
-    key = _fingerprint([POLICY_VERSION, plan.get("source_sha256"), original, proposed,
+    key = _fingerprint([_policy_identity(), plan.get("source_sha256"), original, proposed,
                         previous_review, _file_hash(image)])
     cached = _cache(directory / "review.json", key)
     if cached is not None:
@@ -542,21 +473,24 @@ def review_adapted_storyboard(plan, shot_index, proposed, previous_review, image
     return result
 
 
+def _validate_scene(value, plan, shot_reviews):
+    return rust_engine.call("validate_visual_scene", value=value, plan=plan, shot_reviews=shot_reviews)
+
+
 def review_scene(plan, shot_reviews, review_dir, *, on_activity=None,
                  on_activity_delta=None, executable=None):
     """Assess scene meaning using source and recorded visual evidence, without a gate."""
     directory = Path(review_dir)
-    key = _fingerprint([POLICY_VERSION, plan.get("source_sha256"), plan["shots"], shot_reviews])
-    report = {"policy_version": POLICY_VERSION, "cache_key": key, "status": "unavailable",
+    report = {"policy_version": POLICY_VERSION, "status": "unavailable",
               "method": "source-and-sampled-shot-evidence", "summary": "Scene observations unavailable.",
-              "story_findings": [], "unobserved_shots": [i + 1 for i, review in enumerate(shot_reviews)
-                                                         if review.get("status") == "unavailable"]}
+              "story_findings": [], "unobserved_shots": []}
     try:
+        key = _fingerprint([_policy_identity(), plan.get("source_sha256"), plan["shots"], shot_reviews])
+        report["cache_key"] = key
+        report = _validate_scene(report, plan, shot_reviews)
         cached = _cache(directory / "review.json", key)
         if cached is not None:
-            return cached
-        if len(shot_reviews) != len(plan["shots"]):
-            raise ValueError("Scene observation requires a report for every rendered shot.")
+            return _record(directory / "review.json", _validate_scene(cached, plan, shot_reviews))
         if all(item.get("status") == "unavailable" for item in shot_reviews):
             return _record(directory / "review.json", report)
         observations = [{key: value for key, value in item.items()
@@ -581,23 +515,7 @@ def review_scene(plan, shot_reviews, review_dir, *, on_activity=None,
                 "observations": observations}))
 
         def validate(value):
-            if not isinstance(value, dict) or value.get("status") not in ("passed", "issues_detected", "unavailable"):
-                raise ValueError("Scene review needs a valid status.")
-            _text(value.get("summary"), "scene summary")
-            findings = value.get("story_findings")
-            if not isinstance(findings, list) or len(findings) > 64:
-                raise ValueError("Scene findings must be a bounded list.")
-            for item in findings:
-                if (not isinstance(item, dict) or not isinstance(item.get("shot_numbers"), list)
-                        or not item["shot_numbers"]
-                        or any(type(n) is not int or not 1 <= n <= len(plan["shots"]) for n in item["shot_numbers"])):
-                    raise ValueError("Scene findings need valid shot references.")
-                _text(item.get("evidence"), "scene evidence")
-            if any(item.get("status") == "issues_detected" for item in shot_reviews):
-                value["status"] = "issues_detected"
-            elif value["status"] == "passed" and report["unobserved_shots"]:
-                value["status"] = "unavailable"
-            return value
+            return _validate_scene(value, plan, shot_reviews)
 
         report.update(_call(instruction, _SCENE_SCHEMA, directory, "scene", validate,
                             executable=executable, on_activity=on_activity,

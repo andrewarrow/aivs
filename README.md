@@ -520,7 +520,8 @@ Change story direction in the director instructions. Continuity rules belong in
 ### Rust engine migration
 
 Deterministic continuity, canonical prop acceptance, motion keyframe timing and
-hand-object constraints, and production Codex sessions run in Rust. `aivs-core` has no desktop or model dependencies. The desktop
+hand-object constraints, visual review validation, and production Codex sessions
+run in Rust. `aivs-core` has no desktop or model dependencies. The desktop
 launches itself with `--engine` before initializing the UI and passes that path
 to Python as `AIVS_ENGINE_PATH`.
 
@@ -564,6 +565,16 @@ planning and computes pixel-review acceptance from observed hands, positions,
 visible relationships, and component counts. Fresh and resumed reviews use the
 same Rust rules; cached acceptance flags are recomputed. Python keeps keyframe
 planning instructions, schemas, generation calls, and artifact checkpoints.
+
+`visual_review` in Rust builds ordered visual/action requirements, validates
+timestamped shot observations, checks adaptation decisions and independent
+source-preservation evidence, and reconciles scene status with shot reports.
+Fresh and cached scene reports use the same rules: recorded defects cannot be
+reported as a pass, and unavailable shot evidence prevents an overall pass.
+Review and adaptation cache keys include the Python, bridge, and compiled Rust
+implementation identity. Python retains review instructions, schemas, frame
+sampling, Codex calls, prompt compilation, and artifact storage. Visual reports
+remain advisory and never request another video render.
 
 Preproduction scheduling, repair orchestration, artifact I/O, take recovery,
 visual review orchestration, and FFmpeg assembly remain in Python. Moving that
