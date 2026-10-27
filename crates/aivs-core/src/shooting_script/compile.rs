@@ -7,6 +7,71 @@ use crate::continuity::Result;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+fn canonicalize_features(shots: &mut [Value], world: &Value) {
+    let canonical: BTreeMap<String, String> = world["props"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|prop| {
+            std::iter::once(prop).chain(prop["components"].as_array().into_iter().flatten())
+        })
+        .filter_map(|entity| {
+            let id = entity["id"].as_str()?;
+            let features = entity["features"]
+                .as_array()?
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()?;
+            (!features.is_empty()).then(|| (id.to_owned(), features.join("; ")))
+        })
+        .collect();
+    let normalize = |value: &mut Value, expected: &str| {
+        // Feature lists are prose, so capitalization and separator spacing do
+        // not describe a transformation. Preserve all wording and list order.
+        if value.as_str().is_some_and(|actual| {
+            actual
+                .split(';')
+                .map(|feature| feature.trim().to_ascii_lowercase())
+                .eq(expected
+                    .split(';')
+                    .map(|feature| feature.trim().to_ascii_lowercase()))
+        }) {
+            *value = json!(expected);
+        }
+    };
+    for shot in shots {
+        let contract = &mut shot["continuity"];
+        for endpoint in ["opening", "ending"] {
+            for prop in contract[endpoint]["props"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
+                let Some(expected) = prop["id"].as_str().and_then(|id| canonical.get(id)) else {
+                    continue;
+                };
+                for attribute in prop["physical"].as_array_mut().into_iter().flatten() {
+                    if attribute["key"] == "distinguishing_features" {
+                        normalize(&mut attribute["value"], expected);
+                    }
+                }
+            }
+        }
+        for event in contract["transitions"].as_array_mut().into_iter().flatten() {
+            if event["field"] == "physical.distinguishing_features" {
+                if let Some(expected) = event["entity"]
+                    .as_str()
+                    .and_then(|entity| entity.strip_prefix("prop:"))
+                    .and_then(|id| canonical.get(id))
+                {
+                    normalize(&mut event["before"], expected);
+                    normalize(&mut event["after"], expected);
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn compile(
     candidate: &Value,
     source: &Value,
@@ -317,6 +382,7 @@ pub(super) fn compile(
         return Err("Shooting script omits source beats.".into());
     }
     if storyboard {
+        canonicalize_features(&mut shots, &candidate["world"]);
         crate::continuity::dispatch(&json!({"operation": "validate_plan", "args": {"plan": {
             "source": source, "shots": shots, "world": candidate["world"]}}}))?;
     }
