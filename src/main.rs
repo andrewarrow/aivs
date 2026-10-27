@@ -259,6 +259,9 @@ impl ApplicationHandler<Instant> for Desktop {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--production") {
+        std::process::exit(aivs_core::production::cli::main(std::env::args().skip(2).collect()));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--engine")) {
         aivs_core::serve(
             std::io::BufReader::new(std::io::stdin()),

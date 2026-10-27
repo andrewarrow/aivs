@@ -53,7 +53,8 @@ pub fn run(
         .as_str()
         .ok_or("Missing inference operation.")?;
     let python = match operation {
-        "ltx_render" => PathBuf::from(
+        "ltx_render" | "json_digest" | "token_count" | "model_check" | "model_doctor"
+        | "model_download" => PathBuf::from(
             args["python"]
                 .as_str()
                 .ok_or("Missing Python model interpreter.")?,
@@ -89,7 +90,7 @@ pub fn run(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if operation.starts_with("mflux_") {
+    if operation != "model_download" {
         command
             .env("HF_HOME", root.join(".cache/huggingface"))
             .env("HF_HUB_OFFLINE", "1")

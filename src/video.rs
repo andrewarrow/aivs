@@ -14,7 +14,6 @@ use std::{
 
 mod ui;
 
-const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/video.py");
 const REQUIREMENTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/requirements.txt");
 const VOICE_SETUP: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -135,8 +134,8 @@ impl Worker {
     }
 
     fn python(&self, action: &str) -> Command {
-        let mut command = Command::new(self.root.join(".venv/bin/python"));
-        command.args(["-u", SCRIPT, action]);
+        let mut command = Command::new(std::env::current_exe().expect("current AIVS executable"));
+        command.args(["--production", action]);
         if matches!(action, "check" | "download") {
             command.args(["--profile", "hq"]);
         }
@@ -307,8 +306,8 @@ impl Worker {
         let stderr = read_output(child.stderr.take().unwrap(), self.sender.clone(), false);
         let status = loop {
             if self.cancel.load(Ordering::Relaxed) {
-                // Signal the process group so Python, uv, and FFmpeg all stop.
-                // Give Python time to save its interrupted render report.
+                // Signal the group, including model workers and FFmpeg.
+                // Give Rust time to save its interrupted production report.
                 #[cfg(unix)]
                 let _ = Command::new("/bin/kill")
                     .args(["-INT", "--", &format!("-{}", child.id())])
