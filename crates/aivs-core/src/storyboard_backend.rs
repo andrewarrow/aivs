@@ -56,7 +56,10 @@ pub(super) fn instruction(
             .as_array()
             .ok_or("Image edits need preservation constraints.")?
             .iter()
-            .map(|v| v.as_str().ok_or("Invalid image preservation constraint."))
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| "Invalid image preservation constraint.".to_owned())
+            })
             .collect::<Result<Vec<_>>>()?;
         let correction = text(args, "correction")?;
         if correction.trim().is_empty() || preserve.is_empty() {
