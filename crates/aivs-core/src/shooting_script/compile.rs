@@ -357,9 +357,23 @@ pub(super) fn compile(
             .filter(|id| by_id[*id]["kind"] == "dialogue")
             .copied()
             .collect::<Vec<_>>();
-        let compiled = prompt::compile(
-            template, source, identities, visible, &required, &by_id, request, storyboard, index,
-        )?;
+        let compile_prompt = |legacy| {
+            prompt::compile(
+                template, source, identities, visible, &required, &by_id, request, storyboard,
+                index, legacy,
+            )
+        };
+        let mut compiled = compile_prompt(false)?;
+        if item["prompt"].as_str().is_some_and(|saved| saved != compiled) {
+            // Resume must preserve the exact approved prompt and its hashes.
+            // Accept the previous compiler format only when it reproduces the
+            // saved prompt exactly from the same source and template. New
+            // shots always use the inline performer/voice bindings.
+            let legacy = compile_prompt(true)?;
+            if item["prompt"].as_str() == Some(legacy.as_str()) {
+                compiled = legacy;
+            }
+        }
         if !model_tokenizer && prompt::estimated_tokens(&compiled) > 1024 {
             return Err(format!("Shot {index} prompt exceeds 1024 Gemma tokens."));
         }

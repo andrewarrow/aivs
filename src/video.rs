@@ -246,6 +246,10 @@ impl Worker {
 
     fn resume(&self, directory: &Path, motion_previs: bool) -> Result<(), String> {
         self.progress("Resuming video…");
+        self.send(Event::Log(format!(
+            "Resuming output directory: {}",
+            directory.display()
+        )));
         let mut planning_budget = crate::settings::load_planning_budget(&self.root);
         for (filename, key) in [
             ("screenplay-request.json", "planning_budget_seconds"),

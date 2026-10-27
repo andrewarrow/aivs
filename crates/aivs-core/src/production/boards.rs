@@ -174,7 +174,16 @@ pub fn contracts(ctx: &mut Context<'_>, plan: &Value, boards: &Value) -> Result<
             .as_array()
             .and_then(|a| a.iter().find(|r| r["id"] == id))
         {
-            bindings[id] = prop_binding(ctx, spec, &entry["image"])?;
+            let mut binding = prop_binding(ctx, spec, &entry["image"])?;
+            if ctx.options["resume"] == true && boards["continuity_acceptance"].is_object() {
+                // An accepted run keeps the reviewer that inspected these
+                // pixels. Definition/image hashes and the actual observations
+                // are still checked against the current contracts below.
+                binding["reviewer_sha256"] = entry["prop_validation"]["binding"]
+                    ["reviewer_sha256"]
+                    .clone();
+            }
+            bindings[id] = binding;
         }
         if let Some(design) = shared_prop_design(spec) {
             shared[id] = json!(ctx.digest(&design)?);
@@ -258,7 +267,12 @@ pub fn accepted(ctx: &mut Context<'_>, plan: &Value, boards: &Value, run: &Path)
         );
     }
     let report = read(&file)?;
-    let binding = review_binding(ctx, plan, boards)?;
+    let mut binding = review_binding(ctx, plan, boards)?;
+    if ctx.options["resume"] == true {
+        // Code changes must not invalidate an otherwise unchanged accepted
+        // run. Recompute all content bindings, retaining review provenance.
+        binding["review_policy_sha256"] = report["binding"]["review_policy_sha256"].clone();
+    }
     let digest = ctx.digest(&report)?;
     rule(
         "validate_acceptance",

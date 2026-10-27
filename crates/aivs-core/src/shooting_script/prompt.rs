@@ -40,7 +40,9 @@ fn cast_context(
     source: &Value,
     identities: &Value,
     visible: &Value,
+    speaking: &[&str],
     storyboard: bool,
+    legacy: bool,
 ) -> Result<String> {
     let mut parts = Vec::new();
     let modern = !identities.is_null();
@@ -68,6 +70,15 @@ fn cast_context(
                         .ok_or("Missing cast appearance.")?
                 )
             ));
+        }
+        if legacy {
+            let voice = identity["voice_description"]
+                .as_str()
+                .unwrap_or_default()
+                .trim();
+            if !voice.is_empty() && (!modern || speaking.contains(&role)) {
+                parts.push(format!("{role} speaks with {}", phrase(voice)));
+            }
         }
     }
     Ok(if parts.is_empty() {
@@ -148,6 +159,7 @@ pub(super) fn compile(
     request: &Value,
     storyboard: bool,
     number: usize,
+    legacy: bool,
 ) -> Result<String> {
     if regex(r"(?i)-{3,}>\s*done!").is_match(template) {
         return Err(format!(
@@ -210,13 +222,15 @@ pub(super) fn compile(
                 .filter(|cue| !cue.is_empty())
                 .map(|cue| format!(" ({cue})"))
                 .unwrap_or_default();
+            let role = beat["speaker"].as_str().unwrap_or_default();
+            let speaker = if legacy {
+                role.to_owned()
+            } else {
+                speaker_context(source, identities, role)
+            };
             format!(
                 "{}{cue} says, \"{}\".",
-                speaker_context(
-                    source,
-                    identities,
-                    beat["speaker"].as_str().unwrap_or_default()
-                ),
+                speaker,
                 beat["text"].as_str().unwrap_or_default()
             )
         })
@@ -241,7 +255,11 @@ pub(super) fn compile(
         .get("render_format")
         .map(crate::render_formats::framing)
         .unwrap_or(Value::String(String::new()));
-    let cast = cast_context(source, identities, visible, storyboard)?;
+    let speaking = required
+        .iter()
+        .filter_map(|id| beats[id]["speaker"].as_str())
+        .collect::<Vec<_>>();
+    let cast = cast_context(source, identities, visible, &speaking, storyboard, legacy)?;
     let image = if storyboard {
         "Animate the supplied storyboard first frame, preserving its cast, composition, costumes and prop state as the action begins. "
     } else {

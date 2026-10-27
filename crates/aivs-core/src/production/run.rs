@@ -302,6 +302,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         return Err("Select an existing AIVS output directory to resume.".into());
     }
     let _lock = lock(&ctx.root, ".render.lock")?;
+    ctx.options["resume"] = json!(true);
     let mut report = read(&run.join("render.json"))?;
     let mut request = read(&run.join("screenplay-request.json"))?;
     let profiles = report["characters"].clone();
@@ -404,7 +405,9 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     } else {
         None
     };
-    remove(&mut report, &["error", "sha256", "runtime"]);
+    // Keep the last render's receipt until preproduction has loaded. A failed
+    // Resume must not discard metadata for footage that is still on disk.
+    remove(&mut report, &["error"]);
     report["status"] = json!(if old.is_none() {
         "planning"
     } else {
@@ -435,6 +438,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         } else {
             (old.ok_or("The old planner has been removed. Start Generate video again to create storyboards for this scene.")?,Value::Null)
         };
+        remove(&mut report, &["sha256", "runtime"]);
         report["seconds"] = plan["seconds"].clone();
         report["shots"] = pending(&plan)?;
         report["status"] = json!(if stop {
