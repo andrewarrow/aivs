@@ -28,7 +28,7 @@ ARMS = {
 }
 CODE_FILES = (
     "production_comparison.py", "storyboard.py", "shot_renderer.py", "quality_backend.py",
-    "premium_backend.py", "render_formats.py", "validation.py",
+    "premium_backend.py", "rust_engine.py", "validation.py",
     "quality_progress.py", "render_estimate.py", "requirements.txt",
 )
 

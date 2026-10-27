@@ -4,6 +4,7 @@ pub mod continuity;
 pub mod motion;
 pub mod preproduction;
 pub mod prop_reference;
+pub mod render_formats;
 pub mod shot_renderer;
 pub mod visual_review;
 
@@ -42,10 +43,12 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/lib.rs": include_str!("lib.rs"),
                             "crates/aivs-core/src/continuity.rs": include_str!("continuity.rs"),
                             "crates/aivs-core/src/continuity/acceptance.rs": include_str!("continuity/acceptance.rs"),
+                            "crates/aivs-core/src/continuity/artifacts.rs": include_str!("continuity/artifacts.rs"),
                             "crates/aivs-core/src/continuity/dispatch.rs": include_str!("continuity/dispatch.rs"),
                             "crates/aivs-core/src/continuity/facts.rs": include_str!("continuity/facts.rs"),
                             "crates/aivs-core/src/continuity/plan.rs": include_str!("continuity/plan.rs"),
                             "crates/aivs-core/src/continuity/review.rs": include_str!("continuity/review.rs"),
+                            "crates/aivs-core/src/continuity/schemas.rs": include_str!("continuity/schemas.rs"),
                             "crates/aivs-core/src/continuity/types.rs": include_str!("continuity/types.rs"),
                             "crates/aivs-core/src/continuity/world.rs": include_str!("continuity/world.rs"),
                             "crates/aivs-core/src/codex.rs": include_str!("codex.rs"),
@@ -53,10 +56,15 @@ pub fn serve(reader: impl BufRead + Send + 'static, mut writer: impl Write) -> s
                             "crates/aivs-core/src/motion/planning.rs": include_str!("motion/planning.rs"),
                             "crates/aivs-core/src/motion/review.rs": include_str!("motion/review.rs"),
                             "crates/aivs-core/src/prop_reference.rs": include_str!("prop_reference.rs"),
+                            "crates/aivs-core/src/render_formats.rs": include_str!("render_formats.rs"),
                             "crates/aivs-core/src/preproduction.rs": include_str!("preproduction.rs"),
                             "crates/aivs-core/src/shot_renderer.rs": include_str!("shot_renderer.rs"),
                             "crates/aivs-core/src/visual_review.rs": include_str!("visual_review.rs"),
                         }))
+                    } else if request["operation"] == "resolve_format" {
+                        render_formats::resolve(&request["args"]["name"])
+                    } else if request["operation"] == "framing_prompt" {
+                        Ok(render_formats::framing(&request["args"]["name"]))
                     } else if request["operation"] == "codex" {
                         error_kind = "codex";
                         match serde_json::from_value(request["args"].clone()) {

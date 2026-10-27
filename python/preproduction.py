@@ -11,7 +11,6 @@ import quality_backend
 import rust_engine
 import shooting_script
 import storyboard
-import storyboard_continuity as continuity
 
 
 def _save(path, value):
@@ -30,8 +29,7 @@ def _read(path):
 
 def director_cache_key(request, profiles):
     """Image renderer changes never invalidate source-bound director coverage."""
-    files = ("shooting_script.py", "shooting-script-instructions.txt",
-             "render_formats.py", "storyboard_continuity.py")
+    files = ("shooting_script.py", "shooting-script-instructions.txt")
     identity = {
         "source": shooting_script.parse_request(request, profiles)["source_sha256"],
         "implementation": {name: rust_engine.implementation_sha256(name)
@@ -45,7 +43,7 @@ def cache_key(request, profiles):
     """Final motion direction also depends on the rendered and inspected images."""
     files = ("shooting-script-review-instructions.txt", "storyboard.py", "storyboard_backend.py",
              "storyboard_mflux.py", "prop_reference.py", "preproduction.py")
-    return continuity.digest({"director": director_cache_key(request, profiles),
+    return rust_engine.digest({"director": director_cache_key(request, profiles),
         "backend": storyboard.storyboard_backend.configuration(),
         "implementation": {name: rust_engine.implementation_sha256(name) for name in files}})
 
@@ -58,7 +56,7 @@ def _prepare_director(request, profiles, run_dir, *, fresh, options):
         try:
             saved = _read(index)
             candidate = saved["plan"]
-            if (saved["key"] != key or saved["plan_sha256"] != continuity.digest(candidate)
+            if (saved["key"] != key or saved["plan_sha256"] != rust_engine.digest(candidate)
                     or candidate.get("planner_version") != shooting_script.PLANNER_VERSION
                     or candidate.get("planning_stage") != "storyboard"):
                 raise ValueError("Director cache identity changed.")
@@ -77,7 +75,7 @@ def _prepare_director(request, profiles, run_dir, *, fresh, options):
     if not (run_dir / "storyboard-repairs.json").exists():
         try:
             index.parent.mkdir(parents=True, exist_ok=True)
-            _save(index, {"key": key, "plan_sha256": continuity.digest(director), "plan": director})
+            _save(index, {"key": key, "plan_sha256": rust_engine.digest(director), "plan": director})
         except OSError as exc:
             options["on_activity"](f"Director plan is saved locally; shared cache could not be updated: {exc}")
     return director
@@ -123,7 +121,7 @@ def _load_final(directory, request, profiles, token_counter):
     if plan["motion_plan"].get("storyboard_sha256") != hashlib.sha256(
             shooting_script._json(images).encode("utf-8")).hexdigest():
         raise ValueError("The motion plan has an invalid storyboard fingerprint.")
-    continuity.require_accepted(plan, boards, directory)
+    storyboard.require_accepted(plan, boards, directory)
     return plan, director, boards
 
 
@@ -146,7 +144,7 @@ def _copy_final(source, destination, plan, director, boards):
                                                       "references": boards.get("references", [])})
     _save(destination / "storyboard-review.json", _read(source / "storyboard-review.json"))
     shooting_script.save_shooting_script(plan, destination)
-    continuity.require_accepted(plan, boards, destination)
+    storyboard.require_accepted(plan, boards, destination)
 
 
 def _repair_state(run_dir, source_sha256):
@@ -326,7 +324,7 @@ def prepare(request, profiles, run_dir, seed, *, token_counter=None,
             storyboard_seconds += round(time.monotonic() - started, 3)
     boards = rebind_storyboards(director, plan, boards, run_dir)
     _save(run_dir / "storyboards.json", boards)
-    continuity.require_accepted(plan, boards, run_dir)
+    storyboard.require_accepted(plan, boards, run_dir)
     _save(run_dir / "preproduction.json", {
         "cache_key": key, "reused": False, "storyboard_seconds": storyboard_seconds,
         "planning_budget": _read(run_dir / "planning-budget.json"),

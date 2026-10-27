@@ -15,7 +15,6 @@ import production_comparison as comparison
 import quality_backend
 import shot_renderer
 import storyboard
-import storyboard_continuity as continuity
 import video
 
 
@@ -70,7 +69,7 @@ class ProductionComparisonTests(unittest.TestCase):
         return {"valid": True}
 
     def test_manual_storyboards_render_in_both_comparison_arms(self):
-        with patch.object(continuity, "require_accepted", side_effect=AssertionError("Experimental frames need no production receipt")) as gate:
+        with patch.object(storyboard, "require_accepted", side_effect=AssertionError("Experimental frames need no production receipt")) as gate:
             for arm in ("B", "C"):
                 with self.subTest(arm=arm):
                     comparison.render(self.run, arm, 1)

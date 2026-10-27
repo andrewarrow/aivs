@@ -7,12 +7,46 @@ import json
 from pathlib import Path
 
 import quality_backend
+import rust_engine
 import characters
 import prop_reference
 import storyboard_backend
-from render_formats import resolve_format
+from rust_engine import resolve_format
 
 POLICY = "per-shot-first-frame-v2"
+
+
+def review_policy_fingerprint():
+    return rust_engine.digest({name: rust_engine.implementation_sha256(name)
+                              for name in ("storyboard.py", "shooting_script.py",
+                                           "shooting-script-review-instructions.txt")})
+
+
+def review_binding(plan, boards):
+    return rust_engine.call("storyboard_review_binding", plan=plan, boards=boards,
+                            review_policy_sha256=review_policy_fingerprint(),
+                            source_snapshot_sha256=rust_engine.digest(plan["source"]),
+                            plan_sha256=rust_engine.digest(plan))
+
+
+def require_accepted(plan, boards, run_dir):
+    """Verify snapshot bytes and require Rust acceptance on every inference path."""
+    run_dir = Path(run_dir)
+    rust_engine.call("validate_storyboard_manifest", plan=plan, boards=boards)
+    prepare(plan, boards, run_dir)
+    prepare_references(plan, boards, run_dir)
+    screenplay = run_dir / "screenplay.txt"
+    profiles = [characters._read_profile(run_dir / "characters" / supplied["id"] / "character.json")
+                for supplied in plan["source"].get("characters", [])]
+    rust_engine.call("validate_storyboard_snapshots", plan=plan, profiles=profiles,
+                     screenplay=screenplay.read_text(encoding="utf-8") if screenplay.is_file() else None)
+    path = run_dir / "storyboard-review.json"
+    if not path.is_file():
+        raise ValueError("Storyboard sequence has no accepted continuity review; stop before video inference.")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    rust_engine.call("validate_acceptance", plan=plan, boards=boards, report=report,
+                     binding=review_binding(plan, boards), report_sha256=rust_engine.digest(report))
+    return report
 
 
 def planned_shot_sha256(plan: dict, shot: dict) -> str:

@@ -23,7 +23,6 @@ import shooting_script
 import shot_renderer
 import storyboard
 import storyboard_backend
-import storyboard_continuity as continuity
 import video
 
 
@@ -255,7 +254,7 @@ class PreproductionPipelineTests(unittest.TestCase):
     def test_accepted_production_storyboards_render_with_automatic_review_disabled(self):
         plan, boards = self.prepare()
         self.assertEqual(plan["storyboard_policy"], shooting_script.STORYBOARD_POLICY)
-        continuity.require_accepted(plan, boards, self.run)
+        storyboard.require_accepted(plan, boards, self.run)
         result = self.render(plan, boards)
         self.assertEqual(result["status"], "complete")
         self.assertEqual(len(self.render_calls), len(plan["shots"]))
@@ -312,7 +311,7 @@ class PreproductionPipelineTests(unittest.TestCase):
         self.assertEqual(boards["shots"][1]["image"]["file"], "storyboards/002.png")
         self.assertIn("repairs/01/001", boards["shots"][0]["image"]["file"])
         self.assertTrue((self.run / "storyboard-review-before-repair-1.json").is_file())
-        report = continuity.require_accepted(plan, boards, self.run)
+        report = storyboard.require_accepted(plan, boards, self.run)
         self.assertEqual(report["binding"]["images"][0]["image"]["sha256"], boards["shots"][0]["image"]["sha256"])
         self.assertEqual(self.render_calls, [])
 
@@ -335,7 +334,7 @@ class PreproductionPipelineTests(unittest.TestCase):
         self.assertEqual(plan["shots"][0]["continuity"]["opening"]["props"][0]["owner"], "none")
         self.assertEqual(self.codex_calls.count("motion"), 2)
         self.assertIn("repairs/01/001", boards["shots"][0]["image"]["file"])
-        continuity.require_accepted(plan, boards, self.run)
+        storyboard.require_accepted(plan, boards, self.run)
 
     def test_two_failed_repair_rounds_stop_before_video_inference_and_resume(self):
         self.review_transform = self.fail_first_frame
@@ -380,7 +379,7 @@ class PreproductionPipelineTests(unittest.TestCase):
 
     def test_changed_review_policy_invalidates_resume_acceptance(self):
         plan, boards = self.prepare()
-        with patch.object(continuity, "policy_fingerprint", return_value="f" * 64):
+        with patch.object(storyboard, "review_policy_fingerprint", return_value="f" * 64):
             with self.assertRaisesRegex(ValueError, "acceptance"):
                 self.render(plan, boards, resume=True)
         self.assertEqual(self.render_calls, [])
@@ -394,7 +393,7 @@ class PreproductionPipelineTests(unittest.TestCase):
             self.request, self.profiles, destination, 999, token_counter=lambda text: len(text.split()))
         self.assertEqual(copied_plan, plan)
         self.assertEqual(copied_boards, boards)
-        continuity.require_accepted(copied_plan, copied_boards, destination)
+        storyboard.require_accepted(copied_plan, copied_boards, destination)
         self.assertEqual(self.codex_calls, ["director", "motion", "fidelity"])
 
     def test_prop_body_and_empty_set_references_are_reused_without_prior_storyboard_pixels(self):
@@ -410,12 +409,18 @@ class PreproductionPipelineTests(unittest.TestCase):
         self.assertEqual(len(self.image_inputs), count)
 
     def test_overlapping_batches_carry_persistent_observations(self):
-        with patch.object(continuity, "BATCH_SIZE", 1):
+        engine_call = shooting_script.rust_engine.call
+
+        def one_shot_batches(operation, **args):
+            result = engine_call(operation, **args)
+            return dict(result, batch_size=1) if operation == "continuity_settings" else result
+
+        with patch.object(shooting_script.rust_engine, "call", side_effect=one_shot_batches):
             plan, boards = self.prepare()
         self.assertEqual([data["shots_to_direct"] for data in self.motion_inputs], [[1], [2]])
         self.assertEqual([b["shot"] for b in self.motion_inputs[1]["images_in_shot_order"]], [1, 2])
         self.assertEqual(self.motion_inputs[1]["persistent_review_state"][0]["shot"], 1)
-        continuity.require_accepted(plan, boards, self.run)
+        storyboard.require_accepted(plan, boards, self.run)
 
     def test_defective_prop_reference_repairs_all_dependent_frames_and_reinspects(self):
         def once(result, data):
@@ -430,7 +435,7 @@ class PreproductionPipelineTests(unittest.TestCase):
         plan, boards = self.prepare()
         self.assertEqual(self.codex_calls.count("motion"), 2)
         self.assertTrue(all("repairs/01/" in e["image"]["file"] for e in boards["shots"]))
-        continuity.require_accepted(plan, boards, self.run)
+        storyboard.require_accepted(plan, boards, self.run)
 
     def test_missing_portrait_stops_before_codex_or_model_checks(self):
         profile_path = self.root / "characters/mara/character.json"

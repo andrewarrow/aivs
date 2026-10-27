@@ -10,6 +10,17 @@ use serde_json::{Value, json};
 pub fn dispatch(request: &Value) -> Result<Value> {
     let args = &request["args"];
     match request["operation"].as_str().unwrap_or("") {
+        "schema" => super::schemas::schema(args["name"].as_str().ok_or("Missing schema name.")?),
+        "continuity_settings" => Ok(json!({"policy": super::POLICY, "batch_size": 6})),
+        "storyboard_review_binding" => super::artifacts::report_binding(args),
+        "validate_storyboard_manifest" => {
+            super::artifacts::manifest(&args["plan"], &args["boards"])?;
+            Ok(Value::Null)
+        }
+        "validate_storyboard_snapshots" => {
+            super::artifacts::snapshots(&args["plan"], &args["screenplay"], &args["profiles"])?;
+            Ok(Value::Null)
+        }
         "facts" => Ok(json!(
             facts(&decode(&args["state"])?)?
                 .into_iter()

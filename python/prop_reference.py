@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import rust_engine
-from storyboard_continuity import object_schema, digest
+from rust_engine import object_schema, digest
 
 POLICY = "prop-structure-v2"
 MAX_ATTEMPTS = 3

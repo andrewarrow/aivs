@@ -23,8 +23,9 @@ import character_conditioning
 from character_conditioning import POLICY as CHARACTER_CONDITIONING_POLICY
 from shooting_script import load_shooting_script, parse_request, STORYBOARD_POLICY
 from shot_renderer import render_shooting_script
-from render_formats import resolve_format
+from rust_engine import resolve_format
 import preproduction
+import rust_engine
 import storyboard_backend
 
 DEFAULT_PROMPT = Path(__file__).with_name("default-prompt.txt").read_text().strip()
@@ -359,7 +360,7 @@ def resume_screenplay(directory, *, planning_budget_seconds=None, storyboards_on
             motion_manifest = read_object("motion/keyframes.json")
             previs.require_accepted(read_object("shooting-script.json"), read_object("storyboards.json"),
                                    motion_manifest, run_dir)
-            motion_digest = previs.continuity.digest(motion_manifest)
+            motion_digest = rust_engine.digest(motion_manifest)
             if saved_motion is not None and saved_motion != motion_digest:
                 raise ValueError("Saved motion rendering belongs to different keyframes; preserve this run before changing them.")
         if (not storyboards_only and (motion_manifest is None or saved_motion is not None) and report.get("status") == "complete"

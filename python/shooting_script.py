@@ -18,8 +18,7 @@ import subprocess
 import tempfile
 import time
 
-from render_formats import framing_prompt, resolve_format
-import storyboard_continuity as continuity
+from rust_engine import framing_prompt, resolve_format
 
 _HEADING = re.compile(r"^(?:INT\.?\s*/\s*EXT\.?|EXT\.?\s*/\s*INT\.?|I\s*/\s*E\.?|INT\.?|EXT\.?|EST\.?)\s+", re.I)
 _TRANSITION = re.compile(r"^(?:FADE\s+(?:IN|OUT)\.?|CUT TO:|DISSOLVE TO:|SMASH CUT TO:|THE END\.?|[A-Z][A-Z\s]+ TO:)\s*$", re.I)
@@ -505,7 +504,7 @@ def validate_shooting_script(candidate: dict, request: dict, profiles: list[dict
     if expected != len(source_beats) + 1:
         raise ValueError("Shooting script omits source beats.")
     if storyboard_enabled:
-        continuity.validate_plan({"source": source, "shots": shots, "world": candidate.get("world")})
+        rust_engine.call("validate_plan", plan={"source": source, "shots": shots, "world": candidate.get("world")})
     for beat_id, parts in action_parts.items():
         if any(part["part"] != index or part["parts"] != len(parts)
                for index, part in enumerate(parts, 1)):
@@ -665,25 +664,28 @@ def _director_schema() -> dict:
     schema = json.loads(json.dumps(_SCHEMA))
     schema["properties"]["storyboard_policy"] = {"type": "string", "enum": [STORYBOARD_POLICY]}
     schema["required"].append("storyboard_policy")
-    schema["properties"]["world"] = continuity.WORLD_SCHEMA
+    schema["properties"]["world"] = rust_engine.schema("continuity.world")
     schema["required"].append("world")
     shot = schema["properties"]["shots"]["items"]
     shot["properties"]["storyboard_prompt"] = {"type": "string"}
     shot["required"].append("storyboard_prompt")
-    shot["properties"]["opening_visible_roles"] = continuity.STRINGS
-    shot["properties"]["continuity"] = continuity.CONTRACT_SCHEMA
+    shot["properties"]["opening_visible_roles"] = {"type": "array", "items": {"type": "string"}}
+    shot["properties"]["continuity"] = rust_engine.schema("continuity.contract")
     shot["required"].extend(["opening_visible_roles", "continuity"])
     return schema
 
 
-_motion_shot = _MOTION_SCHEMA["properties"]["shots"]["items"]
-_motion_shot["properties"].update({
-    "continuity_review": continuity.REVIEW_SCHEMA,
-    "world_repair": {"type": "array", "maxItems": 1, "items": continuity.WORLD_SCHEMA},
-    "plan_repair": {"type": "array", "maxItems": 1,
-                    "items": _director_schema()["properties"]["shots"]["items"]},
-})
-_motion_shot["required"].extend(["continuity_review", "plan_repair", "world_repair"])
+def _motion_schema():
+    schema = json.loads(json.dumps(_MOTION_SCHEMA))
+    shot = schema["properties"]["shots"]["items"]
+    shot["properties"].update({
+        "continuity_review": rust_engine.schema("continuity.review"),
+        "world_repair": {"type": "array", "maxItems": 1, "items": rust_engine.schema("continuity.world")},
+        "plan_repair": {"type": "array", "maxItems": 1,
+                        "items": _director_schema()["properties"]["shots"]["items"]},
+    })
+    shot["required"].extend(["continuity_review", "plan_repair", "world_repair"])
+    return schema
 
 
 def _plan_fingerprint(plan: dict) -> str:
@@ -1194,6 +1196,8 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
     """
     import storyboard
 
+    settings = rust_engine.call("continuity_settings")
+
     run_dir = Path(run_dir)
     source = plan["source"]
     request = _source_request(source)
@@ -1211,18 +1215,18 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
     final_path = run_dir / "shooting-script.json"
     if final_path.is_file():
         final = load_shooting_script(final_path, request, profiles, token_counter=token_counter)
-        continuity.require_accepted(final, boards, run_dir)
+        storyboard.require_accepted(final, boards, run_dir)
         return final
 
     cache_path = run_dir / "motion-directions.json"
     saved = _read_object(cache_path) if cache_path.is_file() else {}
-    cached = saved.get("shots", {}) if saved.get("policy") == continuity.POLICY else {}
+    cached = saved.get("shots", {}) if saved.get("policy") == settings["policy"] else {}
     if not isinstance(cached, dict):
         raise ValueError("Saved sequence directions must contain shot records.")
     # Include all earlier pixels (persistent world history) and the next frame
     # (the outgoing cut), not just the individual shot's image.
-    review_policy_sha256 = continuity.policy_fingerprint()
-    hashes = {n: continuity.digest({"policy": continuity.POLICY, "review_policy_sha256": review_policy_sha256, "plan": plan,
+    review_policy_sha256 = storyboard.review_policy_fingerprint()
+    hashes = {n: rust_engine.digest({"policy": settings["policy"], "review_policy_sha256": review_policy_sha256, "plan": plan,
                                    "images": board_images[:min(n + 1, len(board_images))],
                                    "references": boards.get("references", [])})
               for n in range(1, len(plan["shots"]) + 1)}
@@ -1238,16 +1242,16 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
     reference_ids = {r["id"] for r in references}
 
     def checkpoint():
-        _atomic_json(cache_path, {"version": 2, "policy": continuity.POLICY, "shots": {
+        _atomic_json(cache_path, {"version": 2, "policy": settings["policy"], "shots": {
             str(n): {"input_sha256": hashes[n], "row": row} for n, row in rows.items()}})
-        reviewed = list(continuity.review_sequence(plan, rows).values())
+        reviewed = list(rust_engine.call("review_sequence", plan=plan, rows=rows, integer_keys=True).values())
         _atomic_json(run_dir / "storyboard-review.json", {
-            "version": 1, "policy": continuity.POLICY, "binding": continuity.report_binding(plan, boards),
+            "version": 1, "policy": settings["policy"], "binding": storyboard.review_binding(plan, boards),
             "status": "reviewing", "shots": reviewed,
         })
 
-    for offset in range(0, len(pending), continuity.BATCH_SIZE):
-        numbers = pending[offset:offset + continuity.BATCH_SIZE]
+    for offset in range(0, len(pending), settings["batch_size"]):
+        numbers = pending[offset:offset + settings["batch_size"]]
         context = sorted({k for n in numbers for k in (n - 1, n, n + 1) if k in hashes})
         images = [board_images[n - 1] for n in context]
         attachments = [storyboard.resolve_image({"image": r}, run_dir) for r in portrait_images + references]
@@ -1255,7 +1259,9 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
         instruction = direction.rstrip() + "\n\n" + _json({
             "plan": plan, "shots_to_direct": numbers, "images_in_shot_order": images,
             "reference_images_first": portrait_images + references,
-            "persistent_review_state": list(continuity.review_sequence(plan, {n: row for n, row in rows.items() if n < numbers[0]}).values()),
+            "persistent_review_state": list(rust_engine.call(
+                "review_sequence", plan=plan,
+                rows={n: row for n, row in rows.items() if n < numbers[0]}, integer_keys=True).values()),
             "reference_ids_to_review": sorted(reference_ids),
         })
 
@@ -1268,7 +1274,7 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
                     raise ValueError("Sequence shot numbers are missing or out of order.")
                 _bounded(row.get("image_observations"), "Pixel observations", 1200)
                 _bounded(row.get("prompt_template"), "Motion direction", 1600)
-                review = continuity.review_shot(plan, n, row)
+                review = rust_engine.call("review_shot", plan=plan, number=n, row=row)
                 fixes = row.get("plan_repair")
                 if not isinstance(fixes, list) or len(fixes) > 1:
                     raise ValueError("A plan repair must be empty or contain the complete replacement shot.")
@@ -1304,13 +1310,13 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
             # inside this call, rather than failing after publishing the review.
             trial = [dict(s) for s in plan["shots"]]
             for n, row in zip(numbers, supplied):
-                if continuity.review_shot(plan, n, row)["decision"] == "pass":
+                if rust_engine.call("review_shot", plan=plan, number=n, row=row)["decision"] == "pass":
                     trial[n - 1]["prompt_template"] = row["prompt_template"]
                     trial[n - 1].pop("prompt", None)
             validate_shooting_script(dict(plan, shots=trial), request, profiles, token_counter=token_counter)
             combined = dict(rows)
             combined.update(zip(numbers, supplied))
-            for n, report in continuity.review_sequence(plan, combined).items():
+            for n, report in rust_engine.call("review_sequence", plan=plan, rows=combined, integer_keys=True).items():
                 if n in numbers and report["decision"] != "pass" and not combined[n]["storyboard_prompt"].strip():
                     raise ValueError(f"Shot {n} sequence contradiction requires a corrected composition: {report['violations']}")
             if len(combined) == len(plan["shots"]) and any(r["plan_repair"] or r["world_repair"] for r in combined.values()):
@@ -1332,7 +1338,7 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
 
         activity(f"Planning 2/2: reviewing sequence and directing shots {numbers[0]}–{numbers[-1]}.")
         result = _planning_call(
-            "motion", instruction, _MOTION_SCHEMA, validate_batch,
+            "motion", instruction, _motion_schema(), validate_batch,
             source_sha256=source["source_sha256"], run_dir=run_dir, executable=executable,
             image_paths=attachments, planning_budget_seconds=planning_budget_seconds,
             on_activity=on_activity, on_activity_delta=on_activity_delta,
@@ -1340,7 +1346,7 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
         rows.update(zip(numbers, result))
         checkpoint()
 
-    sequence_reviews = continuity.review_sequence(plan, rows)
+    sequence_reviews = rust_engine.call("review_sequence", plan=plan, rows=rows, integer_keys=True)
     reviews, issues, shots = [], [], []
     for n, shot in enumerate(plan["shots"], 1):
         row = rows[n]
@@ -1356,8 +1362,8 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
         revised = dict(shot, prompt_template=row["prompt_template"])
         revised.pop("prompt", None)
         shots.append(revised)
-    report = {"version": 1, "policy": continuity.POLICY,
-              "binding": continuity.report_binding(plan, boards),
+    report = {"version": 1, "policy": settings["policy"],
+              "binding": storyboard.review_binding(plan, boards),
               "status": "repair-required" if issues else "reviewed", "shots": reviews}
     _atomic_json(run_dir / "storyboard-review.json", report)
     if issues:
@@ -1374,9 +1380,9 @@ def finalize_shooting_script(plan: dict, boards: dict, run_dir: Path, *, executa
                                     on_activity_delta=on_activity_delta)
     # Publish acceptance before the final script. A crash can only leave an
     # unfinalized reviewed plan, never a final plan whose review was skipped.
-    report.update(status="accepted", binding=continuity.report_binding(final, boards))
+    report.update(status="accepted", binding=storyboard.review_binding(final, boards))
     _atomic_json(run_dir / "storyboard-review.json", report)
-    boards["continuity_acceptance"] = {"policy": continuity.POLICY, "review_sha256": continuity.digest(report)}
+    boards["continuity_acceptance"] = {"policy": settings["policy"], "review_sha256": rust_engine.digest(report)}
     _atomic_json(run_dir / "storyboards.json", boards)
     save_shooting_script(final, run_dir)
     return final

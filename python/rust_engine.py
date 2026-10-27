@@ -22,6 +22,31 @@ _next_id = 0
 _implementation = None
 
 
+def digest(value):
+    """Preserve the existing artifact JSON codec while domain rules move to Rust."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def object_schema(properties):
+    """Generic strict-object envelope for client-owned planning prompts."""
+    return {"type": "object", "additionalProperties": False,
+            "required": list(properties), "properties": properties}
+
+
+def schema(name):
+    """Fetch a fresh Rust-owned contract lazily, without launching on import."""
+    return call("schema", name=name)
+
+
+def resolve_format(name):
+    return call("resolve_format", name=name)
+
+
+def framing_prompt(name):
+    return call("framing_prompt", name=name)
+
+
 def _command():
     configured = os.environ.get("AIVS_ENGINE_PATH")
     if configured:
@@ -95,7 +120,7 @@ def _exchange(operation, args, on_event=None):
     return response["result"]
 
 
-def call(operation, *, on_event=None, **args):
+def call(operation, *, on_event=None, integer_keys=False, **args):
     global _process, _owner, _implementation
     with _lock:
         if _process is None or _owner != os.getpid() or _process.poll() is not None:
@@ -120,7 +145,9 @@ def call(operation, *, on_event=None, **args):
             except BaseException:
                 close()
                 raise
-        return _exchange(operation, args, on_event)
+        result = _exchange(operation, args, on_event)
+        # JSON object keys are strings on the wire, including numbered shots.
+        return {int(key): value for key, value in result.items()} if integer_keys else result
 
 
 def implementation_sha256(name):

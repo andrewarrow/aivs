@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import shot_renderer
-from render_formats import resolve_format
+from rust_engine import resolve_format
 
 
 def plan_for(*, fade_out=False, continuations=(False, True, False), scene_ids=None):

@@ -1,9 +1,11 @@
 //! Observable scene state, source-backed transitions, and sequence acceptance.
 mod acceptance;
+mod artifacts;
 mod dispatch;
 mod facts;
 mod plan;
 mod review;
+mod schemas;
 mod types;
 mod world;
 

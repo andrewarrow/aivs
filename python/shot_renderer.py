@@ -14,7 +14,7 @@ import quality_backend
 import rust_engine
 import storyboard as storyboard_assets
 from validation import validate_video
-from render_formats import resolve_format
+from rust_engine import resolve_format
 
 FPS = quality_backend.FPS
 WIDTH = quality_backend.WIDTH
@@ -271,8 +271,7 @@ def render_shooting_script(
     storyboard_bindings = (storyboard_assets.prepare(plan, storyboard, output.parent)
                            if storyboard is not None else None)
     if requires_storyboard_review:
-        import storyboard_continuity
-        storyboard_continuity.require_accepted(plan, storyboard, output.parent)
+        storyboard_assets.require_accepted(plan, storyboard, output.parent)
     if motion_manifest is not None:
         import motion_previs
         if storyboard is None:
@@ -600,7 +599,7 @@ def render_shooting_script(
                                 and _file_sha256(image_file) != portrait["sha256"]):
                             raise ValueError("Saved character portrait changed before rendering.")
                         if requires_storyboard_review:
-                            storyboard_continuity.require_accepted(plan, storyboard, output.parent)
+                            storyboard_assets.require_accepted(plan, storyboard, output.parent)
                         image_anchors = None
                         if motion_manifest is not None:
                             motion_previs.require_accepted(plan, storyboard, motion_manifest, output.parent)

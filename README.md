@@ -478,7 +478,8 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 | [python/video.py](python/video.py) | Pipeline entry point; `generate_screenplay()` coordinates planning and rendering. |
 | [python/preproduction.py](python/preproduction.py) | Coordinates both planning passes, storyboard generation, and shared preproduction reuse. |
 | [python/shooting_script.py](python/shooting_script.py) | Parses story beats, requests Codex work through Rust, validates screenplay coverage, and saves shooting scripts. |
-| [python/storyboard_continuity.py](python/storyboard_continuity.py) | Schema definitions and artifact serialization; continuity decisions run in Rust. |
+| [crates/aivs-core/src/continuity](crates/aivs-core/src/continuity) | Continuity schemas, state rules, sequence review, snapshot comparisons, and acceptance bindings. |
+| [crates/aivs-core/src/render_formats.rs](crates/aivs-core/src/render_formats.rs) | Delivery dimensions, aligned model canvases, and framing guidance. |
 | [python/shooting-script-instructions.txt](python/shooting-script-instructions.txt) | Director guidance for staging, timing, continuity, and sound. Start here to improve planning. |
 | [python/storyboard.py](python/storyboard.py) | Generates and validates shot-bound storyboard images and their provenance. |
 | [python/storyboard_backend.py](python/storyboard_backend.py) | Generates reference-aware images through the signed-in Codex app-server. |
@@ -556,6 +557,18 @@ sources. There is no compatibility mapping for older implementations: changing
 these sources invalidates earlier identities. Rebuild the engine after changing
 Rust code.
 
+Continuity and motion contracts come from Rust through the lazy `schema` engine
+operation; importing Python modules does not launch the engine. Rust also builds
+storyboard review bindings, validates complete manifests, and compares independently
+loaded screenplay and cast snapshots. `storyboard.py` retains file reads, asset-byte
+checks, and the calls that compose those validations. The former Python continuity
+and render-format modules have been removed. Render dimensions and framing prompts
+now come from Rust through the same transport. The legacy JSON digest codec stays
+in `rust_engine.py`, preserving its serialization rules; the existing implementation
+identity checks still invalidate older policy-bound reviews after source changes.
+The unused transcription gate and its dedicated tests have also been removed;
+archived speech reports remain preserved by take recovery.
+
 `prop_reference` in Rust validates generation descriptions, observed component
 counts and connections, evidence, confidence, and structural acceptance. The
 Python module keeps inspection instructions, schemas, Codex calls and checkpoints.
@@ -565,7 +578,8 @@ shared continuity rules. It also builds provisional intervals during incremental
 planning and computes pixel-review acceptance from observed hands, positions,
 visible relationships, and component counts. Fresh and resumed reviews use the
 same Rust rules; cached acceptance flags are recomputed. Python keeps keyframe
-planning instructions, schemas, generation calls, and artifact checkpoints.
+planning instructions, generation calls, and artifact checkpoints; continuity
+and keyframe schemas are supplied by Rust.
 
 `visual_review` in Rust builds ordered visual/action requirements, validates
 timestamped shot observations, checks adaptation decisions and independent

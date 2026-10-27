@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import preproduction
 import storyboard
-import storyboard_continuity as continuity
+import rust_engine
 
 
 def attributes(**values):
@@ -77,10 +77,10 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.plan = fixture()
 
     def review(self, result, number=2):
-        return continuity.review_shot(self.plan, number, result)
+        return rust_engine.call("review_shot", plan=self.plan, number=number, row=result)
 
     def test_two_correct_frames_with_consistent_identity_pass(self):
-        continuity.validate_plan(self.plan)
+        rust_engine.call("validate_plan", plan=self.plan)
         self.assertEqual(self.review(row(self.plan, 1), 1)["decision"], "pass")
         self.assertEqual(self.review(row(self.plan, 2))["decision"], "pass")
 
@@ -90,13 +90,13 @@ class StoryboardContinuityTests(unittest.TestCase):
         for shot in self.plan["shots"]:
             for state in ("opening", "ending"):
                 shot["continuity"][state]["props"][1]["physical"][2]["value"] = "unknown"
-        continuity.validate_plan(self.plan)
+        rust_engine.call("validate_plan", plan=self.plan)
         first, second = row(self.plan, 1), row(self.plan, 2)
         first["continuity_review"]["observed_opening_state"]["props"][1]["physical"][2]["value"] = "hand-sized"
         second["continuity_review"]["observed_opening_state"]["props"][1]["physical"][2]["value"] = "oversized"
         self.assertEqual(self.review(first, 1)["decision"], "pass")
         self.assertEqual(self.review(second)["decision"], "pass")
-        sequence = continuity.review_sequence(self.plan, {1: first, 2: second})
+        sequence = rust_engine.call("review_sequence", plan=self.plan, rows={1: first, 2: second}, integer_keys=True)
         self.assertEqual(sequence[2]["decision"], "repair-required")
         self.assertTrue(any("Sequence contradiction" in v for v in sequence[2]["violations"]))
 
@@ -105,10 +105,10 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.plan["shots"][1]["continuity"]["opening"]["props"][1]["owner"] = "B"
         self.plan["shots"][1]["continuity"]["ending"]["props"][1]["owner"] = "B"
         with self.assertRaisesRegex(ValueError, "unexplained across-cut"):
-            continuity.validate_plan(self.plan)
+            rust_engine.call("validate_plan", plan=self.plan)
         result = row(fixture(), 2)
         result["continuity_review"]["observed_opening_state"]["props"][1]["owner"] = "B"
-        review = continuity.review_shot(fixture(), 2, result)
+        review = rust_engine.call("review_shot", plan=fixture(), number=2, row=result)
         self.assertEqual(review["decision"], "repair-required")
         self.assertTrue(any("owner" in v for v in review["violations"]))
 
@@ -135,7 +135,7 @@ class StoryboardContinuityTests(unittest.TestCase):
             self.plan["shots"][1]["continuity"][state]["characters"][0]["costume"] = "coat-off"
         self.plan["shots"][1]["continuity"]["transitions"] = [
             transition(self.plan, "costume", "coat", "coat-off", timing="across-cut")]
-        continuity.validate_plan(self.plan)
+        rust_engine.call("validate_plan", plan=self.plan)
         self.assertEqual(self.review(row(self.plan, 2))["decision"], "pass")
 
     def test_corded_landline_becomes_smartphone(self):
@@ -212,7 +212,7 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.plan["shots"][1]["continuity"]["transitions"] = [
             transition(self.plan, "morphology.abdomen_size", "source-plausible", "dramatically-larger", timing="across-cut")]
         with self.assertRaisesRegex(ValueError, "Physical identity/body changes"):
-            continuity.validate_plan(self.plan)
+            rust_engine.call("validate_plan", plan=self.plan)
 
     def test_physically_consistent_concealed_body_then_reveal(self):
         self.plan["source"]["beats"][0]["text"] = "A removes the coat and reveals the existing condition."
@@ -225,7 +225,7 @@ class StoryboardContinuityTests(unittest.TestCase):
                                 transition(self.plan, "value", "concealed", "revealed", entity_id="reveal:condition")]
         for state in ("opening", "ending"):
             self.plan["shots"][1]["continuity"][state] = copy.deepcopy(first["ending"])
-        continuity.validate_plan(self.plan)
+        rust_engine.call("validate_plan", plan=self.plan)
         result = row(self.plan, 1)
         # Concealment is not proof of a different anatomy, nor proof of its size.
         result["continuity_review"]["observed_opening_state"]["characters"][0]["morphology"][1]["value"] = "not-visible"
@@ -233,8 +233,9 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.assertEqual(reviewed["decision"], "pass")
         self.assertIn(["character:A", "morphology.abdomen_size"], reviewed["unobservable_facts"])
         self.assertEqual(self.review(row(self.plan, 2))["decision"], "pass")
-        self.assertTrue(all(r["decision"] == "pass" for r in continuity.review_sequence(
-            self.plan, {1: result, 2: row(self.plan, 2)}).values()))
+        sequence = rust_engine.call("review_sequence", plan=self.plan,
+                                    rows={1: result, 2: row(self.plan, 2)}, integer_keys=True)
+        self.assertTrue(all(r["decision"] == "pass" for r in sequence.values()))
 
     def test_legitimate_time_jump_permits_physical_change(self):
         self.plan["shots"][1]["scene_id"] = 2
@@ -244,10 +245,11 @@ class StoryboardContinuityTests(unittest.TestCase):
         self.plan["shots"][1]["continuity"]["transitions"] = [
             transition(self.plan, "morphology.abdomen_size", "source-plausible", "changed-after-months",
                        timing="across-cut", beat=2, physical=True)]
-        continuity.validate_plan(self.plan)
+        rust_engine.call("validate_plan", plan=self.plan)
         self.assertEqual(self.review(row(self.plan, 2))["decision"], "pass")
-        self.assertTrue(all(r["decision"] == "pass" for r in continuity.review_sequence(
-            self.plan, {1: row(self.plan, 1), 2: row(self.plan, 2)}).values()))
+        sequence = rust_engine.call("review_sequence", plan=self.plan,
+                                    rows={1: row(self.plan, 1), 2: row(self.plan, 2)}, integer_keys=True)
+        self.assertTrue(all(r["decision"] == "pass" for r in sequence.values()))
 
     def test_uncertain_critical_observation_cannot_approve(self):
         result = row(self.plan, 2)
@@ -258,7 +260,7 @@ class StoryboardContinuityTests(unittest.TestCase):
         entries = [{"shot": n, "image": {"file": f"{n}.png", "sha256": str(n)},
                     "generation": {"references": [] if n in (1, 4) else [{"file": f"{n - 1}.png", "sha256": str(n - 1)}]}}
                    for n in range(1, 5)]
-        self.assertEqual(continuity.dependent_shots({"shots": entries}, {1}), {1, 2, 3})
+        self.assertEqual(set(rust_engine.call("dependent_shots", boards={"shots": entries}, changed=sorted({1}))), {1, 2, 3})
 
     def test_generation_excludes_late_entrants_and_previous_character_filled_reference(self):
         shot = copy.deepcopy(self.plan["shots"][0])

@@ -18,7 +18,7 @@ import time
 
 import rust_engine
 import shooting_script
-from render_formats import resolve_format
+from rust_engine import resolve_format
 
 POLICY_VERSION = "visual-continuity-v2"
 _TIMEOUT_SECONDS = 120

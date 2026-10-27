@@ -11,33 +11,11 @@ import quality_backend
 import rust_engine
 import storyboard
 import storyboard_backend
-import storyboard_continuity as continuity
 import visual_review
 
 POLICY = "motion-previsualization-v1"
 MAX_FRAME_REPAIRS = 3
-TEXT = continuity.TEXT
-HANDS_SCHEMA = {"type": "array", "items": continuity.object_schema({
-    "role": TEXT, "hand": {"type": "string", "enum": ["left", "right"]}, "object": TEXT,
-})}
-FRAME_SCHEMA = continuity.object_schema({
-    "frame": {"type": "integer"}, "composition": TEXT, "action": TEXT,
-    "state": continuity.STATE_SCHEMA,
-    "transitions": {"type": "array", "items": continuity.TRANSITION_SCHEMA},
-    "strength": {"type": "number"},
-    "hands": HANDS_SCHEMA,
-})
-SHOT_SCHEMA = continuity.object_schema({"shot": {"type": "integer"},
-    "keyframes": {"type": "array", "items": FRAME_SCHEMA}})
-REVIEW_SCHEMA = continuity.object_schema({
-    "continuity_review": continuity.REVIEW_SCHEMA,
-    "component_counts": {"type": "array", "items": continuity.object_schema({
-        "id": TEXT, "count": {"type": "integer"}})},
-    "hand_findings": TEXT,
-    "observed_hands": HANDS_SCHEMA,
-    "repair_strategy": {"type": "string", "enum": ["targeted-edit", "regenerate"]},
-    "correction": TEXT,
-})
+TEXT = {"type": "string"}
 
 
 def read(path):
@@ -46,16 +24,16 @@ def read(path):
 
 def identity():
     # New review code invalidates acceptance without touching the five-pass plan.
-    return continuity.digest({"policy": POLICY, "implementation": Path(__file__).read_text(),
+    return rust_engine.digest({"policy": POLICY, "implementation": Path(__file__).read_text(),
                               "rust": rust_engine.implementation_sha256("motion_previs.py"),
-                              "continuity": continuity.policy_fingerprint(),
+                              "continuity": storyboard.review_policy_fingerprint(),
                               "image_backend": storyboard_backend.configuration()})
 
 
 def validate_timing(plan, motion):
     """Rust validates timed states against the source-backed continuity contracts."""
     rust_engine.call("validate_motion_timing", plan=plan, motion=motion,
-                     plan_sha256=continuity.digest(plan), fps=quality_backend.FPS)
+                     plan_sha256=rust_engine.digest(plan), fps=quality_backend.FPS)
     return motion
 
 
@@ -63,7 +41,7 @@ def _base(run_dir):
     plan, boards = read(run_dir / "shooting-script.json"), read(run_dir / "storyboards.json")
     if plan.get("planning_stage") != "final":
         raise ValueError("Finish the existing five-pass plan before preparing motion keyframes.")
-    continuity.require_accepted(plan, boards, run_dir)
+    storyboard.require_accepted(plan, boards, run_dir)
     return plan, boards
 
 
@@ -72,7 +50,7 @@ def plan_motion(run_dir, *, on_activity=print):
     plan, boards = _base(run_dir)
     folder = run_dir / "motion"
     folder.mkdir(exist_ok=True)
-    binding = {"plan_sha256": continuity.digest(plan), "boards": continuity.report_binding(plan, boards),
+    binding = {"plan_sha256": rust_engine.digest(plan), "boards": storyboard.review_binding(plan, boards),
                "implementation": identity()}
     rows = []
     for number, shot in enumerate(plan["shots"], 1):
@@ -109,13 +87,13 @@ def plan_motion(run_dir, *, on_activity=print):
                 # Validate the full proposed sequence with untouched fallback intervals.
                 provisional = rows + [value] + [{"shot": n, "keyframes": _fallback(s)}
                     for n, s in enumerate(plan["shots"][number:], number + 1)]
-                validate_timing(plan, {"version": 1, "policy": POLICY, "plan_sha256": continuity.digest(plan), "shots": provisional})
+                validate_timing(plan, {"version": 1, "policy": POLICY, "plan_sha256": rust_engine.digest(plan), "shots": provisional})
                 return value
-            row = visual_review._call(instruction, SHOT_SCHEMA, folder, f"plan-{number:03d}", validate,
+            row = visual_review._call(instruction, rust_engine.schema("motion.shot"), folder, f"plan-{number:03d}", validate,
                                       images=[opening], on_activity=on_activity)
             storyboard._save(checkpoint, {"binding": binding, "direction": row})
         rows.append(row)
-    motion = {"version": 1, "policy": POLICY, "plan_sha256": continuity.digest(plan), "shots": rows}
+    motion = {"version": 1, "policy": POLICY, "plan_sha256": rust_engine.digest(plan), "shots": rows}
     validate_timing(plan, motion)
     storyboard._save(folder / "plan.json", motion)
     return motion
@@ -151,7 +129,7 @@ def _review(plan, number, frame, image, references, directory, binding, on_activ
         + json.dumps({"shot": number, "frame": frame, "world": plan["world"], "source": plan["source"],
                       "reference_files_in_attachment_order": [str(p) for p in references]})
     )
-    result = visual_review._call(instruction, REVIEW_SCHEMA, directory, "inspect",
+    result = visual_review._call(instruction, rust_engine.schema("motion.review"), directory, "inspect",
         lambda value: _validate_review(plan, number, frame, value),
         images=[image, *references], on_activity=on_activity)
     storyboard._save(checkpoint, {"binding": binding, "result": result})
@@ -220,10 +198,10 @@ def _keyframe_attempt(plan, number, frame, original, request, inputs, folder, ru
         storyboard.resolve_image({"image": reference}, run_dir)
     if rejected is not None:
         storyboard.resolve_image(rejected, run_dir)
-    binding = {"request": continuity.digest(request), "image": entry["image"]}
+    binding = {"request": rust_engine.digest(request), "image": entry["image"]}
     result = _review(plan, number, frame, image, inputs, folder, binding, on_activity)
     entry["review"] = {"file": (folder / "review.json").relative_to(run_dir).as_posix(),
-                       "sha256": continuity.digest(read(folder / "review.json"))}
+                       "sha256": rust_engine.digest(read(folder / "review.json"))}
     return entry, result
 
 
@@ -284,7 +262,7 @@ def generate(run_dir, *, on_activity=print):
 
 
 def require_accepted(plan, boards, manifest, run_dir):
-    continuity.require_accepted(plan, boards, run_dir)
+    storyboard.require_accepted(plan, boards, run_dir)
     validate_timing(plan, manifest)
     if manifest.get("status") != "accepted" or manifest.get("implementation") != identity():
         raise ValueError("Motion keyframes have no current acceptance.")
@@ -305,16 +283,16 @@ def require_accepted(plan, boards, manifest, run_dir):
                 storyboard.resolve_image({"image": repair["rejected_image"]}, run_dir)
                 rejected_review = (run_dir / repair["review"]["file"]).resolve()
                 if (not rejected_review.is_relative_to(run_dir.resolve())
-                        or continuity.digest(read(rejected_review)) != repair["review"]["sha256"]):
+                        or rust_engine.digest(read(rejected_review)) != repair["review"]["sha256"]):
                     raise ValueError("Keyframe repair evidence changed.")
             review_path = (run_dir / frame["review"]["file"]).resolve()
             if not review_path.is_relative_to(run_dir.resolve()):
                 raise ValueError("Keyframe review escapes run directory.")
             review = read(review_path)
-            if (continuity.digest(review) != frame["review"]["sha256"]
-                    or review["binding"] != {"request": continuity.digest(frame["request"]), "image": frame["image"]}
-                    or frame["request"]["frame"] != {k: frame[k] for k in FRAME_SCHEMA["properties"]}
-                    or frame["request"]["plan_sha256"] != continuity.digest(plan)
+            if (rust_engine.digest(review) != frame["review"]["sha256"]
+                    or review["binding"] != {"request": rust_engine.digest(frame["request"]), "image": frame["image"]}
+                    or frame["request"]["frame"] != {k: frame[k] for k in rust_engine.schema("motion.frame")["properties"]}
+                    or frame["request"]["plan_sha256"] != rust_engine.digest(plan)
                     or not _validate_review(plan, row["shot"], frame, review["result"])["accepted"]):
                 raise ValueError("Keyframe acceptance is stale, rejected or contradicts its physical contract.")
             decoded = quality_backend.prepare_source_image(image)
@@ -335,7 +313,7 @@ def animatic(run_dir, *, on_activity=print):
     manifest = require_accepted(plan, boards, read(run_dir / "motion" / "keyframes.json"), run_dir)
     folder = run_dir / "motion"
     target, checkpoint = folder / "animatic.mp4", folder / "animatic.json"
-    binding = {"keyframes": continuity.digest(manifest), "fps": 24, "style": "held-keyframes-v1"}
+    binding = {"keyframes": rust_engine.digest(manifest), "fps": 24, "style": "held-keyframes-v1"}
     if target.exists() and checkpoint.exists():
         saved = read(checkpoint)
         if saved.get("binding") == binding and saved.get("sha256") == _file_hash(target):
@@ -387,7 +365,7 @@ def compare(run_dir, *, shot_number=1, profile="distilled", on_activity=print):
     directory = run_dir / "motion" / "comparison" / f"{shot_number:03d}-{profile}"
     directory.mkdir(parents=True, exist_ok=True)
     seed = (read(run_dir / "render.json")["seed"] + shot_number - 1) % (2**31)
-    binding = {"motion": continuity.digest(manifest), "shot": shot_number, "seed": seed,
+    binding = {"motion": rust_engine.digest(manifest), "shot": shot_number, "seed": seed,
                "config": quality_backend.profile_config(profile), "prompt": shot["prompt"]}
     opening = row["keyframes"][0]["image"]
     for mode in ("single", "multiple"):
@@ -413,7 +391,7 @@ def compare(run_dir, *, shot_number=1, profile="distilled", on_activity=print):
         visual_review.review_shot(native_plan, shot_number - 1, directory / mode / "video.mp4",
                                  directory / mode / "review", on_activity=on_activity)
     report = directory / "comparison.json"
-    schema = continuity.object_schema({"visual_differences": TEXT, "geometry": TEXT,
+    schema = rust_engine.object_schema({"visual_differences": TEXT, "geometry": TEXT,
         "appearance": TEXT, "motion": TEXT, "limitations": TEXT})
     review_binding = dict(binding, outputs={m: _file_hash(directory / m / "video.mp4") for m in ("single", "multiple")})
     if not report.exists():
