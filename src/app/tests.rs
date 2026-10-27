@@ -10,6 +10,8 @@ fn app() -> (App, std::sync::mpsc::Receiver<CodexCommand>) {
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(Path::new("/workspace")),
             sets: crate::sets::SetGallery::load(Path::new("/workspace")),
+            characters_open: true,
+            sets_open: true,
             screenplay: crate::screenplay::Screenplay::default(),
             codex_started: true,
             root: PathBuf::from("/workspace"),

@@ -2,6 +2,8 @@ use std::{path::PathBuf, time::Duration};
 
 use crate::codex::{ChatGptAccount, CodexClient, CodexEvent, CodexWorkStatus};
 
+mod toolbar;
+
 struct Message {
     user: bool,
     text: String,
@@ -18,6 +20,8 @@ pub struct App {
     root: PathBuf,
     characters: crate::characters::CharacterGallery,
     sets: crate::sets::SetGallery,
+    characters_open: bool,
+    sets_open: bool,
     screenplay: crate::screenplay::Screenplay,
     video: crate::video::VideoWorkspace,
     screenplay_fraction: f32,
@@ -49,6 +53,8 @@ impl App {
             screenplay_fraction: 0.5,
             characters: crate::characters::CharacterGallery::load(&root),
             sets: crate::sets::SetGallery::load(&root),
+            characters_open: true,
+            sets_open: true,
             screenplay: crate::screenplay::Screenplay::load(&root),
             codex_started: false,
             root,
@@ -347,6 +353,10 @@ impl App {
                         self.open_chat();
                     }
                 });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    toolbar::GalleryIcon::Sets.toggle(ui, &mut self.sets_open);
+                    toolbar::GalleryIcon::Characters.toggle(ui, &mut self.characters_open);
+                });
             });
             if let Some(error) = self.import_error.clone() {
                 ui.horizontal_wrapped(|ui| {
@@ -357,20 +367,33 @@ impl App {
                 });
             }
         });
-        let gallery_width = (ui.available_width() * 0.30).min(320.0);
-        egui::Panel::right("characters")
-            .exact_size(gallery_width)
-            .resizable(false)
-            .show(ui, |ui| {
-                ui.columns(2, |columns| {
-                    columns[0].push_id("characters", |ui| {
-                        self.characters.ui(ui);
-                    });
-                    columns[1].push_id("sets", |ui| {
-                        self.sets.ui(ui);
-                    });
+        let gallery_count = usize::from(self.characters_open) + usize::from(self.sets_open);
+        if gallery_count > 0 {
+            let gallery_width = (ui.available_width() * 0.30).min(160.0 * gallery_count as f32);
+            egui::Panel::right("characters")
+                .exact_size(gallery_width)
+                .resizable(false)
+                .show(ui, |ui| {
+                    if self.characters_open && self.sets_open {
+                        ui.columns(2, |columns| {
+                            columns[0].push_id("characters", |ui| {
+                                self.characters.ui(ui);
+                            });
+                            columns[1].push_id("sets", |ui| {
+                                self.sets.ui(ui);
+                            });
+                        });
+                    } else if self.characters_open {
+                        ui.push_id("characters", |ui| {
+                            self.characters.ui(ui);
+                        });
+                    } else {
+                        ui.push_id("sets", |ui| {
+                            self.sets.ui(ui);
+                        });
+                    }
                 });
-            });
+        }
         if self.chat_open {
             if ui.available_width() < 680.0 {
                 egui::CentralPanel::default().show(ui, |ui| self.chat_ui(ui));
