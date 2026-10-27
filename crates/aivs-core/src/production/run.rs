@@ -204,6 +204,10 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         "character_resolve",
         &json!({"prompt":"","explicit":cast,"root":root,"references_only":true}),
     )?;
+    let assigned_set = crate::sets::resolve(&ctx.root, &request["set"])?;
+    if let Some((set, _)) = &assigned_set {
+        request["set"] = set.clone();
+    }
     ctx.source(&request, &profiles)?;
     if !plan_only {
         environment(ctx)?;
@@ -211,6 +215,9 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let seed = seed(&args["seed"])?;
     let _lock = lock(&ctx.root, ".render.lock")?;
     let run = new_run(&ctx.root, seed)?;
+    if let Some((set, image)) = &assigned_set {
+        crate::sets::snapshot(set, image, &run)?;
+    }
     let profiles = characters::dispatch(
         "character_snapshot",
         &json!({"profiles":profiles,"run_dir":run,"root":root}),
@@ -315,6 +322,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         return Err("Cannot resume a run with different video dimensions or frame rate.".into());
     }
     let source = ctx.source(&request, &profiles)?;
+    crate::sets::verify(&source["set"], &run)?;
     if report["character_conditioning"] != request["character_conditioning"] {
         return Err("Cannot resume a run with a different character conditioning policy.".into());
     }

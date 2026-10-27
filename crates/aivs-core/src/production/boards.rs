@@ -335,6 +335,10 @@ pub fn generate_references(
                 .ok_or("Unknown reference performer.")?;
             inputs = json!([{"file":format!("characters/{}/{}",text(p,"id")?,text(&p["image"],"file")?),"sha256":p["image"]["sha256"]}]);
         }
+        if let Some(set) = spec.get("assigned_set") {
+            crate::sets::verify(set, run)?;
+            inputs = json!([set["image"]]);
+        }
         let attempt = if rows(repair_ids)?.contains(&spec["id"]) {
             round
         } else {
@@ -343,7 +347,8 @@ pub fn generate_references(
         if let Some(old) = entries.iter().find(|r| r["id"] == spec["id"]) {
             if attempt == 0
                 && old["definition_sha256"] == ctx.digest(spec)?
-                && old["generation"]["backend"] == backend(ctx)?
+                && (old["generation"]["backend"] == backend(ctx)?
+                    || old["generation"]["policy"] == "assigned-set-v1")
             {
                 storyboard::resolve_image(old, run)?;
                 if spec["kind"] != "prop"
@@ -363,7 +368,19 @@ pub fn generate_references(
         let mut approved = false;
         let count = if spec["kind"] == "prop" { 3 } else { 1 };
         let mut folder = PathBuf::new();
+        if attempt == 0
+            && let Some(set) = spec.get("assigned_set")
+        {
+            let generation = json!({"policy":"assigned-set-v1","inputs":inputs});
+            last = json!({"id":spec["id"],"kind":spec["kind"],"definition_sha256":ctx.digest(spec)?,
+                "generation_sha256":ctx.digest(&generation)?,"generation":generation,"image":set["image"]});
+            ctx.activity(format!("Using assigned set: {}", text(set, "name")?))?;
+            approved = true;
+        }
         for retry in 0..count {
+            if approved {
+                break;
+            }
             let request_seed =
                 (i128::from(seed) + 100003 + i as i128 + i128::from(attempt) * 1009 + retry * 7919)
                     .rem_euclid(1 << 31) as i64;

@@ -51,7 +51,7 @@ pub fn director(
         return Ok(plan);
     }
     characters::verify(rows(profiles)?, run)?;
-    let images = rows(profiles)?
+    let mut images = rows(profiles)?
         .iter()
         .filter(|p| p["image"].is_object())
         .map(|p| {
@@ -61,6 +61,13 @@ pub fn director(
                 .join(text(&p["image"], "file")?))
         })
         .collect::<Result<Vec<_>>>()?;
+    if let Some(set) = source.get("set") {
+        crate::sets::verify(set, run)?;
+        images.push(crate::storyboard::resolve_image(
+            &json!({"image":set["image"]}),
+            run,
+        )?);
+    }
     let direction = fs::read_to_string(ctx.root.join("python/shooting-script-instructions.txt"))
         .map_err(|e| e.to_string())?;
     let body = shooting("shooting_instruction_context", json!({"source":source}))?;

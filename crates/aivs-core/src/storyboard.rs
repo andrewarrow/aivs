@@ -98,8 +98,19 @@ pub fn reference_specs(plan: &Value) -> Result<Value> {
     let world = &plan["world"];
     let mut specs = Vec::new();
     for item in rows(&world["environments"], "canonical environments")? {
-        specs.push(json!({"id": format!("environment:{}", item["scene_id"]), "kind": "environment", "definition": item,
-            "prompt": format!("One clean cinematic environment plate. No people, body parts, loose garments or movable story props. {}", text(&item["reference_prompt"]))}));
+        let mut spec = json!({"id": format!("environment:{}", item["scene_id"]), "kind": "environment", "definition": item,
+            "prompt": format!("One clean cinematic environment plate. No people, body parts, loose garments or movable story props. {}", text(&item["reference_prompt"]))});
+        if let Some(set) = plan["source"].get("set") {
+            crate::sets::validate(set)?;
+            spec["assigned_set"] = set.clone();
+            spec["prompt"] = json!(format!(
+                "Preserve the attached assigned set {} exactly: its architecture, permanent furniture, materials and spatial layout. {} Repair only image defects or remove people, loose garments and movable story props. Keep this same location. {}",
+                text(&set["name"]),
+                text(&set["description"]),
+                text(&item["reference_prompt"])
+            ));
+        }
+        specs.push(spec);
     }
     for item in rows(&world["props"], "canonical props")? {
         specs.push(json!({"id": format!("prop:{}", text(&item["id"])), "kind": "prop", "definition": item, "prompt": prop_reference::generation_prompt(item, None)?}));
@@ -405,10 +416,14 @@ fn frame_request(args: &Value, root: &Path) -> Result<Value> {
             image["purpose"] = reference["kind"].clone();
             image["reference_id"] = json!(id);
             references.push(image);
-            instructions.push(format!(
-                "Image {}: {id} physical reference.",
-                references.len()
-            ));
+            let mut instruction = format!("Image {}: {id} physical reference.", references.len());
+            if let Some(set) = spec.get("assigned_set") {
+                instruction.push_str(&format!(
+                    " Use the assigned set {} as this shot's location. Preserve the environment reference's architecture, permanent furniture, materials and spatial layout across camera angles; add only the staged cast, props and source-required changes.",
+                    text(&set["name"])
+                ));
+            }
+            instructions.push(instruction);
             if let Some(shared) = shared {
                 shared_designs.insert(shared.into(), references.len());
             }

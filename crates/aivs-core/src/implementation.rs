@@ -39,6 +39,7 @@ pub fn sources() -> Value {
         "crates/aivs-core/src/visual_review/prompts.json": include_str!("visual_review/prompts.json"),
         "crates/aivs-core/src/artifacts.rs": include_str!("artifacts.rs"),
         "crates/aivs-core/src/characters.rs": include_str!("characters.rs"),
+        "crates/aivs-core/src/sets.rs": include_str!("sets.rs"),
         "crates/aivs-core/src/character_conditioning.rs": include_str!("character_conditioning.rs"),
         "crates/aivs-core/src/characters/prompt.rs": include_str!("characters/prompt.rs"),
         "crates/aivs-core/src/dialogue.rs": include_str!("dialogue.rs"),

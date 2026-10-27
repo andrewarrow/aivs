@@ -286,7 +286,12 @@ impl Context<'_> {
 
 pub fn source_request(source: &Value) -> Value {
     let mut request = json!({"version":1,"script":source["script"],"cast":source["cast"]});
-    for key in ["character_conditioning", "storyboard_policy", "voice_mode"] {
+    for key in [
+        "character_conditioning",
+        "storyboard_policy",
+        "voice_mode",
+        "set",
+    ] {
         if let Some(v) = source.get(key) {
             request[key] = v.clone();
         }

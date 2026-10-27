@@ -493,10 +493,13 @@ impl Screenplay {
             .iter()
             .map(|role| serde_json::json!({"role": role, "character": self.document.cast[role].id}))
             .collect::<Vec<_>>();
-        serde_json::to_string(
-            &serde_json::json!({"version": 1, "script": script.trim_end(), "cast": cast}),
-        )
-        .map_err(|error| format!("Could not serialize screenplay request: {error}"))
+        let mut request =
+            serde_json::json!({"version": 1, "script": script.trim_end(), "cast": cast});
+        if let Some(set) = self.document.sets.get(&scene_id) {
+            request["set"] = set.id.clone().into();
+        }
+        serde_json::to_string(&request)
+            .map_err(|error| format!("Could not serialize screenplay request: {error}"))
     }
 
     fn active_index(&self) -> usize {

@@ -256,6 +256,11 @@ pub(super) fn parse(request: &Value, profiles: &Value) -> Result<Value> {
     let mut identity = json!({"script": script, "cast": bindings, "profiles": relevant});
     let mut source = json!({"version": 1, "script": script, "cast": bindings, "characters": relevant,
         "beats": parser.beats, "fade_out": fade_out});
+    if let Some(set) = request.get("set").filter(|set| !set.is_null()) {
+        crate::sets::validate(set)?;
+        identity["set"] = set.clone();
+        source["set"] = set.clone();
+    }
     for key in ["character_conditioning", "storyboard_policy"] {
         if !request[key].is_null() {
             optional_fields(&mut identity, request, &[key]);

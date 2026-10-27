@@ -18,6 +18,7 @@ pub mod production;
 pub mod prop_reference;
 pub mod render_estimate;
 pub mod render_formats;
+mod sets;
 pub mod shooting_script;
 pub mod shot_renderer;
 pub mod storyboard;

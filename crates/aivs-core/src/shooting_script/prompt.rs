@@ -347,6 +347,11 @@ pub(super) fn instruction_context(source: &Value) -> Value {
             "audio_moves_between_generations": false, "saved_character_assets": assets},
         "timing_guidance": {"words_per_minute": 160, "settling_seconds": 0.5},
     });
-    super::optional_fields(&mut body, source, &["render_format"]);
+    super::optional_fields(&mut body, source, &["render_format", "set"]);
+    if source.get("set").is_some() {
+        body["assigned_set_guidance"] = serde_json::json!(
+            "The final attachment after the performer portraits is the assigned set image. Use this exact location for the selected scene. Preserve its architecture, permanent furniture, materials and spatial layout in every angle. Stage source action within this set; do not invent a replacement location. Describe the assigned set in world.environments reference_prompt; production reuses its saved image as the environment plate. Only cast, story props and source-required changes are added to storyboard frames."
+        );
+    }
     body
 }
