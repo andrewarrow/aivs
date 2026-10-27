@@ -331,10 +331,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     startup.mark("GUI main entered");
     env_logger::init();
     startup.mark("logging initialized");
-    let root = std::env::args_os()
-        .nth(1)
-        .map(std::path::PathBuf::from)
-        .unwrap_or(std::env::current_dir()?);
+    let mut workspace = None;
+    let mut project = None;
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--project" {
+            let path = args.next().ok_or("--project requires a project path.")?;
+            if path.to_string_lossy().starts_with("--") {
+                return Err("--project requires a project path.".into());
+            }
+            if project.replace(std::path::PathBuf::from(path)).is_some() {
+                return Err("--project may only be specified once.".into());
+            }
+        } else if arg.to_string_lossy().starts_with('-') {
+            return Err(format!("Unknown option: {}", arg.to_string_lossy()).into());
+        } else if workspace.replace(std::path::PathBuf::from(arg)).is_some() {
+            return Err("Only one workspace directory may be specified.".into());
+        }
+    }
+    let root = workspace.unwrap_or(std::env::current_dir()?);
     let root = root.canonicalize()?;
     if !root.is_dir() {
         return Err("The workspace must be a directory.".into());
@@ -349,7 +364,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let event_loop = builder.build()?;
     startup.mark("native event loop created");
-    let app = app::App::new(root)?;
+    let app = app::App::new(root, project)?;
     startup.mark("application initialized");
     let mut desktop = Desktop {
         startup,

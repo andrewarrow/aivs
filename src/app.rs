@@ -88,9 +88,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(root: PathBuf) -> Result<Self, String> {
+    pub fn new(root: PathBuf, project_path: Option<PathBuf>) -> Result<Self, String> {
         let mut startup = crate::startup::Timer::new();
-        let project = crate::project::Project::untitled(&root, true)?;
+        let project = match project_path {
+            Some(path) => crate::project::Project::open(&path)?,
+            None => crate::project::Project::untitled(&root, true)?,
+        };
         let mut video = crate::video::VideoWorkspace::new(root.clone());
         video.set_project(project.root(), true);
         startup.mark("video workspace initialized and setup worker started");
@@ -98,11 +101,13 @@ impl App {
         startup.mark("character gallery deferred until opened");
         let sets = crate::sets::SetGallery::new(&root);
         startup.mark("set gallery deferred until opened");
-        let screenplay = if project.root().join("screenplay.json").is_file() {
+        let mut screenplay = if project.root().join("screenplay.json").is_file() {
             crate::screenplay::Screenplay::load(project.root())
         } else {
             crate::screenplay::Screenplay::untitled(project.root())
         };
+        screenplay.project_document()?;
+        screenplay.set_project(project.root(), project.is_untitled());
         startup.mark("screenplay loaded");
         Ok(Self {
             video,

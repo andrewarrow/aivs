@@ -305,6 +305,14 @@ AIVS opens an **Untitled** project. If the runtime workspace has an existing
 `screenplay.json`, the initial untitled project imports a copy; the original stays
 intact. **File → New Project** starts with a blank screenplay.
 
+To start with an existing project open, pass `--project` with its directory or
+`project.json` path. You can also supply a runtime workspace directory:
+
+```sh
+cargo run -- --project ~/Documents/Untitled.avis
+cargo run -- /path/to/workspace --project ~/Documents/Untitled.avis
+```
+
 **File → Save** (⌘/Ctrl+S) first asks for a project name and location, defaulting to
 the operating system's Documents directory. A project is an ordinary directory,
 named `My Film.aivs` by default:
