@@ -40,7 +40,6 @@ fn cast_context(
     source: &Value,
     identities: &Value,
     visible: &Value,
-    speaking: &[&str],
     storyboard: bool,
 ) -> Result<String> {
     let mut parts = Vec::new();
@@ -70,19 +69,47 @@ fn cast_context(
                 )
             ));
         }
-        let voice = identity["voice_description"]
-            .as_str()
-            .unwrap_or_default()
-            .trim();
-        if !voice.is_empty() && (!modern || speaking.contains(&role)) {
-            parts.push(format!("{role} speaks with {}", phrase(voice)));
-        }
     }
     Ok(if parts.is_empty() {
         String::new()
     } else {
         parts.join(". ").trim_end_matches(['.', ' ']).to_owned() + ". "
     })
+}
+
+fn speaker_context(source: &Value, identities: &Value, role: &str) -> String {
+    let identity = identities
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["role"] == role))
+        .or_else(|| {
+            let binding = source["cast"]
+                .as_array()?
+                .iter()
+                .find(|item| item["role"] == role)?;
+            source["characters"]
+                .as_array()?
+                .iter()
+                .find(|profile| profile["id"] == binding["character"])
+        });
+    let Some(identity) = identity else {
+        return role.to_owned();
+    };
+    // Bind the visible performer and voice at the utterance itself. A role
+    // name alone, followed much later by a cast/voice list, can leave speaker
+    // assignment ambiguous during joint picture-and-audio generation.
+    let appearance = identity["description"].as_str().unwrap_or_default().trim();
+    let voice = identity["voice_description"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+    let mut speaker = role.to_owned();
+    if !appearance.is_empty() {
+        speaker.push_str(&format!(", {},", phrase(appearance)));
+    }
+    if !voice.is_empty() {
+        speaker.push_str(&format!(" speaking with {},", phrase(voice)));
+    }
+    speaker
 }
 
 fn raw_dialogue(template: &str, dialogue: &str) -> Result<bool> {
@@ -185,7 +212,11 @@ pub(super) fn compile(
                 .unwrap_or_default();
             format!(
                 "{}{cue} says, \"{}\".",
-                beat["speaker"].as_str().unwrap_or_default(),
+                speaker_context(
+                    source,
+                    identities,
+                    beat["speaker"].as_str().unwrap_or_default()
+                ),
                 beat["text"].as_str().unwrap_or_default()
             )
         })
@@ -210,11 +241,7 @@ pub(super) fn compile(
         .get("render_format")
         .map(crate::render_formats::framing)
         .unwrap_or(Value::String(String::new()));
-    let speaking = required
-        .iter()
-        .filter_map(|id| beats[id]["speaker"].as_str())
-        .collect::<Vec<_>>();
-    let cast = cast_context(source, identities, visible, &speaking, storyboard)?;
+    let cast = cast_context(source, identities, visible, storyboard)?;
     let image = if storyboard {
         "Animate the supplied storyboard first frame, preserving its cast, composition, costumes and prop state as the action begins. "
     } else {
