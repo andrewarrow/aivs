@@ -1,4 +1,6 @@
 //! Shared app-server wire protocol and isolated production sessions.
+mod logging;
+pub use logging::{compact_event_log, keep_stream_logs};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -137,12 +139,14 @@ impl Drop for ServerProcess {
     }
 }
 
-// Log bytes as they arrive, including unterminated stderr diagnostics. A separate
-// writer thread prevents a large screenplay from blocking output draining.
+// Stderr is durable as bytes arrive. Protocol events externalize image payloads
+// before logging, while the original events reach the live session unchanged.
+// A separate writer prevents large requests from blocking output draining.
 fn logged_output(
     mut reader: impl Read,
     mut log: File,
     protocol: bool,
+    image_root: PathBuf,
     output: Sender<AppServerOutput>,
 ) {
     let mut pending = Vec::new();
@@ -156,7 +160,7 @@ fn logged_output(
                 break;
             }
         };
-        if let Err(error) = log.write_all(&buffer[..count]).and_then(|_| log.flush()) {
+        if !protocol && let Err(error) = log.write_all(&buffer[..count]).and_then(|_| log.flush()) {
             let _ = output.send(AppServerOutput::Invalid(format!(
                 "Could not save Codex log: {error}"
             )));
@@ -165,17 +169,43 @@ fn logged_output(
         pending.extend_from_slice(&buffer[..count]);
         while let Some(end) = pending.iter().position(|b| *b == b'\n') {
             let line: Vec<_> = pending.drain(..=end).collect();
+            if protocol && let Err(error) = log_protocol_line(&line, &mut log, &image_root) {
+                let _ = output.send(AppServerOutput::Invalid(error));
+                let _ = output.send(AppServerOutput::Closed);
+                return;
+            }
             if !publish_line(&line, protocol, &output) {
                 return;
             }
         }
     }
     if !pending.is_empty() {
+        if protocol && let Err(error) = log_protocol_line(&pending, &mut log, &image_root) {
+            let _ = output.send(AppServerOutput::Invalid(error));
+        }
         publish_line(&pending, protocol, &output);
     }
     if protocol {
         let _ = output.send(AppServerOutput::Closed);
     }
+}
+
+fn log_protocol_line(
+    bytes: &[u8],
+    log: &mut File,
+    image_root: &std::path::Path,
+) -> Result<(), String> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(());
+    }
+    let event = match serde_json::from_slice::<Value>(bytes) {
+        Ok(event) => logging::log_event(&event, image_root)?,
+        Err(_) => logging::invalid_line(bytes),
+    };
+    serde_json::to_writer(&mut *log, &event).map_err(|e| e.to_string())?;
+    log.write_all(b"\n")
+        .and_then(|_| log.flush())
+        .map_err(|e| e.to_string())
 }
 
 fn publish_line(bytes: &[u8], protocol: bool, output: &Sender<AppServerOutput>) -> bool {
@@ -325,9 +355,21 @@ pub fn run_production(
         .ok_or_else(|| Failure::from("Missing Codex error stream.".to_owned()))?;
     let (output_tx, output_rx) = mpsc::channel();
     let stdout_tx = output_tx.clone();
-    let stdout_reader = thread::spawn(move || logged_output(stdout, events_log, true, stdout_tx));
+    let image_root = if request.image_generation {
+        request.cwd.clone()
+    } else {
+        request
+            .events_path
+            .parent()
+            .ok_or("Missing event log directory.".to_owned())?
+            .join("images")
+    };
+    let log_images = image_root.clone();
+    let stdout_reader =
+        thread::spawn(move || logged_output(stdout, events_log, true, log_images, stdout_tx));
     let stderr_tx = output_tx.clone();
-    let stderr_reader = thread::spawn(move || logged_output(stderr, errors_log, false, stderr_tx));
+    let stderr_reader =
+        thread::spawn(move || logged_output(stderr, errors_log, false, PathBuf::new(), stderr_tx));
     let (outgoing, incoming) = mpsc::channel();
     let writer = thread::spawn(move || {
         while let Ok(message) = incoming.recv() {
@@ -357,6 +399,13 @@ pub fn run_production(
     let _ = stdout_reader.join();
     let _ = stderr_reader.join();
     saved?;
+    if result.is_ok() {
+        if let Err(error) = compact_event_log(&request.events_path, &image_root) {
+            let _ = emit(
+                json!({"type":"activity","message":format!("Codex response is saved; log compaction was skipped: {error}")}),
+            );
+        }
+    }
     result.map(|()| json!(observations.raw()))
 }
 

@@ -66,6 +66,8 @@ pub fn sources() -> Value {
         "crates/aivs-core/src/continuity/types.rs": include_str!("continuity/types.rs"),
         "crates/aivs-core/src/continuity/world.rs": include_str!("continuity/world.rs"),
         "crates/aivs-core/src/codex.rs": include_str!("codex.rs"),
+        "crates/aivs-core/src/codex/logging.rs": include_str!("codex/logging.rs"),
+        "crates/aivs-core/src/storage_cleanup.rs": include_str!("storage_cleanup.rs"),
         "crates/aivs-core/src/motion.rs": include_str!("motion.rs"),
         "crates/aivs-core/src/media.rs": include_str!("media.rs"),
         "crates/aivs-core/src/motion/planning.rs": include_str!("motion/planning.rs"),

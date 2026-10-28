@@ -34,7 +34,7 @@ fn cancellation() -> Arc<AtomicBool> {
     flag
 }
 fn usage() -> &'static str {
-    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize> [options]\n\nProject: --project-dir PATH (stores new runs and reusable references in an existing project)\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH --parent-revision ID\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
+    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize|compact> [options]\n\nProject: --project-dir PATH (stores new runs and reusable references in an existing project)\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH --parent-revision ID\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nStorage: compact --project-dir PATH [--revision ID]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
 }
 fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     let mut args = arguments.into_iter();
@@ -65,6 +65,7 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
         "voice-mode",
         "shooting-script",
         "parent-revision",
+        "revision",
         "render-format",
     ]);
     let mut flags = BTreeMap::<String, Vec<String>>::new();
@@ -94,6 +95,9 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     }
     let get = |key: &str| flags.get(key).and_then(|v| v.last()).cloned();
     let has = |key: &str| flags.contains_key(key);
+    if has("revision") && command != "compact" {
+        return Err("--revision is only used with compact.".into());
+    }
     let mut payload = json!({});
     if let Some(project) = get("project-dir") {
         payload["project_dir"] = json!(expand(&project)?);
@@ -135,6 +139,22 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
         return Err("Choose either --plan-only or --storyboards-only.".into());
     }
     match command.as_str() {
+        "compact" => {
+            if !has("project-dir") {
+                return Err("Compact requires --project-dir with an existing project.".into());
+            }
+            if flags
+                .keys()
+                .any(|key| !matches!(key.as_str(), "project-dir" | "revision"))
+            {
+                return Err(
+                    "Compact accepts only --project-dir and optional --revision ID.".into(),
+                );
+            }
+            if let Some(id) = get("revision") {
+                payload["revision"] = json!(id);
+            }
+        }
         "check" | "download" => {
             if has("plan-only") || has("storyboards-only") || has("voice-mode") {
                 return Err(
@@ -301,6 +321,7 @@ pub fn main(arguments: Vec<String>) -> i32 {
             }
             "resume" => "production_resume",
             "previsualize" => "production_motion",
+            "compact" => "production_compact",
             "check" => "production_check",
             "download" => "production_download",
             _ => return Err("Invalid production command.".into()),

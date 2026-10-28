@@ -233,6 +233,15 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     }
     let seed = seed(&args["seed"])?;
     let _lock = lock(&ctx.root, ".render.lock")?;
+    if let Some(project) = ctx.project_root() {
+        // Maintenance runs only after taking the same lock as video inference.
+        // It never rewrites an approved plan, image binding, or render receipt.
+        if let Err(error) = crate::storage_cleanup::compact_project(&project, None) {
+            ctx.activity(format!(
+                "Existing revision maintenance was skipped: {error}"
+            ))?;
+        }
+    }
     let run = new_run(ctx, seed)?;
     if ctx.project_root().is_none() {
         fs::write(run.join("screenplay.txt"), text(&request, "script")?)
@@ -578,6 +587,16 @@ fn prompt(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
 }
 pub fn dispatch(ctx: &mut Context<'_>, operation: &str, args: &Value) -> Result<Value> {
     match operation {
+        "production_compact" => {
+            let _lock = lock(&ctx.root,".render.lock").map_err(|_|"Artifact cleanup is unavailable while this workspace is rendering. Let the current run finish first.".to_owned())?;
+            let project = ctx
+                .project_root()
+                .ok_or("Artifact cleanup requires --project-dir.")?;
+            let result =
+                crate::storage_cleanup::compact_project(&project, args["revision"].as_str())?;
+            ctx.event(json!({"type":"compacted","data":result}))?;
+            Ok(result)
+        }
         "production_run" => generated(ctx, args),
         "production_resume" => resumed(ctx, args),
         "production_prompt" => prompt(ctx, args),

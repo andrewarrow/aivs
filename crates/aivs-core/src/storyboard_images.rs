@@ -106,6 +106,214 @@ pub struct Inputs {
     pub mapping: String,
 }
 
+const SHEET_POLICY: &str = "reference-sheet-v1";
+
+fn sheet_key(sources: &[Value]) -> Result<String> {
+    fingerprint(
+        &json!({"policy":SHEET_POLICY,"source_sha256s":sources.iter().map(|s|s["sha256"].clone()).collect::<Vec<_>>()}),
+    )
+}
+
+fn sheet_cache(project: &Path) -> PathBuf {
+    project.join("preproduction/cache/reference-sheets")
+}
+
+fn sheet_blob(project: &Path, digest: &str) -> Result<PathBuf> {
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("Invalid reference sheet digest.".into());
+    }
+    Ok(sheet_cache(project).join(format!("{digest}.png")))
+}
+
+fn sheet_pixels(sources: &[Value]) -> Result<Vec<u8>> {
+    let mut sheet = RgbImage::from_pixel(1536, 1600, Rgb([255; 3]));
+    for (offset, source) in sources.iter().enumerate() {
+        let x = (offset % 2) as u32 * 768;
+        let y = (offset / 2) as u32 * 800;
+        let image = decode(
+            &fs::read(source["path"].as_str().ok_or("Missing reference path.")?)
+                .map_err(|e| e.to_string())?,
+        )?
+        .to_rgb8();
+        let tile = contain(&image, 768, 768);
+        imageops::replace(
+            &mut sheet,
+            &tile,
+            (x + (768 - tile.width()) / 2) as i64,
+            (y + 32 + (768 - tile.height()) / 2) as i64,
+        );
+        // Source numbers are part of the pixels and therefore of the cache key.
+        let number = source["sheet_number"]
+            .as_u64()
+            .ok_or("Missing reference sheet image number.")?;
+        label(
+            &mut sheet,
+            x + 12,
+            y + 8,
+            &format!("Image {number}"),
+            Rgb([0; 3]),
+            2,
+        );
+    }
+    png(sheet)
+}
+
+fn cached_sheet_key(sources: &[Value]) -> Result<String> {
+    fingerprint(
+        &json!({"sources":sheet_key(sources)?,"image_numbers":sources.iter().map(|s|s["sheet_number"].clone()).collect::<Vec<_>>()}),
+    )
+}
+
+fn publish_cached_sheet(project: &Path, sources: &[Value], bytes: &[u8]) -> Result<PathBuf> {
+    let folder = sheet_cache(project);
+    let digest = hash(bytes);
+    let image = folder.join(format!("{digest}.png"));
+    if image.exists() {
+        if file_hash(&image)? != digest {
+            return Err("Cached reference sheet changed.".into());
+        }
+    } else {
+        exclusive_bytes(&image, bytes)?;
+    }
+    let index = folder.join(format!("{}.json", cached_sheet_key(sources)?));
+    if !index.exists() {
+        atomic_json(
+            &index,
+            &json!({"policy":SHEET_POLICY,"source_sha256s":sources.iter().map(|s|s["sha256"].clone()).collect::<Vec<_>>(),
+            "image_numbers":sources.iter().map(|s|s["sheet_number"].clone()).collect::<Vec<_>>(),"sha256":digest}),
+        )?;
+    }
+    Ok(image)
+}
+
+fn reference_sheet(group: &[Value], start: usize, output: &Path) -> Result<PathBuf> {
+    let legacy = output
+        .parent()
+        .ok_or("Missing image directory.")?
+        .join("reference-sheets")
+        .join(format!("{}.png", fingerprint(&json!(group))?));
+    let metadata = legacy.with_extension("json");
+    let project = crate::project::for_run(output.parent().ok_or("Missing image directory.")?);
+    // Existing image checkpoints bind the exact old tool-input path and bytes.
+    // A compacted sheet can be restored from its shared blob for recovery.
+    if metadata.is_file() {
+        let saved = read_json(&metadata)?;
+        if saved["sources"] != json!(group) {
+            return Err("Saved reference sheet inputs changed.".into());
+        }
+        if !legacy.is_file() {
+            if let Some(project) = &project {
+                let digest = saved["sha256"].as_str().ok_or("Missing sheet digest.")?;
+                let cached = sheet_blob(project, digest)?;
+                if file_hash(&cached)? != digest {
+                    return Err("Cached recovery reference sheet changed.".into());
+                }
+                exclusive_bytes(&legacy, &fs::read(cached).map_err(|e| e.to_string())?)?;
+            }
+        }
+        if saved["sha256"] != file_hash(&legacy)? {
+            return Err("Saved reference sheet changed.".into());
+        }
+        return Ok(legacy);
+    }
+    if legacy.exists() {
+        let interrupted = legacy.with_extension(format!("unverified-{}.png", timestamp()));
+        fs::rename(&legacy, interrupted).map_err(|e| e.to_string())?;
+    }
+    let numbered = group
+        .iter()
+        .enumerate()
+        .map(|(offset, source)| {
+            let mut source = source.clone();
+            source["sheet_number"] = json!(start + offset + 1);
+            source
+        })
+        .collect::<Vec<_>>();
+    if let Some(project) = project {
+        let index = sheet_cache(&project).join(format!("{}.json", cached_sheet_key(&numbered)?));
+        if index.is_file() {
+            let saved = read_json(&index)?;
+            if saved["policy"] != SHEET_POLICY
+                || saved["source_sha256s"]
+                    != json!(
+                        numbered
+                            .iter()
+                            .map(|s| s["sha256"].clone())
+                            .collect::<Vec<_>>()
+                    )
+                || saved["image_numbers"]
+                    != json!(
+                        numbered
+                            .iter()
+                            .map(|s| s["sheet_number"].clone())
+                            .collect::<Vec<_>>()
+                    )
+            {
+                return Err("Cached reference sheet inputs changed.".into());
+            }
+            let image = sheet_blob(
+                &project,
+                saved["sha256"].as_str().ok_or("Missing sheet digest.")?,
+            )?;
+            if saved["sha256"] != file_hash(&image)? {
+                return Err("Cached reference sheet changed.".into());
+            }
+            return Ok(image);
+        }
+        publish_cached_sheet(&project, &numbered, &sheet_pixels(&numbered)?)
+    } else {
+        let bytes = sheet_pixels(&numbered)?;
+        exclusive_bytes(&legacy, &bytes)?;
+        atomic_json(&metadata, &json!({"sources":group,"sha256":hash(&bytes)}))?;
+        Ok(legacy)
+    }
+}
+
+/// Move completed legacy sheet pixels into shared storage, retaining the small
+/// sidecar needed to restore their original path for image-level recovery.
+pub fn cache_existing_sheet(project: &Path, image: &Path, numbers: Option<&[u64]>) -> Result<u64> {
+    let metadata = image.with_extension("json");
+    if !metadata.is_file() {
+        return Ok(0);
+    }
+    let saved = read_json(&metadata)?;
+    let sources = saved["sources"]
+        .as_array()
+        .ok_or("Missing reference sheet sources.")?;
+    if saved["sha256"] != file_hash(image)? {
+        return Err("Legacy reference sheet changed.".into());
+    }
+    let bytes = fs::read(image).map_err(|e| e.to_string())?;
+    let digest = hash(&bytes);
+    let cached = sheet_cache(project).join(format!("{digest}.png"));
+    let added = if cached.exists() {
+        if file_hash(&cached)? != digest {
+            return Err("Cached reference sheet changed.".into());
+        }
+        0
+    } else {
+        exclusive_bytes(&cached, &bytes)?;
+        bytes.len() as u64
+    };
+    if let Some(numbers) = numbers.filter(|n| n.len() == sources.len()) {
+        let numbered = sources
+            .iter()
+            .zip(numbers)
+            .map(|(source, number)| {
+                let mut source = source.clone();
+                source["sheet_number"] = json!(number);
+                source
+            })
+            .collect::<Vec<_>>();
+        publish_cached_sheet(project, &numbered, &bytes)?;
+    }
+    Ok(added)
+}
+
 pub fn prepare(references: &[PathBuf], output: &Path, keep_first: bool) -> Result<Inputs> {
     let sources = references
         .iter()
@@ -130,65 +338,13 @@ pub fn prepare(references: &[PathBuf], output: &Path, keep_first: bool) -> Resul
         .ok_or(
             "Too many essential references for five readable image inputs; simplify this shot.",
         )?;
-    let folder = output
-        .parent()
-        .ok_or("Missing image directory.")?
-        .join("reference-sheets");
-    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let mut paths = references[..keep].to_vec();
     let mut mapping = (1..=keep)
         .map(|n| format!("Image {n}: tool input {n}."))
         .collect::<Vec<_>>();
     for (group_index, group) in sources[keep..].chunks(4).enumerate() {
         let start = keep + group_index * 4;
-        let path = folder.join(format!("{}.png", fingerprint(&json!(group))?));
-        let metadata = path.with_extension("json");
-        if path.exists() && !metadata.exists() {
-            // A crash between image publication and its receipt cannot leave
-            // this input permanently unusable. Preserve the unbound bytes.
-            let interrupted = path.with_extension(format!("unverified-{}.png", timestamp()));
-            fs::rename(&path, interrupted).map_err(|e| e.to_string())?;
-        }
-        if path.exists() {
-            // Reuse original Pillow sheets verbatim. Re-encoding would change
-            // their bytes and invalidate completed image-tool checkpoints.
-            let saved = read_json(&metadata)?;
-            if saved["sources"] != json!(group) || saved["sha256"] != file_hash(&path)? {
-                return Err("A saved reference sheet changed.".into());
-            }
-        } else {
-            let mut sheet = RgbImage::from_pixel(1536, 1600, Rgb([255; 3]));
-            for (offset, source) in group.iter().enumerate() {
-                let x = (offset % 2) as u32 * 768;
-                let y = (offset / 2) as u32 * 800;
-                let image = decode(
-                    &fs::read(source["path"].as_str().ok_or("Missing reference path.")?)
-                        .map_err(|e| e.to_string())?,
-                )?
-                .to_rgb8();
-                let tile = contain(&image, 768, 768);
-                imageops::replace(
-                    &mut sheet,
-                    &tile,
-                    (x + (768 - tile.width()) / 2) as i64,
-                    (y + 32 + (768 - tile.height()) / 2) as i64,
-                );
-                label(
-                    &mut sheet,
-                    x + 12,
-                    y + 8,
-                    &format!("Image {}", start + offset + 1),
-                    Rgb([0; 3]),
-                    2,
-                );
-            }
-            let bytes = png(sheet)?;
-            exclusive_bytes(&path, &bytes)?;
-            atomic_json(
-                &metadata,
-                &json!({"sources": group, "sha256": hash(&bytes)}),
-            )?;
-        }
+        let path = reference_sheet(group, start, output)?;
         for offset in 0..group.len() {
             mapping.push(format!(
                 "Image {}: tool input {}, panel {} (panels read left to right, top to bottom).",

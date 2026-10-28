@@ -75,6 +75,16 @@ impl Checkpoint {
             .unwrap_or_else(|| json!({}));
         for (key, value) in item.as_object().ok_or("Invalid image generation event.")? {
             if !value.is_null() {
+                // A later completion can repeat the tool's original filename
+                // after a prior turn has been compacted. Keep the durable master.
+                if key == "savedPath"
+                    && value.as_str().is_some_and(|s| !Path::new(s).is_file())
+                    && merged["savedPath"]
+                        .as_str()
+                        .is_some_and(|s| Path::new(s).is_file())
+                {
+                    continue;
+                }
                 merged[key] = value.clone();
             }
         }
@@ -305,5 +315,11 @@ pub(super) fn generate(
         .as_object_mut()
         .ok_or("Invalid image generation identity.")?
         .extend(runtime.as_object().ok_or("Invalid image runtime.")?.clone());
+    if let Err(error) = crate::storage_cleanup::remove_duplicate_images(&workspace) {
+        activity(
+            emit,
+            format!("Storyboard is saved; duplicate-image cleanup was skipped: {error}"),
+        )?;
+    }
     Ok(result)
 }

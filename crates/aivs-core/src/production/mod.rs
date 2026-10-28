@@ -404,7 +404,7 @@ pub fn dispatch(
             args["seed"].as_i64().ok_or("Invalid seed.")?,
         ),
         "production_render" => rendering::render(&mut context, args),
-        "production_run" | "production_resume" | "production_prompt" => {
+        "production_run" | "production_resume" | "production_prompt" | "production_compact" => {
             run::dispatch(&mut context, operation, args)
         }
         "production_motion" => motion::dispatch(&mut context, args),

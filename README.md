@@ -334,6 +334,7 @@ My Film.aivs/
     revisions/       Source snapshots, plans, storyboards, and planning task logs
     objects/         Immutable JSON objects shared by revision manifests
     heads/           Latest completed revision for each scene
+    cache/           Shared reference sheets and maintenance receipts
   runs/              Render settings, revision bindings, footage, and footage reviews
 ```
 
@@ -374,6 +375,33 @@ planning allowance over a shared source object using `$aivs_base`/`$aivs_fields`
 Planning logs belong to the revision that performed the work. Rendered video,
 sampled frames, and footage reviews belong to their run. Video inference still
 executes per run; creative reuse does not splice preview footage into HQ output.
+
+Image generation retains one original `.image` master and the normalized
+storyboard used by the renderer. Image bytes are never embedded in protocol logs;
+logs record the master path, SHA-256 and byte count. Successful Codex sessions
+keep compact summaries with timing, token usage and diagnostics. Requests,
+responses, approval records and interrupted/failed session details remain saved.
+Set `AIVS_KEEP_STREAM_LOGS=1` when launching AIVS to retain successful streaming
+events too; image payloads still stay outside logs.
+
+Reference sheets are shared under `preproduction/cache/reference-sheets/`, keyed
+by source image hashes and source numbering. Completed legacy revisions are
+compacted before the next render after AIVS acquires the workspace render lock.
+Cleanup preserves approved plans, final storyboards and one original image,
+removes verified duplicate originals, and moves legacy sheets into the shared
+cache. Small sheet receipts allow exact old paths and bytes to be restored if an
+image-generation checkpoint needs recovery. Already-compacted revisions are
+skipped. Standalone output layouts remain readable.
+
+After any active render finishes, maintenance can also be requested explicitly:
+
+```sh
+cargo run -- --production compact --project-dir "/path/to/My Film.aivs"
+```
+
+Add `--revision REVISION_ID` to compact only one completed revision. Maintenance
+uses the same workspace lock as rendering and refuses to run while a render is
+active. It does not run Codex, load models, or regenerate any images or video.
 
 ### Editing and casting
 

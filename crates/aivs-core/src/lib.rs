@@ -22,6 +22,7 @@ pub mod render_formats;
 mod sets;
 pub mod shooting_script;
 pub mod shot_renderer;
+pub(crate) mod storage_cleanup;
 pub mod storyboard;
 pub mod storyboard_backend;
 pub mod storyboard_images;
