@@ -112,7 +112,12 @@ Preproduction has two Codex passes, with local image generation between them:
 
 Codex's built-in image generator creates reusable empty environment plates,
 important prop references and full-body references for known morphology, then one still per
-shot. Only characters visible at time zero supply actor references. Earlier
+shot. Only characters visible at time zero supply actor references; video inference
+receives that composed frame rather than the separate portraits. New plans put
+entrances at shot boundaries so every person seen in a shot is already visually
+anchored in its first frame. Earlier source setup stays in preceding coverage;
+an entrance frame shows the arriving person before they approach or sit. Ensemble
+staging keeps separate bodies, clear paths and unoccupied destination seats. Earlier
 character-filled shots are never used as setting references. Generation uses
 Codex app-server and your existing login, without a separate image API key or
 local image-model download. Canonical props use centered, evenly lit

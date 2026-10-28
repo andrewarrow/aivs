@@ -369,7 +369,7 @@ pub(super) fn instruction_context(source: &Value) -> Value {
     });
     if source["storyboard_policy"] == super::STORYBOARD_POLICY {
         assets["new_scene_opening"] = serde_json::json!(
-            "Every segment starts on its own locally generated storyboard image, including reverse angles and later segments in the same scene. Saved portraits guide actor identity during still-image generation; they are not themselves video opening frames. The storyboard_prompt establishes the intended opening composition, costumes, prop ownership and story state. Animate that composition directly; do not begin on a portrait or inherit the prior video's final frame."
+            "Every segment starts on its own locally generated storyboard image, including reverse angles and later segments in the same scene. Saved portraits guide actor identity during still-image generation; only that composed first frame reaches video inference. No separate portrait or later identity reference conditions an entrant. Every person seen during a generation must therefore already be identifiable in its first frame. Put entrances/reveals at shot boundaries in source order; establish the prior situation first, then show the entrant at the threshold before completing their entrance. The storyboard_prompt establishes the intended opening composition, costumes, prop ownership and story state. Animate that composition directly; do not begin on a portrait or inherit the prior video's final frame."
         );
         assets["limits"] = serde_json::json!(
             "Generated storyboards and voice conversion do not guarantee identity, continuity or lip sync."

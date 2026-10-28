@@ -257,6 +257,7 @@ fn reserve(
         return Err(text(&decision, "message")?.into());
     }
     let revised = ctx.compile(&decision["plan"], request, profiles)?;
+    direction::validate_cast_anchors(&revised)?;
     let mut changed = Vec::new();
     for (i, (before, after)) in rows(&director["shots"])?
         .iter()

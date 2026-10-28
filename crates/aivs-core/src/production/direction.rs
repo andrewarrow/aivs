@@ -2,6 +2,48 @@ use super::*;
 use crate::{characters, shooting_script::PLANNER_VERSION};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) fn validate_cast_anchors(plan: &Value) -> Result<()> {
+    // LTX receives the composed first frame, not the actor portraits used to
+    // create it. A performer first appearing later has no visual identity input.
+    for (index, shot) in rows(&plan["shots"])?.iter().enumerate() {
+        let opening = rows(&shot["opening_visible_roles"])?;
+        let mut visible: BTreeSet<&str> = rows(&shot["visible_roles"])?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        // Do not let an omitted visible_roles entry hide an unanchored arrival
+        // already declared in the ending state or a during-shot transition.
+        visible.extend(
+            rows(&shot["continuity"]["ending"]["characters"])?
+                .iter()
+                .filter(|person| person["presence"] == "visible")
+                .filter_map(|person| person["role"].as_str()),
+        );
+        visible.extend(
+            rows(&shot["continuity"]["transitions"])?
+                .iter()
+                .filter(|event| {
+                    event["timing"] == "during-shot"
+                        && event["field"] == "presence"
+                        && event["after"] == "visible"
+                })
+                .filter_map(|event| event["entity"].as_str()?.strip_prefix("character:")),
+        );
+        let missing = visible
+            .into_iter()
+            .filter(|role| !opening.iter().any(|value| value.as_str() == Some(*role)))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "Shot {} introduces {} after its storyboard first frame, so the video model has no image of that performer. Split coverage at the source entrance/reveal and start the arriving performer's shot with their identity visible at the threshold or aisle, before completing the action. Keep the earlier setup in earlier coverage; do not reveal or seat anyone prematurely. Every visible_roles entry must be in opening_visible_roles. Offscreen dialogue may remain offscreen.",
+                index + 1,
+                missing.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn save_director(plan: &Value, run: &Path) -> Result<()> {
     save(&run.join("storyboard-plan.json"), plan)?;
     let display = rows(&plan["shots"])?
@@ -36,6 +78,7 @@ pub fn director(
             return Err("The director plan needs the source-bound production contract.".into());
         }
         let mut plan = ctx.compile(&candidate, request, profiles)?;
+        validate_cast_anchors(&plan)?;
         plan["planner_version"] = json!(PLANNER_VERSION);
         plan["planning_stage"] = json!("storyboard");
         Ok(plan)

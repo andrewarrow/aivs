@@ -504,7 +504,13 @@ fn frame_request(args: &Value, root: &Path) -> Result<Value> {
     } else {
         visible.iter().map(text).collect::<Vec<_>>().join(", ")
     };
-    let mut presence = format!("Visible people at time zero: {people}. ");
+    let mut presence = format!(
+        "Exactly {} visible people at time zero: {people}. ",
+        visible.len()
+    );
+    if visible.len() > 1 {
+        presence.push_str("Each named role is a separate person with their own reference-matched face and distinct body. Preserve the full person count and separate positions. ");
+    }
     let absent: Vec<_> = cast
         .iter()
         .filter(|c| !visible.contains(&c["role"]))
