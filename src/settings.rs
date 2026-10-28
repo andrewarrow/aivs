@@ -52,6 +52,7 @@ impl RenderFormat {
 pub enum RenderProfile {
     #[default]
     Hq,
+    Standard,
     Distilled,
 }
 
@@ -59,6 +60,7 @@ impl RenderProfile {
     pub fn id(self) -> &'static str {
         match self {
             Self::Hq => "hq",
+            Self::Standard => "standard",
             Self::Distilled => "distilled",
         }
     }
@@ -66,6 +68,7 @@ impl RenderProfile {
     pub fn label(self) -> &'static str {
         match self {
             Self::Hq => "Final (HQ)",
+            Self::Standard => "Final (Standard)",
             Self::Distilled => "Preview (180p · fastest)",
         }
     }
@@ -76,6 +79,7 @@ impl RenderProfile {
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
             match value["render_profile"].as_str() {
                 Some("hq") | None => Ok(Self::Hq),
+                Some("standard") => Ok(Self::Standard),
                 Some("distilled") => Ok(Self::Distilled),
                 _ => Err(std::io::Error::other("Unknown render profile")),
             }

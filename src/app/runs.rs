@@ -147,7 +147,8 @@ fn run_detail(run: &Path) -> Option<String> {
     let report = aivs_core::artifacts::read_json(&run.join("render.json")).ok()?;
     let quality = match report["render_profile"].as_str() {
         Some("distilled") => "Preview",
-        Some("hq") => "Final",
+        Some("standard") => "Final (Standard)",
+        Some("hq") => "Final (HQ)",
         _ => "Run",
     };
     let mut detail = format!(

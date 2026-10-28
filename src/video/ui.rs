@@ -112,7 +112,8 @@ impl VideoWorkspace {
                                 crate::settings::RenderFormat::Landscape => "320 × 180 · 16:9",
                                 crate::settings::RenderFormat::Portrait => "180 × 320 · 9:16",
                             },
-                            crate::settings::RenderProfile::Hq => self.render_format.label(),
+                            crate::settings::RenderProfile::Hq
+                            | crate::settings::RenderProfile::Standard => self.render_format.label(),
                         }
                     ))
                     .wrap(),
@@ -158,6 +159,7 @@ impl VideoWorkspace {
                             .show_ui(ui, |ui| {
                                 for option in [
                                     crate::settings::RenderProfile::Hq,
+                                    crate::settings::RenderProfile::Standard,
                                     crate::settings::RenderProfile::Distilled,
                                 ] {
                                     ui.selectable_value(&mut profile, option, option.label());
@@ -166,7 +168,7 @@ impl VideoWorkspace {
                             .response
                             .labelled_by(label.id)
                             .on_hover_text(
-                                "Preview renders a small 180p video for speed. Final uses full resolution. Both use the same storyboards, shot timing, and audio workflow; generated details may differ.",
+                                "Final (HQ) gives the best quality. Final (Standard) uses the original, faster full-resolution renderer. Preview renders a small 180p video for speed. All use the same storyboards, shot timing, and audio workflow; generated details may differ.",
                             );
                     });
                     if profile != self.render_profile {

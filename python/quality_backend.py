@@ -40,19 +40,21 @@ class InvalidCache(RuntimeError):
 
 def profile_config(profile="distilled"):
     """Identity for render manifests; changing profile never happens implicitly."""
-    if profile not in ("distilled", "hq"):
-        raise ValueError("Local render profile must be distilled or hq.")
+    if profile not in ("distilled", "standard", "hq"):
+        raise ValueError("Local render profile must be distilled, standard, or hq.")
+    # Standard restores the original full-resolution distilled 8+3 renderer.
     return {
         "backend": "mlx", "model": MODEL_REPO, "model_revision": MODEL_REVISION,
         "runtime_revision": RUNTIME_REVISION, "profile": profile,
         "pipeline": "hq-two-stage" if profile == "hq" else "distilled-two-stage",
         "stage1_steps": 15 if profile == "hq" else 8,
-        "stage2_steps": 3 if profile == "hq" else 1,
+        "stage2_steps": 1 if profile == "distilled" else 3,
         "quantization": "int8", "low_memory": True, "low_ram_streaming": True,
         **({"sampler": "res_2s", "cfg_scale": 3.0, "stg_scale": 0.0,
             "enable_teacache": False,
             "negative_prompt_suffix": "subtitles, captions, text overlays, on-screen text"}
-           if profile == "hq" else {"preview_long_edge": 320}),
+           if profile == "hq" else {}),
+        **({"preview_long_edge": 320} if profile == "distilled" else {}),
     }
 
 

@@ -44,7 +44,7 @@ def main():
     parser.add_argument("command", choices=("plan", "generate", "animatic", "prepare", "compare"))
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--shot", type=int, default=1)
-    parser.add_argument("--profile", choices=("hq", "distilled"), default="distilled")
+    parser.add_argument("--profile", choices=("hq", "standard", "distilled"), default="distilled")
     args = parser.parse_args()
     with project_lock(".render.lock"):
         result = _run(args.command, args.run_dir, shot_number=args.shot, profile=args.profile, on_activity=print)

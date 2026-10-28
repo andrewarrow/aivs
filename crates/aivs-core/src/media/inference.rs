@@ -4,8 +4,8 @@ use super::*;
 pub(super) fn prepare(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
     let profile = args["profile"]
         .as_str()
-        .filter(|s| matches!(*s, "hq" | "distilled"))
-        .ok_or("Local render profile must be distilled or hq.")?;
+        .filter(|s| matches!(*s, "hq" | "standard" | "distilled"))
+        .ok_or("Local render profile must be distilled, standard, or hq.")?;
     let frames = integer(args, "frames")?;
     let width = integer(args, "width")?;
     let height = integer(args, "height")?;

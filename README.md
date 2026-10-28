@@ -167,7 +167,7 @@ If a process is forcibly killed before it can record elapsed time, its remaining
 allowance stays charged conservatively; increase the budget to continue.
 
 Project runs pin creative revisions in `preproduction/revisions/`. Video seed and
-HQ/preview selection are independent of the revision, so a preview and a final
+quality selection are independent of the revision, so a preview and a final
 render share their plan and images. Editing a scene derives a new revision from
 its latest completed revision. Codex receives the source delta and existing
 direction and returns changed world definitions and shots, rather than rewriting
@@ -197,11 +197,15 @@ motion prompt; separate start/end notes support continuity review.
 
 **Final (HQ)** is the default Quality setting beside **Generate video**. It uses
 the full transformer for 15 stage-one steps, then the distilled transformer for
-3 stage-two steps. **Preview (180p · fastest)** generates at 320×192 (landscape)
+3 stage-two steps. **Final (Standard)** restores the original renderer from before
+HQ was added: the distilled pipeline with 8 stage-one steps and 3 stage-two steps,
+at the selected full delivery resolution with the same final-quality encoding
+as HQ. It provides a faster final render; actual time savings depend on the shot
+and hardware. **Preview (180p · fastest)** generates at 320×192 (landscape)
 or 192×320 (portrait), then crops to 320×180 or 180×320 delivery. It uses 8+1
 steps and faster encoding with the same storyboards, shot timing, 24 fps, and audio
 workflow. Low-resolution generation previews composition and timing; it can differ
-from the final HQ take. Neither option submits a paid video API generation.
+from the final takes. All three options use local video inference.
 
 New plans use the `single-render-v1` policy to spend planning effort before expensive
 video inference. Each missing shot receives one generation, with no automatic rerender
@@ -760,7 +764,8 @@ completed cache can supply the full plan immediately. Add `--fresh-preproduction
 to inspect a newly generated director draft. Remove `--plan-only` for the complete
 workflow, or Resume the saved draft's run directory.
 Add `--render-format portrait` for 1080×1920; `--script-file` defaults to landscape.
-`--profile hq` is the default; use `--profile distilled` for preview. Repeating
+`--profile hq` is the default; use `--profile standard` for the original faster
+full-resolution renderer or `--profile distilled` for preview. Repeating
 the same scene with a different video profile or seed automatically reuses its
 matching completed preproduction.
 With `--project-dir`, edited scenes automatically derive from their latest
@@ -769,8 +774,8 @@ explicitly. The ID is recorded in a project's run binding and revision manifest.
 
 Every screenplay render also checks speech sync on the assembled delivery,
 after voice conversion and fades. This check is independent of sampled visual
-review and runs for both preview and HQ. It locates scripted English lines in
-the audio, tracks visible faces at the SyncNet model's required 25fps, and
+review and runs for all three quality settings. It locates scripted English lines
+in the audio, tracks visible faces at the SyncNet model's required 25fps, and
 measures local audio lead/lag within each speaking turn. The initial policy
 uses a 120ms tolerance, a +/-800ms search, and confidence and active-face
 ambiguity gates. Short lines, hidden faces, ambiguous speakers, missing setup,
