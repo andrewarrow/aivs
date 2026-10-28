@@ -246,7 +246,21 @@ impl Screenplay {
         match fs::read(&path) {
             Ok(bytes) => match Self::decode(&bytes) {
                 Ok(document) => {
-                    screenplay.next_id = document.blocks.len() as u64;
+                    screenplay.next_id = document
+                        .blocks
+                        .iter()
+                        .map(|b| b.id)
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    screenplay.active = document.blocks[0].id;
+                    if let Some(next) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|value| value["next_key"].as_u64())
+                        .filter(|next| *next < u64::MAX)
+                    {
+                        screenplay.next_id = screenplay.next_id.max(next);
+                    }
                     screenplay.document = document;
                 }
                 Err(error) => {
@@ -280,7 +294,11 @@ impl Screenplay {
             .enumerate()
             .map(|(id, item)| {
                 Ok(Block {
-                    id: id as u64,
+                    id: item
+                        .get("key")
+                        .map(|v| v.as_u64().ok_or_else(invalid))
+                        .transpose()?
+                        .unwrap_or(id as u64),
                     kind: Element::ALL
                         .into_iter()
                         .find(|kind| item["type"] == kind.label())
@@ -290,6 +308,16 @@ impl Screenplay {
             })
             .collect::<Result<Vec<_>, String>>()?;
         if blocks.is_empty() {
+            return Err(invalid());
+        }
+        if blocks
+            .iter()
+            .map(|b| b.id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != blocks.len()
+            || blocks.iter().any(|b| b.id == u64::MAX)
+        {
             return Err(invalid());
         }
         let mut cast = BTreeMap::new();
@@ -307,8 +335,7 @@ impl Screenplay {
             for item in assignments.as_array().ok_or_else(invalid)? {
                 let index = item["block"].as_u64().ok_or_else(invalid)?;
                 let block = blocks
-                    .iter()
-                    .find(|block| block.id == index)
+                    .get(usize::try_from(index).map_err(|_| invalid())?)
                     .filter(|block| block.kind == Element::Heading)
                     .ok_or_else(invalid)?;
                 sets.insert(
@@ -332,8 +359,9 @@ impl Screenplay {
         }
         Ok(serde_json::json!({
             "version": 1,
+            "next_key": self.next_id,
             "blocks": self.document.blocks.iter().map(|b| serde_json::json!({
-                "type": b.kind.label(), "text": b.text,
+                "key": b.id, "type": b.kind.label(), "text": b.text,
             })).collect::<Vec<_>>(),
             "sets": self.document.blocks.iter().enumerate().filter_map(|(index, block)| {
                 if block.kind != Element::Heading { return None; }
@@ -439,6 +467,7 @@ impl Screenplay {
         let mut cue = String::new();
         let mut roles = Vec::new();
         let mut has_content = false;
+        let mut beat_keys = Vec::new();
         for (offset, block) in blocks[start..end].iter().enumerate() {
             let index = start + offset;
             let text = block.text.trim();
@@ -506,6 +535,7 @@ impl Screenplay {
                     script.push_str("\"\n\n");
                     cue.clear();
                     has_content = true;
+                    beat_keys.push(format!("block:{}", block.id));
                 }
                 Element::Dialogue => {}
                 _ => {
@@ -515,6 +545,9 @@ impl Screenplay {
                         script.push_str(text);
                         script.push_str("\n\n");
                         has_content |= block.kind == Element::Action;
+                        if block.kind == Element::Action {
+                            beat_keys.push(format!("block:{}", block.id));
+                        }
                     }
                 }
             }
@@ -540,8 +573,8 @@ impl Screenplay {
             .iter()
             .map(|role| serde_json::json!({"role": role, "character": self.document.cast[role].id}))
             .collect::<Vec<_>>();
-        let mut request =
-            serde_json::json!({"version": 1, "script": script.trim_end(), "cast": cast});
+        let mut request = serde_json::json!({"version": 1, "script": script.trim_end(), "cast": cast,
+                "scene_key":format!("block:{scene_id}"), "beat_keys":beat_keys});
         if let Some(set) = self.document.sets.get(&scene_id) {
             request["set"] = set.id.clone().into();
         }

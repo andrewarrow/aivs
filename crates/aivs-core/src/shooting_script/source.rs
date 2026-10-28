@@ -256,6 +256,38 @@ pub(super) fn parse(request: &Value, profiles: &Value) -> Result<Value> {
     let mut identity = json!({"script": script, "cast": bindings, "profiles": relevant});
     let mut source = json!({"version": 1, "script": script, "cast": bindings, "characters": relevant,
         "beats": parser.beats, "fade_out": fade_out});
+    if let Some(keys) = request.get("beat_keys") {
+        let keys = keys
+            .as_array()
+            .ok_or("Source beat keys must be an array.")?;
+        let beats = source["beats"].as_array_mut().unwrap();
+        if keys.len() != beats.len()
+            || keys.iter().any(|key| {
+                !key.as_str()
+                    .is_some_and(|s| !s.is_empty() && s.len() <= 128)
+            })
+            || keys
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != keys.len()
+        {
+            return Err(
+                "Stable source keys must identify every action and dialogue beat once.".into(),
+            );
+        }
+        for (beat, key) in beats.iter_mut().zip(keys) {
+            beat["stable_id"] = key.clone();
+        }
+        source["beat_keys"] = json!(keys);
+        identity["beat_keys"] = json!(keys);
+    }
+    if let Some(key) = request.get("scene_key") {
+        bounded(key, "Stable scene key", 128)?;
+        source["scene_key"] = key.clone();
+        identity["scene_key"] = key.clone();
+    }
     if let Some(set) = request.get("set").filter(|set| !set.is_null()) {
         crate::sets::validate(set)?;
         identity["set"] = set.clone();

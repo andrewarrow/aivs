@@ -44,5 +44,5 @@ def finalize_shooting_script(plan, boards, run_dir, **options):
     result = call("finalize", plan=plan, boards=boards, run_dir=Path(run_dir), **options)
     if "repair_issues" in result:
         raise StoryboardRepairRequired(result["repair_issues"])
-    boards.update(json.loads((Path(run_dir) / "storyboards.json").read_text()))
+    boards.update(call("read_creative", run_dir=Path(run_dir), name="storyboards.json"))
     return result

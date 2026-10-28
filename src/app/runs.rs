@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -10,6 +11,7 @@ use super::image_preview::ImagePreview;
 pub(super) struct RunsPanel {
     project_root: PathBuf,
     names: Vec<String>,
+    details: BTreeMap<String, String>,
     refreshed_at: Option<Instant>,
     load_failed: bool,
     selected: Option<String>,
@@ -41,6 +43,14 @@ impl RunsPanel {
                     self.load_failed = true;
                 }
             }
+            self.details = self
+                .names
+                .iter()
+                .filter_map(|name| {
+                    run_detail(&project_root.join("runs").join(name))
+                        .map(|detail| (name.clone(), detail))
+                })
+                .collect();
             if self
                 .selected
                 .as_ref()
@@ -68,11 +78,16 @@ impl RunsPanel {
                     let mut clicked = None;
                     for name in &self.names {
                         ui.add_space(6.0);
+                        let label = self
+                            .details
+                            .get(name)
+                            .map(|detail| format!("{name}\n{detail}"))
+                            .unwrap_or_else(|| name.clone());
                         if ui
                             .add(
                                 egui::Button::selectable(
                                     self.selected.as_ref() == Some(name),
-                                    egui::RichText::new(name).monospace(),
+                                    egui::RichText::new(label).monospace(),
                                 )
                                 .wrap()
                                 .min_size(egui::vec2(0.0, 44.0)),
@@ -112,13 +127,70 @@ impl RunsPanel {
         let Some(name) = &self.selected else {
             return;
         };
-        let directory = self
-            .project_root
-            .join("runs")
-            .join(name)
-            .join("storyboards");
-        self.storyboards_failed = read_storyboards(&directory, &mut self.storyboards).is_err();
+        let run = self.project_root.join("runs").join(name);
+        self.storyboards_failed = read_run_storyboards(&run, &mut self.storyboards).is_err();
     }
+}
+
+fn run_detail(run: &Path) -> Option<String> {
+    let report = aivs_core::artifacts::read_json(&run.join("render.json")).ok()?;
+    let quality = match report["render_profile"].as_str() {
+        Some("distilled") => "Preview",
+        Some("hq") => "Final",
+        _ => "Run",
+    };
+    let mut detail = format!(
+        "{quality} · {}",
+        report["status"]
+            .as_str()
+            .unwrap_or("unknown")
+            .replace('-', " ")
+    );
+    let binding = aivs_core::artifacts::read_json(&run.join("preproduction.json")).ok();
+    if let Some(id) = binding
+        .as_ref()
+        .and_then(|b| b["revision"].as_str().or_else(|| b["cache_key"].as_str()))
+    {
+        detail.push_str(&format!(
+            " · revision {}",
+            id.chars().take(8).collect::<String>()
+        ));
+    }
+    Some(detail)
+}
+
+fn read_run_storyboards(run: &Path, storyboards: &mut Vec<ImagePreview>) -> Result<(), String> {
+    let manifest = aivs_core::project::creative_file(run, "storyboards.json")?;
+    if !manifest.is_file() {
+        return read_storyboards(&run.join("storyboards"), storyboards).map_err(|e| e.to_string());
+    }
+    let boards = aivs_core::artifacts::read_json(&manifest)?;
+    let entries = boards["shots"]
+        .as_array()
+        .ok_or("Invalid storyboard manifest.")?;
+    let mut records = Vec::new();
+    for entry in entries {
+        let path = aivs_core::storyboard::resolve_image(entry, run)?;
+        let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+        let label = format!("Shot {}", entry["shot"]);
+        records.push((path, label, metadata));
+    }
+    // Manifest order is the edit order, independent of asset filenames.
+    let mut ordered = Vec::new();
+    for (path, label, metadata) in records {
+        let mut preview = if let Some(index) = storyboards
+            .iter()
+            .position(|item| item.path == path && item.label == label)
+        {
+            storyboards.remove(index)
+        } else {
+            ImagePreview::new(path, label.clone(), &metadata)
+        };
+        preview.refresh(label, &metadata);
+        ordered.push(preview);
+    }
+    *storyboards = ordered;
+    Ok(())
 }
 
 fn read_storyboards(directory: &Path, storyboards: &mut Vec<ImagePreview>) -> std::io::Result<()> {

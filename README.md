@@ -161,11 +161,18 @@ completed work remains available.
 If a process is forcibly killed before it can record elapsed time, its remaining
 allowance stays charged conservatively; increase the budget to continue.
 
-Unchanged scenes reuse their completed preproduction from `.cache/preproduction/`.
-The cache binds the screenplay, cast assets, render format, and planning code.
-Video seed and HQ/preview selection are excluded, so comparing those options
-reuses the same plan and storyboard images. Use `--fresh-preproduction` to bypass
-shared reuse for a new run. Cache reuse does not establish image or acting quality.
+Project runs pin creative revisions in `preproduction/revisions/`. Video seed and
+HQ/preview selection are independent of the revision, so a preview and a final
+render share their plan and images. Editing a scene derives a new revision from
+its latest completed revision. Codex receives the source delta and existing
+direction and returns changed world definitions and shots, rather than rewriting
+the complete shooting script. Unchanged reference images, storyboard pixels,
+image inspections, and motion directions are reused when their dependencies match.
+The merged revision still passes complete source coverage, timing, continuity,
+and independent source-fidelity checks. A broad change can require broader review.
+Use `--fresh-preproduction` for new direction and storyboards; reusable physical
+design references remain available. Standalone CLI runs retain the existing
+`.cache/preproduction/` workflow. Reuse does not establish image or acting quality.
 
 The final directions are saved as `shooting-script.json` and
 `shooting-script.txt`. Stable performer identity remains separate from costume,
@@ -323,8 +330,11 @@ My Film.aivs/
   screenplay.json    Screenplay, casting, and scene assignments
   settings.json      Render format, quality, and planning allowance
   references/        Reusable generated references and their provenance
-  preproduction/     Project planning and completed-preproduction indexes
-  runs/              Individual runs, storyboards, logs, shots, and videos
+  preproduction/
+    revisions/       Source snapshots, plans, storyboards, and planning task logs
+    objects/         Immutable JSON objects shared by revision manifests
+    heads/           Latest completed revision for each scene
+  runs/              Render settings, revision bindings, footage, and footage reviews
 ```
 
 **File → Open Project…** (⌘/Ctrl+O) accepts the directory or its `project.json`.
@@ -346,6 +356,24 @@ portraits, voices, and assigned set images directly from the global libraries;
 they do not copy characters or sets into the project. Each run records library
 roots and asset hashes in its metadata, and resuming detects changed assets.
 Older runs with local snapshots continue to use those snapshots.
+
+A run is one render attempt against a fixed creative revision. Small screenplay
+edits create another revision and run; changing quality alone creates another run
+of the same revision. Resume continues the selected attempt and never substitutes
+the current editor contents. Source blocks and shots retain stable IDs across
+edits, saves, and reordering. A run's `preproduction.json` records its revision
+using a project-relative path. Completed revisions are not edited in place.
+
+On the next project generation, compatible legacy preproduction is imported into
+shared revision storage. The old run files remain available for historical
+footage receipts. New revisions reference reused storyboard images directly;
+unchanged JSON objects are stored once by content hash. JSON manifests use
+`$aivs_object` references; the Rust artifact reader and Python compatibility
+helpers resolve these and check object hashes. Run requests layer quality and
+planning allowance over a shared source object using `$aivs_base`/`$aivs_fields`.
+Planning logs belong to the revision that performed the work. Rendered video,
+sampled frames, and footage reviews belong to their run. Video inference still
+executes per run; creative reuse does not splice preview footage into HQ output.
 
 ### Editing and casting
 
@@ -642,7 +670,9 @@ not being maintained as a second filmmaking pipeline.
 Desktop runs write to `<project>/runs/<timestamp>_<seed>/`. CLI runs use
 `outputs/<timestamp>_<seed>/` in the runtime workspace unless
 `--project-dir "/path/to/My Film.aivs"` selects an existing project. Resume discovers the project
-from its run directory. The following run artifacts remain available:
+from its run directory. For project runs, follow `preproduction.json` to find the
+creative files below in their shared revision directory. Rendered media and its
+reviews remain in the run. Legacy and standalone runs retain the local layout.
 
 | Artifact | What to inspect |
 | --- | --- |
@@ -654,7 +684,8 @@ from its run directory. The following run artifacts remain available:
 | `storyboard-repairs.json`, `storyboard-review-before-repair-*.json`, `storyboard-diagnostic.json` | Bounded repair journal, preserved findings, and terminal rejection diagnostics. |
 | `shooting-script.txt`, `shooting-script.json` | Readable directions and the validated machine plan. |
 | `planning-budget.json` | Cumulative Codex planning time, allowance, and last pass. |
-| `preproduction.json` | Shared-cache identity and reuse provenance. |
+| `preproduction.json` | Run-to-revision binding; legacy runs record cache identity and reuse provenance. |
+| `revision.json`, `input.json`, `delta.json` | Completed revision identity and parent, immutable inputs, and the bounded director patch (when derived from an earlier revision). |
 | `shooting-script-request-*`, `shooting-script-response-*` | What the planner sent to Codex and received back. |
 | `shooting-script-events-*.jsonl`, `shooting-script-errors-*.txt` | Live protocol events and diagnostics, including failed or stopped planning. |
 | Historical `shooting-script-draft-*`, `shooting-script-review*`, `shooting-script-progress.json` | Preserved artifacts from the removed five-pass planner. |
@@ -687,6 +718,9 @@ Add `--render-format portrait` for 1080×1920; `--script-file` defaults to lands
 `--profile hq` is the default; use `--profile distilled` for preview. Repeating
 the same scene with a different video profile or seed automatically reuses its
 matching completed preproduction.
+With `--project-dir`, edited scenes automatically derive from their latest
+completed revision. Use `--parent-revision REVISION_ID` to choose another base
+explicitly. The ID is recorded in a project's run binding and revision manifest.
 
 To inspect actual generated first frames and motion directions before video
 inference, use `--storyboards-only`. This completes both planning passes, image

@@ -16,8 +16,8 @@ fn timing(ctx: &mut Context<'_>, plan: &Value, manifest: &Value) -> Result<()> {
     motion::validate_timing(plan, manifest, &json!(hash), 24)
 }
 fn base(ctx: &mut Context<'_>, run: &Path) -> Result<(Value, Value)> {
-    let plan = read(&run.join("shooting-script.json"))?;
-    let boards = read(&run.join("storyboards.json"))?;
+    let plan = read(&crate::project::creative_file(run, "shooting-script.json")?)?;
+    let boards = read(&crate::project::creative_file(run, "storyboards.json")?)?;
     if plan["planning_stage"] != "final" {
         return Err("Finish the existing plan before preparing motion keyframes.".into());
     }

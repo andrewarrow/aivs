@@ -4,10 +4,12 @@ pub mod cli;
 mod direction;
 mod fidelity;
 mod helpers;
+mod incremental;
 mod motion;
 mod preparation;
 mod rendering;
 mod review;
+mod revisions;
 mod run;
 use crate::{
     artifacts,
@@ -246,6 +248,14 @@ impl Context<'_> {
         )
     }
     pub fn publish(&mut self, plan: &Value, run: &Path) -> Result<()> {
+        if run.join("revision.json").is_file() {
+            if read(&run.join("shooting-script.json"))? == *plan {
+                return Ok(());
+            }
+            return Err(
+                "Completed creative revisions are immutable; derive a new revision.".into(),
+            );
+        }
         let fingerprint = self.plan_hash(plan)?;
         shooting(
             "shooting_publish",
@@ -304,6 +314,8 @@ pub fn source_request(source: &Value) -> Value {
         "storyboard_policy",
         "voice_mode",
         "set",
+        "scene_key",
+        "beat_keys",
     ] {
         if let Some(v) = source.get(key) {
             request[key] = v.clone();
@@ -366,7 +378,7 @@ pub fn dispatch(
             &mut context,
             &args["request"],
             &args["profiles"],
-            &path(args, "run_dir")?,
+            &crate::project::creative_root(&path(args, "run_dir")?)?,
         ),
         "production_finalize" => {
             let mut boards = args["boards"].clone();
@@ -374,7 +386,7 @@ pub fn dispatch(
                 &mut context,
                 &args["plan"],
                 &mut boards,
-                &path(args, "run_dir")?,
+                &crate::project::creative_root(&path(args, "run_dir")?)?,
             )
         }
         "production_prepare" => preparation::prepare(

@@ -266,6 +266,10 @@ pub(super) fn compile(
         let mut filled = json!({"seconds": seconds, "beat_ids": raw_ids, "prompt_template": template,
             "start_state": start, "end_state": end, "continue_previous": continuation,
             "scene": by_id[&ids[0]]["scene"], "scene_id": scene_id});
+        if let Some(id) = item.get("stable_id") {
+            bounded(id, "Stable shot ID", 128)?;
+            filled["stable_id"] = id.clone();
+        }
         if storyboard {
             let still = bounded(
                 &item["storyboard_prompt"],
@@ -364,7 +368,10 @@ pub(super) fn compile(
             )
         };
         let mut compiled = compile_prompt(false)?;
-        if item["prompt"].as_str().is_some_and(|saved| saved != compiled) {
+        if item["prompt"]
+            .as_str()
+            .is_some_and(|saved| saved != compiled)
+        {
             // Resume must preserve the exact approved prompt and its hashes.
             // Accept the previous compiler format only when it reproduces the
             // saved prompt exactly from the same source and template. New
@@ -394,6 +401,13 @@ pub(super) fn compile(
     }
     if expected != beats.len() as u64 + 1 {
         return Err("Shooting script omits source beats.".into());
+    }
+    let stable_ids: Vec<_> = shots
+        .iter()
+        .filter_map(|s| s.get("stable_id").and_then(Value::as_str))
+        .collect();
+    if stable_ids.iter().collect::<BTreeSet<_>>().len() != stable_ids.len() {
+        return Err("Stable shot IDs must be unique.".into());
     }
     if storyboard {
         canonicalize_features(&mut shots, &candidate["world"]);

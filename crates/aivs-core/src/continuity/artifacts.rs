@@ -68,12 +68,16 @@ pub fn report_binding(args: &Value) -> Result<Value> {
     {
         return Err("Invalid storyboard image binding.".into());
     }
-    Ok(json!({
+    let mut binding = json!({
         "policy": POLICY, "source_sha256": plan["source_sha256"],
         "review_policy_sha256": args["review_policy_sha256"],
         "source_snapshot_sha256": args["source_snapshot_sha256"],
         "plan_sha256": args["plan_sha256"],
         "references": boards.get("references").cloned().unwrap_or_else(|| json!([])),
         "images": shots.iter().map(|entry| json!({"shot": entry["shot"], "image": entry["image"]})).collect::<Vec<_>>(),
-    }))
+    });
+    if let Some(scope) = boards.get("reference_scope") {
+        binding["reference_scope"] = scope.clone();
+    }
+    Ok(binding)
 }

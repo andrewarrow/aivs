@@ -153,6 +153,9 @@ pub fn candidate(director: &Value, issues: &Value, state: &Value) -> Result<Valu
         let number = shot_number(&issue["shot"], shots(director)?.len())?;
         if let Some(value) = replacement(issue, "plan_repair")? {
             revised["shots"][number - 1] = value.clone();
+            if let Some(id) = director["shots"][number - 1].get("stable_id") {
+                revised["shots"][number - 1]["stable_id"] = id.clone();
+            }
         }
         if let Some(value) = replacement(issue, "world_repair")? {
             if world != director["world"] && &world != value {

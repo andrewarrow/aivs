@@ -36,6 +36,11 @@ fn prepare_director(
     profiles: &Value,
     run: &Path,
 ) -> Result<Value> {
+    if !run.join("storyboard-plan.json").exists() {
+        if let Some(plan) = incremental::director(ctx, request, profiles, run)? {
+            return Ok(plan);
+        }
+    }
     let key = director_key(ctx, request, profiles)?;
     let index = ctx
         .preproduction_root()
@@ -69,10 +74,12 @@ fn prepare_director(
     let director = direction::director(ctx, request, profiles, run)?;
     if !run.join("storyboard-repairs.json").exists() {
         let hash = ctx.digest(&director)?;
-        if let Err(error) = save(
-            &index,
-            &json!({"key":key,"plan_sha256":hash,"plan":director}),
-        ) {
+        let stored = if let Some(project) = ctx.project_root() {
+            artifacts::store_object(&project, &director)?
+        } else {
+            director.clone()
+        };
+        if let Err(error) = save(&index, &json!({"key":key,"plan_sha256":hash,"plan":stored})) {
             ctx.activity(format!(
                 "Director plan is saved locally; shared cache could not be updated: {error}"
             ))?;
@@ -112,7 +119,7 @@ pub fn rebind(
     boards::prepare(ctx, final_plan, &rebound, run)?;
     Ok(rebound)
 }
-fn load_final(
+pub(super) fn load_final(
     ctx: &mut Context<'_>,
     directory: &Path,
     request: &Value,
@@ -286,6 +293,19 @@ pub fn prepare(
     run: &Path,
     seed: i64,
 ) -> Result<Value> {
+    if ctx.project_root().is_some() && !run.join("shooting-script.json").is_file() {
+        return revisions::prepare(ctx, request, profiles, run, seed);
+    }
+    prepare_local(ctx, request, profiles, run, seed)
+}
+
+pub(super) fn prepare_local(
+    ctx: &mut Context<'_>,
+    request: &Value,
+    profiles: &Value,
+    run: &Path,
+    seed: i64,
+) -> Result<Value> {
     fs::create_dir_all(run).map_err(|e| e.to_string())?;
     let key = cache_key(ctx, request, profiles)?;
     let index = ctx.preproduction_root().join(format!("{key}.json"));
@@ -308,6 +328,7 @@ pub fn prepare(
         }
         source = file.parent().map(Path::to_path_buf);
     } else if ctx.options["fresh"] != true
+        && !run.join("input.json").is_file()
         && !run.join("storyboard-plan.json").exists()
         && index.is_file()
     {

@@ -89,9 +89,13 @@ fn prepare(args: &Value, root: &Path) -> Result<Value> {
                 "Storyboard image changed while preparing shot {number}."
             ));
         }
-        bindings.insert(number, json!({"shot": number, "planned_shot_sha256": fingerprint,
-            "image": {"file": path.strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy(),
-            "sha256": decoded["source_sha256"], "width": decoded["width"], "height": decoded["height"]}}));
+        let mut image = entry["image"].clone();
+        image["width"] = decoded["width"].clone();
+        image["height"] = decoded["height"].clone();
+        bindings.insert(
+            number,
+            json!({"shot": number, "planned_shot_sha256": fingerprint, "image":image}),
+        );
     }
     Ok(json!(bindings.into_values().collect::<Vec<_>>()))
 }
@@ -124,6 +128,58 @@ pub fn reference_specs(plan: &Value) -> Result<Value> {
         }
     }
     Ok(json!(specs))
+}
+
+/// References whose designs can affect this shot or its outgoing action.
+/// Offscreen bookkeeping for unrelated props is not a pixel dependency.
+pub fn review_reference_ids(plan: &Value, shot: &Value) -> Result<BTreeSet<String>> {
+    let mut ids = BTreeSet::new();
+    ids.insert(format!("environment:{}", shot["scene_id"]));
+    let mut props = BTreeSet::new();
+    for endpoint in ["opening", "ending"] {
+        let state = &shot["continuity"][endpoint];
+        for prop in state["props"].as_array().into_iter().flatten() {
+            if prop["visibility"] == "visible" {
+                props.insert(text(&prop["id"]).to_owned());
+            }
+        }
+        for character in state["characters"].as_array().into_iter().flatten() {
+            if character["presence"] == "visible" {
+                ids.insert(format!("body:{}", text(&character["role"])));
+            }
+        }
+    }
+    for event in shot["continuity"]["transitions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(id) = event["entity"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("prop:"))
+        {
+            props.insert(id.to_owned());
+        }
+    }
+    for prop in plan["world"]["props"].as_array().into_iter().flatten() {
+        if props.contains(text(&prop["id"]))
+            || prop["components"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|c| props.contains(text(&c["id"])))
+        {
+            ids.insert(format!("prop:{}", text(&prop["id"])));
+        }
+    }
+    let existing = reference_specs(plan)?
+        .as_array()
+        .ok_or("Missing reference specs.")?
+        .iter()
+        .map(|s| text(&s["id"]).to_owned())
+        .collect::<BTreeSet<_>>();
+    ids.retain(|id| existing.contains(id));
+    Ok(ids)
 }
 
 fn prepare_references(args: &Value, root: &Path) -> Result<Value> {

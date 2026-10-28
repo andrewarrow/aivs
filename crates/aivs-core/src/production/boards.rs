@@ -129,7 +129,11 @@ fn reuse_prop_reference(
         {
             continue;
         }
-        let binding = prop_binding(ctx, original, &entry["image"])?;
+        let mut binding = prop_binding(ctx, original, &entry["image"])?;
+        if entry["prop_validation"]["binding"].is_object() {
+            binding["reviewer_sha256"] =
+                entry["prop_validation"]["binding"]["reviewer_sha256"].clone();
+        }
         if prop_reference::require_accepted(original, entry, &binding).is_err() {
             continue;
         }
@@ -144,6 +148,8 @@ fn reuse_prop_reference(
         shared["prop_validation"]["observation"]["parts"][0]["id"] =
             spec["definition"]["id"].clone();
         shared["prop_validation"]["binding"] = prop_binding(ctx, spec, &shared["image"])?;
+        shared["prop_validation"]["binding"]["reviewer_sha256"] =
+            binding["reviewer_sha256"].clone();
         prop_reference::require_accepted(spec, &shared, &shared["prop_validation"]["binding"])?;
         ctx.activity(format!(
             "Reusing accepted {} reference for {} (identical design)",
@@ -175,7 +181,7 @@ pub fn contracts(ctx: &mut Context<'_>, plan: &Value, boards: &Value) -> Result<
             .and_then(|a| a.iter().find(|r| r["id"] == id))
         {
             let mut binding = prop_binding(ctx, spec, &entry["image"])?;
-            if ctx.options["resume"] == true && boards["continuity_acceptance"].is_object() {
+            if entry["prop_validation"]["binding"].is_object() {
                 // An accepted run keeps the reviewer that inspected these
                 // pixels. Definition/image hashes and the actual observations
                 // are still checked against the current contracts below.
@@ -256,7 +262,7 @@ pub fn accepted(ctx: &mut Context<'_>, plan: &Value, boards: &Value, run: &Path)
         "validate_storyboard_snapshots",
         json!({"plan":plan,"profiles":profiles,"screenplay":script}),
     )?;
-    let file = run.join("storyboard-review.json");
+    let file = crate::project::creative_file(run, "storyboard-review.json")?;
     if !file.is_file() {
         return Err(
             "Storyboard sequence has no accepted continuity review; stop before video inference."
@@ -265,7 +271,12 @@ pub fn accepted(ctx: &mut Context<'_>, plan: &Value, boards: &Value, run: &Path)
     }
     let report = read(&file)?;
     let mut binding = review_binding(ctx, plan, boards)?;
-    if ctx.options["resume"] == true {
+    if ctx.options["resume"] == true
+        || ctx.options["shooting_script_path"].is_string()
+        || crate::project::creative_root(run)?
+            .join("revision.json")
+            .is_file()
+    {
         // Code changes must not invalidate an otherwise unchanged accepted
         // run. Recompute all content bindings, retaining review provenance.
         binding["review_policy_sha256"] = report["binding"]["review_policy_sha256"].clone();
@@ -323,9 +334,16 @@ fn image_info(file: &Path, flag: &AtomicBool) -> Result<Value> {
     media::dispatch("prepare_source_image", &json!({"source":file}), flag)
 }
 fn image_asset(file: &Path, run: &Path, info: &Value) -> Result<Value> {
-    Ok(
-        json!({"file":file.strip_prefix(run).map_err(|e|e.to_string())?,"sha256":info["source_sha256"],"width":info["width"],"height":info["height"]}),
-    )
+    let project = crate::project::for_run(run);
+    let shared = project
+        .as_ref()
+        .filter(|p| run.starts_with(p.join("preproduction")));
+    let root = shared.map(PathBuf::as_path).unwrap_or(run);
+    let mut asset = json!({"file":file.strip_prefix(root).map_err(|e|e.to_string())?,"sha256":info["source_sha256"],"width":info["width"],"height":info["height"]});
+    if shared.is_some() {
+        asset["scope"] = json!("project");
+    }
+    Ok(asset)
 }
 
 fn reference_key(ctx: &mut Context<'_>, request: &Value) -> Result<String> {
@@ -467,17 +485,19 @@ pub fn generate_references(
         if let Some(old) = entries.iter().find(|r| r["id"] == spec["id"]) {
             if attempt == 0
                 && old["definition_sha256"] == ctx.digest(spec)?
+                && (old["generation"]["inputs"] == inputs
+                    || old["generation"]["policy"] == "shared-prop-design-v1")
                 && (old["generation"]["backend"] == backend(ctx)?
                     || old["generation"]["policy"] == "assigned-set-v1")
             {
                 storyboard::resolve_image(old, run)?;
+                let mut binding = prop_binding(ctx, spec, &old["image"])?;
+                if old["prop_validation"]["binding"].is_object() {
+                    binding["reviewer_sha256"] =
+                        old["prop_validation"]["binding"]["reviewer_sha256"].clone();
+                }
                 if spec["kind"] != "prop"
-                    || prop_reference::require_accepted(
-                        spec,
-                        old,
-                        &prop_binding(ctx, spec, &old["image"])?,
-                    )
-                    .is_ok()
+                    || prop_reference::require_accepted(spec, old, &binding).is_ok()
                 {
                     continue;
                 }
@@ -728,6 +748,9 @@ pub fn generate(
         return Err("Saved storyboards belong to different generation inputs.".into());
     }
     manifest["references"] = library["references"].clone();
+    if run.join("input.json").is_file() && !manifest["continuity_acceptance"].is_object() {
+        manifest["reference_scope"] = json!("shot-dependencies-v1");
+    }
     save(&file, &manifest)?;
     let mut checked = false;
     for (index, shot) in rows(&plan["shots"])?.iter().enumerate() {
@@ -747,7 +770,11 @@ pub fn generate(
                 ));
             }
             let old = storyboard::resolve_image(&entry, run)?;
-            if entry["generation_sha256"] == hash && entry["generation"] == request {
+            if (entry["generation_sha256"] == hash && entry["generation"] == request)
+                || (entry["reuse"]["input_sha256"] == incremental::image_key(ctx, &request)?
+                    && incremental::image_key(ctx, &entry["generation"])?
+                        == incremental::image_key(ctx, &request)?)
+            {
                 ctx.activity(format!("Reusing saved storyboard {number}"))?;
                 continue;
             }
@@ -763,6 +790,23 @@ pub fn generate(
                 save(&archived.with_extension("json"), &manifest["shots"][index])?;
             }
             remove(&mut manifest, &["continuity_acceptance"]);
+        }
+        if manifest["shots"].get(index).is_none() {
+            if let Some(mut entry) = incremental::parent_board(ctx, &request, run)? {
+                entry["shot"] = json!(number);
+                entry["planned_shot_sha256"] = json!(fingerprint);
+                entry["reuse"] = json!({"input_sha256":incremental::image_key(ctx,&request)?,
+                    "source_generation_sha256":entry["generation_sha256"],"source_revision":ctx.options["parent_preproduction"].as_str().and_then(|p|Path::new(p).file_name()).and_then(|s|s.to_str())});
+                manifest["shots"]
+                    .as_array_mut()
+                    .ok_or("Invalid storyboard entries.")?
+                    .push(entry);
+                save(&file, &manifest)?;
+                ctx.activity(format!(
+                    "Reusing unchanged storyboard {number} from the parent revision"
+                ))?;
+                continue;
+            }
         }
         if !checked {
             manifest["backend"] = image_call(ctx, "imagegen_check", json!({}))?;

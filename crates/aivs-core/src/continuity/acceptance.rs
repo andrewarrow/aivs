@@ -73,17 +73,25 @@ pub fn validate_acceptance(
     let mut reconstructed = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
         let findings = row["reference_findings"].as_array().ok_or(fail)?;
+        let found = findings
+            .iter()
+            .map(|f| f["id"].as_str())
+            .collect::<BTreeSet<_>>();
+        let references_valid = if boards["reference_scope"] == "shot-dependencies-v1" {
+            let required = crate::storyboard::review_reference_ids(plan, &shots[index])?;
+            required.iter().all(|id| found.contains(&Some(id.as_str())))
+                && found.is_subset(&reference_ids)
+                && found.len() == findings.len()
+        } else {
+            found == reference_ids
+        };
         if row["shot"].as_u64() != Some((index + 1) as u64)
             || row["decision"] != "pass"
             || !row["violations"].as_array().is_some_and(Vec::is_empty)
             || !row["confidence"]
                 .as_f64()
                 .is_some_and(|c| c.is_finite() && c >= 0.8 && c <= 1.0)
-            || findings
-                .iter()
-                .map(|f| f["id"].as_str())
-                .collect::<BTreeSet<_>>()
-                != reference_ids
+            || !references_valid
             || findings.iter().any(|f| {
                 f["decision"] != "pass"
                     || !f["confidence"]

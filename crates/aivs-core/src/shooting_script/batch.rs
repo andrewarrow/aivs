@@ -192,6 +192,9 @@ pub(super) fn validate(args: &Value) -> Result<Value> {
                 .ok_or("Invalid saved motion shot number.")?;
             if let Some(replacement) = row["plan_repair"].as_array().and_then(|a| a.first()) {
                 corrected["shots"][index] = replacement.clone();
+                if let Some(id) = plan["shots"][index].get("stable_id") {
+                    corrected["shots"][index]["stable_id"] = id.clone();
+                }
                 corrected["shots"][index]
                     .as_object_mut()
                     .ok_or("Invalid replacement shot.")?

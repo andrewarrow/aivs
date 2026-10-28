@@ -30,7 +30,6 @@ pub fn director(
         return Err("New planning requires per-shot storyboard first frames.".into());
     }
     fs::create_dir_all(run).map_err(|e| e.to_string())?;
-    ctx.budget(&source, run)?;
     let draft = run.join("storyboard-plan.json");
     let validate = |ctx: &mut Context<'_>, candidate: Value| -> Result<Value> {
         if candidate["planning_policy"] != "single-render-v1" {
@@ -50,6 +49,7 @@ pub fn director(
         ctx.activity("Reusing saved storyboard direction.")?;
         return Ok(plan);
     }
+    ctx.budget(&source, run)?;
     characters::verify(rows(profiles)?, run)?;
     let mut images = rows(profiles)?
         .iter()
@@ -74,7 +74,10 @@ pub fn director(
         &source,
         run,
         json!(images),
-        validate,
+        |ctx, mut candidate| {
+            incremental::assign_ids(&mut candidate, &source)?;
+            validate(ctx, candidate)
+        },
     )?;
     save_director(&plan, run)?;
     Ok(plan)
@@ -111,7 +114,7 @@ fn checkpoint(
     }
     save(
         &run.join("motion-directions.json"),
-        &json!({"version":2,"policy":settings["policy"],"shots":saved}),
+        &json!({"version":3,"policy":settings["policy"],"review_policy_sha256":boards::review_policy(ctx)?,"shots":saved}),
     )?;
     let binding = boards::review_binding(ctx, plan, boards)?;
     save(
@@ -141,13 +144,13 @@ pub fn finalize(
         .collect::<Vec<_>>();
     let board_hash = ctx.digest(&json!(images))?;
     let director_hash = ctx.plan_hash(&plan)?;
-    ctx.budget(source, run)?;
     let file = run.join("shooting-script.json");
     if file.is_file() {
         let final_plan = ctx.load_plan(&file, &request, profiles)?;
         boards::accepted(ctx, &final_plan, boards, run)?;
         return Ok(final_plan);
     }
+    ctx.budget(source, run)?;
     let cache = run.join("motion-directions.json");
     let saved = if cache.is_file() {
         read(&cache)?
@@ -167,13 +170,33 @@ pub fn finalize(
     let mut directed = json!({});
     let mut pending = Vec::new();
     for n in 1..=rows(&plan["shots"])?.len() {
-        let hash=ctx.digest(&json!({"policy":settings["policy"],"review_policy_sha256":review_policy,"plan":plan,"images":&images[..(n+1).min(images.len())],"references":boards.get("references").unwrap_or(&json!([]))}))?;
-        if cached[n.to_string()].is_object() && cached[n.to_string()]["input_sha256"] == hash {
+        let references = boards
+            .get("references")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        let hash = ctx.digest(&incremental::motion_input(
+            &plan,
+            &images,
+            n,
+            &references,
+            &review_policy,
+        )?)?;
+        if cached[n.to_string()].is_object()
+            && cached[n.to_string()]["input_sha256"] == hash
+            && incremental::valid_motion_row(&plan, n, &cached[n.to_string()]["row"])
+        {
             directed[n.to_string()] = cached[n.to_string()]["row"].clone();
+        } else if let Some(row) =
+            incremental::parent_motion(ctx, &plan, &images, n, &references, &review_policy, run)?
+        {
+            directed[n.to_string()] = row;
         } else {
             pending.push(n);
         }
         hashes.insert(n, hash);
+    }
+    if directed.as_object().is_some_and(|rows| !rows.is_empty()) {
+        checkpoint(ctx, &plan, boards, run, &settings, &hashes, &directed)?;
     }
     let direction = fs::read_to_string(
         ctx.root
@@ -188,18 +211,42 @@ pub fn finalize(
             .ok_or("Unknown cast portrait.")?;
         references.push(json!({"id":format!("portrait:{}",text(cast,"role")?),"file":format!("characters/{}/{}",text(p,"id")?,text(&p["image"],"file")?),"sha256":p["image"]["sha256"]}));
     }
-    let mut ids = BTreeSet::new();
     for r in boards["references"].as_array().into_iter().flatten() {
         let mut asset = r["image"].clone();
         asset["id"] = r["id"].clone();
         references.push(asset);
-        ids.insert(text(r, "id")?.to_owned());
     }
     let batch = settings["batch_size"]
         .as_u64()
         .filter(|n| *n > 0)
         .ok_or("Invalid continuity batch size.")? as usize;
     for numbers in pending.chunks(batch) {
+        let mut ids = BTreeSet::new();
+        if boards["reference_scope"] == "shot-dependencies-v1" {
+            for n in numbers {
+                ids.extend(crate::storyboard::review_reference_ids(
+                    &plan,
+                    &plan["shots"][n - 1],
+                )?);
+            }
+        } else {
+            ids.extend(
+                boards["references"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r["id"].as_str().map(str::to_owned)),
+            );
+        }
+        let references = references
+            .iter()
+            .filter(|r| {
+                r["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("portrait:") || ids.contains(id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let context = numbers
             .iter()
             .flat_map(|n| [n.saturating_sub(1), *n, n + 1])

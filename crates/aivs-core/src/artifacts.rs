@@ -76,8 +76,115 @@ pub fn fingerprint(value: &Value) -> Result<String> {
 }
 
 pub fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_slice(&fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    let value =
+        serde_json::from_slice(&fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    expand_objects(value, path, 0)
+}
+
+fn expand_objects(value: Value, origin: &Path, depth: usize) -> Result<Value> {
+    if depth > 48 {
+        return Err("Creative artifact references are too deeply nested.".into());
+    }
+    match value {
+        Value::Object(mut fields) => {
+            if fields.len() == 2
+                && fields.contains_key("$aivs_base")
+                && fields.contains_key("$aivs_fields")
+            {
+                let mut base =
+                    expand_objects(fields.remove("$aivs_base").unwrap(), origin, depth + 1)?;
+                let overrides =
+                    expand_objects(fields.remove("$aivs_fields").unwrap(), origin, depth + 1)?;
+                base.as_object_mut()
+                    .ok_or("Artifact base must be an object.")?
+                    .extend(
+                        overrides
+                            .as_object()
+                            .ok_or("Artifact fields must be an object.")?
+                            .clone(),
+                    );
+                return Ok(base);
+            }
+            if fields.len() == 1 && fields.contains_key("$aivs_object") {
+                let digest = fields["$aivs_object"]
+                    .as_str()
+                    .filter(|s| {
+                        s.len() == 64
+                            && s.bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+                    .ok_or("Invalid creative object digest.")?;
+                let project =
+                    crate::project::for_run(origin.parent().ok_or("Missing artifact parent.")?)
+                        .ok_or("Creative object is outside its project.")?;
+                let file = project
+                    .join("preproduction/objects")
+                    .join(format!("{digest}.json"));
+                let file = file.canonicalize().map_err(|e| e.to_string())?;
+                if !file.starts_with(project.join("preproduction/objects")) {
+                    return Err("Creative object escapes its project.".into());
+                }
+                let bytes = fs::read(&file).map_err(|e| e.to_string())?;
+                if hash(&bytes) != digest {
+                    return Err(format!("Creative object changed: {digest}"));
+                }
+                let object = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                return expand_objects(object, origin, depth + 1);
+            }
+            for value in fields.values_mut() {
+                *value = expand_objects(value.take(), origin, depth + 1)?;
+            }
+            Ok(Value::Object(fields))
+        }
+        Value::Array(values) => values
+            .into_iter()
+            .map(|v| expand_objects(v, origin, depth + 1))
+            .collect::<Result<Vec<_>>>()
+            .map(Value::Array),
+        value => Ok(value),
+    }
+}
+
+/// Store meaningful JSON objects once; revision files become small manifests.
+/// Arrays retain order, while their object entries (shots, references, world
+/// definitions, and observations) are independently reusable across revisions.
+pub fn store_object(project: &Path, value: &Value) -> Result<Value> {
+    fn pack(project: &Path, value: &Value) -> Result<Value> {
+        match value {
+            Value::Object(fields) => {
+                let packed = fields
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), pack(project, v)?)))
+                    .collect::<Result<serde_json::Map<String, Value>>>()?;
+                let bytes = serde_json::to_vec(&packed).map_err(|e| e.to_string())?;
+                // Keep tiny attribute records inline instead of creating a
+                // separate filesystem object for every key/value pair.
+                if bytes.len() < 512 {
+                    return Ok(Value::Object(packed));
+                }
+                let digest = hash(&bytes);
+                let file = project
+                    .join("preproduction/objects")
+                    .join(format!("{digest}.json"));
+                if file.exists() {
+                    if file_hash(&file)? != digest {
+                        return Err("Stored creative object changed.".into());
+                    }
+                } else {
+                    exclusive_bytes(&file, &bytes)?;
+                }
+                Ok(serde_json::json!({"$aivs_object":digest}))
+            }
+            Value::Array(values) => values
+                .iter()
+                .map(|v| pack(project, v))
+                .collect::<Result<Vec<_>>>()
+                .map(Value::Array),
+            value => Ok(value.clone()),
+        }
+    }
+    pack(project, value)
 }
 
 pub fn atomic_json(path: &Path, value: &Value) -> Result<()> {

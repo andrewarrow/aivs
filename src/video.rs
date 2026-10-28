@@ -267,9 +267,13 @@ impl Worker {
             ("screenplay-request.json", "planning_budget_seconds"),
             ("planning-budget.json", "limit_seconds"),
         ] {
-            if let Some(saved) = std::fs::read(directory.join(filename))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            let file = if filename == "planning-budget.json" {
+                aivs_core::project::creative_file(directory, filename).ok()
+            } else {
+                Some(directory.join(filename))
+            };
+            if let Some(saved) = file
+                .and_then(|file| aivs_core::artifacts::read_json(&file).ok())
                 .and_then(|value| value[key].as_u64())
             {
                 planning_budget = planning_budget.max(saved);

@@ -3,6 +3,11 @@ use super::*;
 use crate::{media, storyboard};
 pub(super) fn dispatch(ctx: &mut Context<'_>, operation: &str, args: &Value) -> Result<Value> {
     match operation {
+        "production_read_json" => artifacts::read_json(&path(args, "path")?),
+        "production_read_creative" => artifacts::read_json(&crate::project::creative_file(
+            &path(args, "run_dir")?,
+            text(args, "name")?,
+        )?),
         "production_write_json" => {
             save(&path(args, "path")?, &args["value"])?;
             Ok(Value::Null)

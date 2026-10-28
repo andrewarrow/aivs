@@ -112,9 +112,13 @@ fn preflight(
         },
     )
 }
-fn pending(plan: &Value) -> Result<Value> {
+fn pending(plan: &Value, compact: bool) -> Result<Value> {
     let mut shots = rows(&plan["shots"])?.clone();
-    for shot in &mut shots {
+    for (index, shot) in shots.iter_mut().enumerate() {
+        if compact {
+            *shot = json!({"shot":index+1,"stable_id":shot["stable_id"],"seconds":shot["seconds"],
+                "report":format!("shots/{:03}/render.json",index+1)});
+        }
         shot["status"] = json!("pending");
     }
     Ok(json!(shots))
@@ -126,13 +130,22 @@ fn finish(
     result: Result<Value>,
 ) -> Result<Value> {
     match result {
-        Ok(runtime) => {
+        Ok(mut runtime) => {
             let latest = read(&run.join("render.json"))?;
             report["shots"] = latest["shots"].clone();
             report["status"] = runtime
                 .get("status")
                 .cloned()
                 .unwrap_or(json!("rendered-needs-review"));
+            if crate::project::creative_root(run)? != run {
+                // Per-shot receipts and scene-review/review.json own the full
+                // evidence; the run keeps only execution summaries and paths.
+                remove(&mut runtime, &["shots"]);
+                if runtime["scene_review"].is_object() {
+                    let review = &runtime["scene_review"];
+                    runtime["scene_review"] = json!({"file":"scene-review/review.json","status":review["status"],"summary":review["summary"]});
+                }
+            }
             report["runtime"] = runtime;
             report["sha256"] = json!(artifacts::file_hash(&run.join("video.mp4"))?);
             remove(&mut report, &["error"]);
@@ -221,7 +234,10 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let seed = seed(&args["seed"])?;
     let _lock = lock(&ctx.root, ".render.lock")?;
     let run = new_run(ctx, seed)?;
-    fs::write(run.join("screenplay.txt"), text(&request, "script")?).map_err(|e| e.to_string())?;
+    if ctx.project_root().is_none() {
+        fs::write(run.join("screenplay.txt"), text(&request, "script")?)
+            .map_err(|e| e.to_string())?;
+    }
     save(&run.join("screenplay-request.json"), &request)?;
     let spec = if request.get("render_format").is_some() {
         render_formats::for_profile(&request["render_format"], &profile)?
@@ -231,6 +247,9 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     let mut report = json!({"status":"planning","original_script":request["script"],"cast":request["cast"],"seed":seed,"fps":24,"width":spec["width"].as_u64().unwrap_or(1280),"height":spec["height"].as_u64().unwrap_or(704),"audio":if voice=="native"{"native-generated"}else{"native-with-saved-voice-conversion"},"voice_mode":voice,"characters":profiles,"shooting_script":"shooting-script.json","character_conditioning":character_conditioning::POLICY,"render_profile":profile,"render_config":config,"storyboard_policy":STORYBOARD_POLICY,"storyboards":"storyboards.json","planning_budget_seconds":allowance});
     report["libraries"] = json!({"characters":root,
         "sets":crate::sets::library_root(&ctx.root).canonicalize().map_err(|e| e.to_string())?});
+    if ctx.project_root().is_some() {
+        remove(&mut report, &["original_script"]);
+    }
     if !spec.is_null() {
         for (from, to) in [
             ("name", "render_format"),
@@ -264,10 +283,15 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         let prepared = preparation::prepare(ctx, &request, &profiles, &run, seed)?;
         let plan = &prepared["plan"];
         let boards = &prepared["boards"];
+        if let Ok(binding) = read(&run.join("preproduction.json")) {
+            if binding["kind"] == "aivs-revision-binding" {
+                report["creative_revision"] = binding["revision"].clone();
+            }
+        }
         report["seconds"] = plan["seconds"].clone();
         report["planning_seconds"] =
             json!((started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0);
-        report["shots"] = pending(plan)?;
+        report["shots"] = pending(plan, crate::project::creative_root(&run)? != run)?;
         if plan_only || storyboards_only {
             report["status"] = json!(if plan_only {
                 "planned"
@@ -275,12 +299,13 @@ fn generated(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
                 "storyboards-ready"
             });
             save(&run.join("render.json"), &report)?;
-            let plan_file = run.join(if boards.is_null() {
+            let creative = crate::project::creative_root(&run)?;
+            let plan_file = creative.join(if boards.is_null() {
                 "storyboard-plan.json"
             } else {
                 "shooting-script.json"
             });
-            ctx.event(json!({"type":if plan_only{"planned"}else{"storyboards_ready"},"output":if plan_only{plan_file.clone()}else{run.join("storyboards.json")},"shooting_script":plan_file}))?;
+            ctx.event(json!({"type":if plan_only{"planned"}else{"storyboards_ready"},"output":if plan_only{plan_file.clone()}else{crate::project::creative_file(&run, "storyboards.json")?},"shooting_script":plan_file}))?;
             return Ok(Value::Null);
         }
         report["status"] = json!("rendering");
@@ -359,8 +384,11 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         motion = read(&run.join("motion/keyframes.json"))?;
         motion::accepted(
             ctx,
-            &read(&run.join("shooting-script.json"))?,
-            &read(&run.join("storyboards.json"))?,
+            &read(&crate::project::creative_file(
+                &run,
+                "shooting-script.json",
+            )?)?,
+            &read(&crate::project::creative_file(&run, "storyboards.json")?)?,
             &motion,
             &run,
         )?;
@@ -399,11 +427,15 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         };
     if stop && has_footage {
         preparation::prepare(ctx, &request, &profiles, &run, seed)?;
-        ctx.event(json!({"type":"storyboards_ready","output":run.join("storyboards.json"),"shooting_script":run.join("shooting-script.json")}))?;
+        ctx.event(json!({"type":"storyboards_ready","output":crate::project::creative_file(&run, "storyboards.json")?,"shooting_script":crate::project::creative_file(&run, "shooting-script.json")?}))?;
         return Ok(report);
     }
-    let old = if !uses && run.join("shooting-script.json").is_file() {
-        Some(ctx.load_plan(&run.join("shooting-script.json"), &request, &profiles)?)
+    let old = if !uses && crate::project::creative_file(&run, "shooting-script.json")?.is_file() {
+        Some(ctx.load_plan(
+            &crate::project::creative_file(&run, "shooting-script.json")?,
+            &request,
+            &profiles,
+        )?)
     } else {
         None
     };
@@ -442,7 +474,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         };
         remove(&mut report, &["sha256", "runtime"]);
         report["seconds"] = plan["seconds"].clone();
-        report["shots"] = pending(&plan)?;
+        report["shots"] = pending(&plan, crate::project::creative_root(&run)? != run)?;
         report["status"] = json!(if stop {
             "storyboards-ready"
         } else {
@@ -450,7 +482,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         });
         save(&run.join("render.json"), &report)?;
         if stop {
-            ctx.event(json!({"type":"storyboards_ready","output":run.join("storyboards.json"),"shooting_script":run.join("shooting-script.json")}))?;
+            ctx.event(json!({"type":"storyboards_ready","output":crate::project::creative_file(&run, "storyboards.json")?,"shooting_script":crate::project::creative_file(&run, "shooting-script.json")?}))?;
             return Ok(Value::Null);
         }
         ctx.event(json!({"type":"progress","label":format!("Resuming {} shots; reusing saved takes",rows(&plan["shots"] )?.len())}))?;

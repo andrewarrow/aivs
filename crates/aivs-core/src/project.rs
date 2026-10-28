@@ -18,17 +18,55 @@ pub fn validate(root: &Path) -> Result<PathBuf> {
 
 pub fn for_run(run: &Path) -> Option<PathBuf> {
     let run = run.canonicalize().ok()?;
-    let runs = run
-        .parent()
-        .filter(|path| path.file_name().is_some_and(|name| name == "runs"))?;
-    let root = runs.parent()?;
-    root.join("project.json").is_file().then(|| root.to_owned())
+    run.ancestors()
+        .find(|root| root.join("project.json").is_file())
+        .map(Path::to_owned)
+}
+
+/// A run pins one creative revision. Legacy runs keep their local files.
+pub fn creative_root(run: &Path) -> Result<PathBuf> {
+    let receipt = run.join("preproduction.json");
+    if receipt.is_file() {
+        let receipt = artifacts::read_json(&receipt)?;
+        if receipt["kind"] == "aivs-revision-binding" {
+            let project = for_run(run).ok_or("Missing project for creative revision.")?;
+            let relative = Path::new(
+                receipt["directory"]
+                    .as_str()
+                    .ok_or("Missing revision directory.")?,
+            );
+            if !relative.starts_with("preproduction/revisions")
+                || !relative
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_)))
+            {
+                return Err("Creative revisions must stay inside project preproduction/.".into());
+            }
+            let directory = project
+                .join(relative)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if !directory.starts_with(project.join("preproduction/revisions")) {
+                return Err("Creative revision escapes the project.".into());
+            }
+            return Ok(directory);
+        }
+    }
+    Ok(run.to_owned())
+}
+
+pub fn creative_file(run: &Path, name: &str) -> Result<PathBuf> {
+    Ok(creative_root(run)?.join(name))
 }
 
 /// New runs record shared library locations instead of copying their assets.
 /// Runs created before this metadata existed retain their local asset paths.
 pub fn library_root(run: &Path, library: &str) -> Result<PathBuf> {
-    let report = run.join("render.json");
+    let report = if run.join("render.json").is_file() {
+        run.join("render.json")
+    } else {
+        run.join("input.json")
+    };
     if report.is_file() {
         let report = artifacts::read_json(&report)?;
         if let Some(root) = report["libraries"].get(library) {
@@ -53,6 +91,9 @@ pub fn image_root(asset: &Value, run: &Path) -> Result<PathBuf> {
                     return library_root(run, library);
                 }
             }
+            if file.starts_with("storyboards") && !run.join(file).is_file() {
+                return creative_root(run);
+            }
             Ok(run.to_owned())
         }
         Some("run") => Ok(run.to_owned()),
@@ -62,12 +103,14 @@ pub fn image_root(asset: &Value, run: &Path) -> Result<PathBuf> {
                     .as_str()
                     .ok_or("Missing project reference path.")?,
             );
-            if !file.starts_with("references")
+            if !(file.starts_with("references") || file.starts_with("preproduction"))
                 || !file
                     .components()
                     .all(|part| matches!(part, Component::Normal(_)))
             {
-                return Err("Project image paths must remain inside references/.".into());
+                return Err(
+                    "Project image paths must remain inside references/ or preproduction/.".into(),
+                );
             }
             // A standalone exported run may carry its own references/ directory.
             Ok(for_run(run).unwrap_or_else(|| run.to_owned()))

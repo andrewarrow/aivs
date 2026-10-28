@@ -45,8 +45,23 @@ fn shot_update(
     )?;
     if ctx.options["update_run_report"] == true {
         let mut saved = read(&run.join("render.json"))?;
-        let mut row = plan["shots"][index].clone();
-        merge(&mut row, report)?;
+        let shared = crate::project::creative_root(run)? != run;
+        let mut row = if shared {
+            json!({"shot":index+1,"stable_id":plan["shots"][index]["stable_id"],
+                "report":format!("shots/{:03}/render.json",index+1),
+                "video":format!("shots/{:03}/video.mp4",index+1)})
+        } else {
+            plan["shots"][index].clone()
+        };
+        if shared {
+            for key in ["status", "seed", "take", "seconds", "sha256"] {
+                if let Some(value) = report.get(key) {
+                    row[key] = value.clone();
+                }
+            }
+        } else {
+            merge(&mut row, report)?;
+        }
         saved["shots"][index] = row;
         save(&run.join("render.json"), &saved)?;
     }
@@ -105,7 +120,9 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     } else {
         (
             spec["model_width"].as_u64().ok_or("Invalid model width.")?,
-            spec["model_height"].as_u64().ok_or("Invalid model height.")?,
+            spec["model_height"]
+                .as_u64()
+                .ok_or("Invalid model height.")?,
         )
     };
     let bindings = if boards.is_null() {

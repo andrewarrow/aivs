@@ -34,7 +34,7 @@ fn cancellation() -> Arc<AtomicBool> {
     flag
 }
 fn usage() -> &'static str {
-    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize> [options]\n\nProject: --project-dir PATH (stores new runs and reusable references in an existing project)\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
+    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize> [options]\n\nProject: --project-dir PATH (stores new runs and reusable references in an existing project)\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH --parent-revision ID\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
 }
 fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     let mut args = arguments.into_iter();
@@ -64,6 +64,7 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
         "cast",
         "voice-mode",
         "shooting-script",
+        "parent-revision",
         "render-format",
     ]);
     let mut flags = BTreeMap::<String, Vec<String>>::new();
@@ -116,6 +117,14 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     }
     if let Some(file) = get("shooting-script") {
         payload["shooting_script_path"] = json!(expand(&file)?);
+    }
+    if let Some(id) = get("parent-revision") {
+        if command != "render" || !has("project-dir") || has("fresh-preproduction") {
+            return Err(
+                "--parent-revision requires a project render without --fresh-preproduction.".into(),
+            );
+        }
+        payload["parent_revision"] = json!(id);
     }
     payload["fresh"] = json!(has("fresh-preproduction"));
     payload["character"] = json!(flags.get("character").cloned().unwrap_or_default());

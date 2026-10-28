@@ -8,8 +8,7 @@ def _save(path, value):
 
 
 def _read(path):
-    import json
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return call("read_json", path=Path(path))
 
 
 def cache_key(request, profiles):
