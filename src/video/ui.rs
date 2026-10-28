@@ -39,10 +39,16 @@ impl VideoWorkspace {
         }
         let ctx = ui.ctx().clone();
         let width = (ctx.content_rect().width() - 64.0).clamp(240.0, 480.0);
+        let max_height = (ctx.content_rect().height() - 64.0).clamp(120.0, 560.0);
         egui::Modal::new(egui::Id::new("video_setup")).show(&ctx, |ui| {
             ui.set_width(width);
+            // Areas remember their previous size. Give the body room to grow
+            // when a short progress message becomes a long setup error.
+            ui.set_max_height(max_height);
             egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 80.0).max(180.0))
+                .id_salt("video_setup_body")
+                .auto_shrink([false, true])
+                .max_height((max_height - 60.0).max(1.0))
                 .show(ui, |ui| {
                     ui.heading("Set up AIVS");
                     ui.add_space(8.0);
@@ -51,9 +57,6 @@ impl VideoWorkspace {
                         ui.hyperlink_to("Get a Hugging Face access token", "https://huggingface.co/settings/tokens");
                         ui.label(egui::RichText::new("HF_API=your_token").monospace());
                         ui.add(egui::Label::new(format!("File: {}", self.root.join(".env").display())).wrap());
-                        if ui.add(egui::Button::new("Check again").min_size(egui::vec2(100.0, 44.0))).clicked() {
-                            self.start(Task::Setup);
-                        }
                     } else {
                         ui.label("Python, the Apple GPU renderer, and the model cache must be ready before you can continue.");
                         ui.add_space(8.0);
@@ -70,13 +73,20 @@ impl VideoWorkspace {
                         }
                         self.error_ui(ui);
                         self.activity_ui(ui, 120.0);
-                        if self.setup == Setup::Failed
-                            && ui.add(egui::Button::new("Retry setup").min_size(egui::vec2(100.0, 44.0))).clicked()
-                        {
-                            self.start(Task::Setup);
-                        }
                     }
                 });
+            // Recovery stays outside the scrollable diagnostics.
+            let retry_label = match self.setup {
+                Setup::NeedsToken => Some("Check again"),
+                Setup::Failed => Some("Retry setup"),
+                _ => None,
+            };
+            if let Some(label) = retry_label {
+                ui.add_space(8.0);
+                if ui.add(egui::Button::new(label).min_size(egui::vec2(100.0, 44.0))).clicked() {
+                    self.start(Task::Setup);
+                }
+            }
             // Escape and backdrop clicks deliberately do not unlock setup.
         });
     }
