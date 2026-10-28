@@ -43,7 +43,10 @@ fn cached(directory: &Path, key: &Value) -> Option<Value> {
     artifacts::read_json(&directory.join("review.json"))
         .ok()
         .filter(|value| {
-            value.is_object() && value["cache_key"] == *key && value["status"] != "unavailable"
+            value.is_object()
+                && value["cache_key"] == *key
+                && value["status"] != "unavailable"
+                && value["synthesis_status"] != "unavailable"
         })
 }
 
@@ -71,17 +74,32 @@ fn call(
     validate: impl Fn(Value) -> Result<Value>,
 ) -> Result<Value> {
     let started = Instant::now();
+    // Scene synthesis may stall without returning any text. Allow one fresh
+    // request, sharing the same two-attempt limit as response-format repairs.
+    let allowance = if name == "scene" { 240.0 } else { 120.0 };
     let mut correction = String::new();
     for attempt in 1..=2 {
+        let remaining = allowance - started.elapsed().as_secs_f64();
+        if remaining <= 0.0 {
+            return Err("Visual review time allowance expired.".into());
+        }
         let raw = planning::review_attempt(
             &json!({"directory": args["directory"], "name": name,
             "instruction": format!("{prompt}{correction}"), "schema": schema(name)?,
             "executable": args["executable"], "image_paths": images,
-            "timeout_seconds": (120.0 - started.elapsed().as_secs_f64()).max(0.0)}),
+            "timeout_seconds": remaining.min(120.0)}),
             cancelled.clone(),
             &mut *emit,
-        )
-        .map_err(|failure| failure.message)?;
+        );
+        let raw = match raw {
+            Ok(value) => value,
+            Err(failure) if name == "scene" && attempt == 1 && failure.kind == "timeout" => {
+                emit(json!({"type": "activity", "message":
+                    "Scene fidelity review timed out; retrying once using the saved shot observations."}))?;
+                continue;
+            }
+            Err(failure) => return Err(failure.message),
+        };
         let raw = raw.as_str().ok_or("Codex review returned no text.")?;
         let result = if raw.chars().count() > 64_000 {
             Err("Visual response exceeds the bounded report size.".into())
@@ -196,6 +214,7 @@ pub(super) fn scene(
 ) -> Result<Value> {
     let directory = directory(args)?;
     let mut report = json!({"policy_version": POLICY, "status": "unavailable",
+        "synthesis_status": "unavailable",
         "method": "source-and-sampled-shot-evidence", "summary": "Scene observations unavailable.",
         "story_findings": [], "unobserved_shots": [], "cache_key": args["cache_key"]});
     let result: Result<Value> = (|| {
@@ -261,13 +280,21 @@ pub(super) fn scene(
             |value| validate_scene(&value, plan, &args["shot_reviews"]),
         )?;
         merge(&mut report, result)?;
+        report["synthesis_status"] = json!("complete");
         Ok(report.clone())
     })();
     let result = match result {
         Ok(value) => value,
         Err(error) => {
-            report["status"] = json!("unavailable");
-            report["summary"] = json!(format!("Scene observation unavailable: {error}"));
+            // validate_scene already incorporates known shot defects. A failed
+            // synthesis cannot erase those observations or certify a pass.
+            report["summary"] = json!(if report["status"] == "issues_detected" {
+                format!(
+                    "Scene synthesis unavailable: {error}. Recorded shot issues remain in the shot reviews."
+                )
+            } else {
+                format!("Scene observation unavailable: {error}")
+            });
             report
         }
     };

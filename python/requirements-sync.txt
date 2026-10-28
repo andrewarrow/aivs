@@ -7,3 +7,5 @@ scipy==1.17.1
 opencv-python-headless==4.12.0.88
 python-speech-features==0.6
 faster-whisper==1.2.1
+# faster-whisper 1.2.1 passes metadata_errors to av.open; PyAV 19 removed it.
+av==18.1.0

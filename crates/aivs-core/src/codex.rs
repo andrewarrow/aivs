@@ -424,6 +424,7 @@ fn drive_production(
             .map_err(|_| "Codex App Server input stopped.".to_owned())
     };
     send(json!({"id": 1, "method": "initialize", "params": initialize_params()}))?;
+    let mut heartbeat = Instant::now();
     loop {
         if cancelled.load(Ordering::Relaxed) {
             return Err(Failure {
@@ -437,6 +438,12 @@ fn drive_production(
                 message: "Codex request timed out.".into(),
                 kind: "timeout",
             });
+        }
+        if heartbeat.elapsed() >= Duration::from_secs(20) {
+            emit(json!({"type": "activity", "message": format!(
+                "Waiting for Codex response ({}s remaining)", (deadline - now).as_secs()
+            )}))?;
+            heartbeat = now;
         }
         let message = match output.recv_timeout(Duration::from_millis(20).min(deadline - now)) {
             Ok(AppServerOutput::Message(message)) => message,
@@ -467,6 +474,7 @@ fn drive_production(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
         };
+        heartbeat = Instant::now();
         if let Some(response) = unsupported_request(&message) {
             send(response)?;
             continue;
