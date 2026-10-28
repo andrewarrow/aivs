@@ -21,6 +21,8 @@ pub fn sources() -> Value {
     "crates/aivs-core/src/production/preparation.rs": include_str!("production/preparation.rs"),
     "crates/aivs-core/src/production/rendering.rs": include_str!("production/rendering.rs"),
     "crates/aivs-core/src/production/review.rs": include_str!("production/review.rs"),
+    "crates/aivs-core/src/production/sync.rs": include_str!("production/sync.rs"),
+    "crates/aivs-core/src/production/dialogue_audio.rs": include_str!("production/dialogue_audio.rs"),
     "crates/aivs-core/src/production/run.rs": include_str!("production/run.rs"),
 
         "crates/aivs-core/src/lib.rs": include_str!("lib.rs"),

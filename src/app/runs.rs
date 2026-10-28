@@ -17,6 +17,7 @@ pub(super) struct RunsPanel {
     selected: Option<String>,
     storyboards: Vec<ImagePreview>,
     storyboards_failed: bool,
+    sync_notes: Vec<String>,
 }
 
 impl RunsPanel {
@@ -27,6 +28,7 @@ impl RunsPanel {
             self.selected = None;
             self.storyboards.clear();
             self.storyboards_failed = false;
+            self.sync_notes.clear();
             self.refreshed_at = None;
         }
         if self
@@ -59,6 +61,7 @@ impl RunsPanel {
                 self.selected = None;
                 self.storyboards.clear();
                 self.storyboards_failed = false;
+                self.sync_notes.clear();
             }
             self.refresh_storyboards();
             self.refreshed_at = Some(Instant::now());
@@ -108,6 +111,13 @@ impl RunsPanel {
                         self.refresh_storyboards();
                     }
                     if self.selected.is_some() {
+                        if !self.sync_notes.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Speech sync").strong());
+                            for note in &self.sync_notes {
+                                ui.label(note);
+                            }
+                        }
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new("Storyboards").strong());
                         if self.storyboards_failed {
@@ -129,6 +139,7 @@ impl RunsPanel {
         };
         let run = self.project_root.join("runs").join(name);
         self.storyboards_failed = read_run_storyboards(&run, &mut self.storyboards).is_err();
+        self.sync_notes = read_sync_notes(&run);
     }
 }
 
@@ -157,6 +168,66 @@ fn run_detail(run: &Path) -> Option<String> {
         ));
     }
     Some(detail)
+}
+
+fn read_sync_notes(run: &Path) -> Vec<String> {
+    let Ok(report) = aivs_core::artifacts::read_json(&run.join("render.json")) else {
+        return Vec::new();
+    };
+    let Some(shots) = report["shots"].as_array() else {
+        return Vec::new();
+    };
+    let mut notes = Vec::new();
+    for (index, shot) in shots.iter().enumerate() {
+        let receipt = &shot["sync_review"];
+        if receipt.is_null() || receipt["status"] == "not_applicable" {
+            continue;
+        }
+        if let Some(summary) = receipt["summary"].as_str() {
+            notes.push(format!("Shot {}: {summary}", index + 1));
+        }
+        let file = run
+            .join("shots")
+            .join(format!("{:03}/sync-review/review.json", index + 1));
+        let Ok(review) = aivs_core::artifacts::read_json(&file) else {
+            continue;
+        };
+        if review["delivery_sha256"] != receipt["delivery_sha256"] {
+            continue;
+        }
+        for turn in review["turns"].as_array().into_iter().flatten() {
+            if turn["status"] == "passed" {
+                continue;
+            }
+            let speaker = turn["speaker"].as_str().unwrap_or("Speaker");
+            let offset = review["shot_start_seconds"].as_f64().unwrap_or(0.0);
+            let timing = match (turn["start_seconds"].as_f64(), turn["end_seconds"].as_f64()) {
+                (Some(start), Some(end)) => format!(", {:.1}–{:.1}s", offset + start, offset + end),
+                _ => String::new(),
+            };
+            let worst = turn["windows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|window| window["status"] == "issues_detected")
+                .filter_map(|window| window["audio_lag_ms"].as_i64())
+                .max_by_key(|lag| lag.abs());
+            let detail = if let Some(lag) = worst {
+                format!(
+                    "estimated mouth {} of {} ms",
+                    if lag > 0 { "lead" } else { "lag" },
+                    lag.abs()
+                )
+            } else {
+                turn["reason"]
+                    .as_str()
+                    .unwrap_or("Lip sync could not be assessed.")
+                    .to_owned()
+            };
+            notes.push(format!("{speaker}{timing}: {detail}"));
+        }
+    }
+    notes
 }
 
 fn read_run_storyboards(run: &Path, storyboards: &mut Vec<ImagePreview>) -> Result<(), String> {

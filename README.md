@@ -476,6 +476,7 @@ For a CLI workspace whose video environment already exists:
 ```sh
 .venv/bin/python python/storyboard_backend.py check
 .venv/bin/python experiments/character-consistency/setup_voice_conversion.py
+.venv/bin/python python/setup_sync.py
 .venv/bin/python python/video.py download --profile hq
 ```
 
@@ -525,6 +526,16 @@ in a separate environment from MLX. Restart AIVS after updating an existing
 installation to complete this setup, then use **File → Resume…** for a failed run.
 Setup reuses verified model files and preserves local changes in the converter's
 source checkout.
+
+Desktop setup also prepares speech timing, face detection and audiovisual sync
+models in `.cache/sync-review/`, with a separate CPU environment. For an existing
+CLI workspace, run `.venv/bin/python python/setup_sync.py`. Runtime review is
+offline; downloads happen only during setup. Asset URLs, revisions and checksums
+are recorded in [sync-assets.json](python/sync-assets.json). The reviewer uses
+[SyncNet](https://github.com/joonson/syncnet_python),
+[YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet),
+and [faster-whisper](https://github.com/SYSTRAN/faster-whisper); setup retains
+upstream license notices beside the models.
 
 For CLI setup, run this from the checkout (add
 `--workspace /path/to/workspace` for a different workspace):
@@ -719,6 +730,7 @@ reviews remain in the run. Legacy and standalone runs retain the local layout.
 | Historical `shooting-script-draft-*`, `shooting-script-review*`, `shooting-script-progress.json` | Preserved artifacts from the removed five-pass planner. |
 | `shots/001/`, `shots/002/`, … | Individual takes and their reports, including automatic `visual_review` findings for new plans. |
 | `shots/<shot>/visual-review/review.json` | Timestamped visual evidence, observed state, and quality findings. |
+| `shots/<shot>/sync-review/review.json` | Per-speaker, per-turn timing measurements against the delivered video and audio, with confidence and unassessed intervals. |
 | Legacy `shots/<shot>/adaptation/` | Revisions of upcoming directions for older continuation-based plans. |
 | `scene-review/review.json` | Synthesis of sampled shot observations against the source's continuity, story, and tone; not full-speed playback. |
 | `takes/<shot>/<take>/` | Archived takes, seeds, and diagnostics from replacements. |
@@ -749,6 +761,36 @@ matching completed preproduction.
 With `--project-dir`, edited scenes automatically derive from their latest
 completed revision. Use `--parent-revision REVISION_ID` to choose another base
 explicitly. The ID is recorded in a project's run binding and revision manifest.
+
+Every screenplay render also checks speech sync on the assembled delivery,
+after voice conversion and fades. This check is independent of sampled visual
+review and runs for both preview and HQ. It locates scripted English lines in
+the audio, tracks visible faces at the SyncNet model's required 25fps, and
+measures local audio lead/lag within each speaking turn. The initial policy
+uses a 120ms tolerance, a +/-800ms search, and confidence and active-face
+ambiguity gates. Short lines, hidden faces, ambiguous speakers, missing setup,
+timeouts and low confidence remain `unassessed`; they cannot count as passes.
+Detected sync defects produce `rendered-with-issues`, while inconclusive checks
+produce `rendered-needs-review` unless another review already found an issue.
+The Runs panel shows the affected speakers and times. No automatic rerender or
+soundtrack shift is performed. Prompt-only renders lack a speaker contract and
+remain unassessed. These automated checks do not certify voice identity or
+replace watching the result.
+
+For project renders, a sync-passing performance whose scripted words were all
+matched can be reused as fixed audio on later runs. One immutable PCM object
+lives in `preproduction/cache/dialogue/audio/`; small contract receipts reference
+it. The contract includes the shot's words, cues, actions, casting, voice assets,
+duration and direction, and excludes quality and seed. Changing the contract
+regenerates the affected shot's performance. Both the distilled and HQ paths
+condition video on this fixed audio through both generation stages, then mux
+the original PCM performance and validate waveform preservation. A fixed track
+is not voice-converted again. Its new footage receives a fresh sync check.
+New dialogue without a reusable performance still uses native joint generation
+and the same acceptance check. `--fresh-dialogue` on a new screenplay render
+requests a new performance while retaining reusable preproduction. Resume
+always keeps the audio choice recorded in the original take. Old runs are not
+modified or imported into the dialogue cache automatically.
 
 To inspect actual generated first frames and motion directions before video
 inference, use `--storyboards-only`. This completes both planning passes, image

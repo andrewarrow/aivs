@@ -19,6 +19,7 @@ const VOICE_SETUP: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/experiments/character-consistency/setup_voice_conversion.py"
 );
+const SYNC_SETUP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python/setup_sync.py");
 
 #[derive(Debug, PartialEq)]
 enum Setup {
@@ -196,6 +197,10 @@ impl Worker {
         self.progress("Preparing saved-character voices in the separate Seed-VC environment");
         let mut command = Command::new(self.root.join(".venv/bin/python"));
         command.args(["-u", VOICE_SETUP]);
+        self.run(command)?;
+        self.progress("Preparing local speech and lip-sync review models");
+        let mut command = Command::new(self.root.join(".venv/bin/python"));
+        command.args(["-u", SYNC_SETUP]);
         self.run(command)?;
         self.progress("Downloading the distilled and HQ video models");
         let output = self.run(self.production("download"))?;

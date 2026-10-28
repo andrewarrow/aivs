@@ -183,13 +183,16 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
             from ltx_pipelines_mlx.distilled import DistilledPipeline
             if profile == "hq":
                 from ltx_pipelines_mlx.ti2vid_two_stages_hq import TI2VidTwoStagesHQPipeline
+                if audio is not None:
+                    from audio_hq import AudioHQPipeline
             if audio is not None:
                 from ltx_pipelines_mlx.a2vid_distilled import A2VidDistilledPipeline
         with progress.phase("Checking cached model files", "cache"):
             snapshot = model_path(profile=profile)
         mx.reset_peak_memory()
         with progress.phase("Preparing disk-streamed pipeline", "pipeline"):
-            pipeline_type = (TI2VidTwoStagesHQPipeline if profile == "hq" else
+            pipeline_type = (AudioHQPipeline if profile == "hq" and audio is not None else
+                             TI2VidTwoStagesHQPipeline if profile == "hq" else
                              A2VidDistilledPipeline if audio is not None else DistilledPipeline)
             pipeline = pipeline_type(model_dir=str(snapshot), low_memory=True, low_ram_streaming=True)
         pipeline.generate_audio = audio is None
@@ -221,7 +224,8 @@ def _render_model(prompt, seed, frames, output, *, on_progress=None, image_file=
                 width=width, height=height, output=str(output.resolve()), keep_native=keep_native)
     return {
         **config,
-        "pipeline": "audio-driven-distilled-two-stage" if audio is not None else config["pipeline"],
+        "pipeline": ("audio-driven-hq-two-stage" if profile == "hq" else "audio-driven-distilled-two-stage")
+                    if audio is not None else config["pipeline"],
         "audio": "supplied" if audio is not None else "generated",
         "inference_frames": inference_frames, "output_frames": frames,
         "elapsed_seconds": round(time.monotonic() - started, 2),

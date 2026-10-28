@@ -170,11 +170,15 @@ pub fn match_saved_take(args: &Value) -> Result<Value> {
         && saved["adaptation"]["source_clip_sha256"] != report["observed_source_clip_sha256"])
         || saved["render_config"] != report["render_config"]
         || saved["motion_keyframes"] != report["motion_keyframes"]
+        || saved["dialogue_audio"] != report["dialogue_audio"]
     {
         return mismatch();
     }
     let voice = &report["character_assets"]["voice"];
-    if voice.get("file").is_some() && args["is_final_clip"] == true {
+    if voice.get("file").is_some()
+        && args["is_final_clip"] == true
+        && report["dialogue_audio"].is_null()
+    {
         let converted = &saved["voice_conversion"];
         if !converted.is_object()
             || !converted["inputs"].is_object()
@@ -263,15 +267,15 @@ pub fn match_saved_take(args: &Value) -> Result<Value> {
 pub fn render_status(reviews: &Value) -> Result<Value> {
     let reviews = reviews
         .as_array()
-        .ok_or("Render status needs visual reviews.")?;
+        .ok_or("Render status needs assessment reports.")?;
     let mut unavailable = false;
     let mut issues = false;
     for review in reviews {
         match review["status"].as_str() {
-            Some("passed") => {}
+            Some("passed" | "not_applicable") => {}
             Some("issues_detected") => issues = true,
-            Some("unavailable") => unavailable = true,
-            _ => return Err("Visual assessment returned no valid report.".into()),
+            Some("unavailable" | "unassessed") => unavailable = true,
+            _ => return Err("Assessment returned no valid report.".into()),
         }
     }
     Ok(json!(if issues {

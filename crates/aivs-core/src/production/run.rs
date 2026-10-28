@@ -412,6 +412,7 @@ fn resumed(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         && (motion.is_null() || !saved_motion.is_null())
         && report["status"] == "complete"
         && report["runtime"]["status"] == "complete"
+        && report["runtime"]["lip_sync_policy"] == sync::POLICY
         && output.is_file()
         && report["sha256"] == artifacts::file_hash(&output)?
     {
@@ -567,10 +568,19 @@ fn prompt(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     match runtime {
         Ok(runtime) => {
             report["runtime"] = runtime;
-            report["status"] = json!("complete");
+            report["status"] = json!("rendered-needs-review");
+            report["sync_review"] = json!({"policy":sync::POLICY,"status":"unassessed",
+                "summary":"Prompt-only renders have no scripted speaker contract; use screenplay rendering for speech sync assessment."});
             report["sha256"] = json!(artifacts::file_hash(&run.join("video.mp4"))?);
             save(&run.join("render.json"), &report)?;
-            ctx.event(json!({"type":"complete","output":run.join("video.mp4")}))?;
+            ctx.activity(
+                report["sync_review"]["summary"]
+                    .as_str()
+                    .unwrap_or_default(),
+            )?;
+            ctx.event(
+                json!({"type":"complete","output":run.join("video.mp4"),"status":report["status"]}),
+            )?;
             Ok(report)
         }
         Err(error) => {
@@ -616,6 +626,8 @@ pub fn setup(ctx: &mut Context<'_>, download: bool, profile: &str) -> Result<Val
     ctx.activity("Checking cached video, text encoder, and audio weights")?;
     ctx.worker("model_check", json!({"profile":profile}))?;
     boards::image_call(ctx, "imagegen_check_local", json!({}))?;
+    ctx.activity("Checking local speech and lip-sync review models")?;
+    ctx.worker("sync_check", json!({}))?;
     character_conditioning::dispatch(
         "conditioning_check_voice",
         &json!({"root":ctx.root}),

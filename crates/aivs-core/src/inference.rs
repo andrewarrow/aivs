@@ -60,6 +60,7 @@ pub fn run(
                 .ok_or("Missing Python model interpreter.")?,
         ),
         "mflux_check" | "mflux_generate" => root.join(".venv-storyboard/bin/python"),
+        "sync_check" | "sync_review" => root.join(".cache/sync-review/env/bin/python"),
         _ => return Err("Unknown Python inference operation.".into()),
     };
     if !python.is_file() {
@@ -176,9 +177,16 @@ pub fn run(
     let mut result = None;
     let mut failure = None;
     let mut heartbeat = Instant::now();
+    let started = Instant::now();
+    let timeout = args["timeout_seconds"]
+        .as_f64()
+        .filter(|n| n.is_finite() && *n > 0.0);
     loop {
         if cancelled.load(Ordering::Relaxed) {
             return Err("Python inference cancelled because its parent closed.".into());
+        }
+        if timeout.is_some_and(|limit| started.elapsed().as_secs_f64() >= limit) {
+            return Err("Python inference time allowance expired.".into());
         }
         match receive.recv_timeout(Duration::from_millis(25)) {
             Ok(Ok(message)) => {
@@ -208,6 +216,7 @@ pub fn run(
                 "model_download" => "Downloading video models; cached files are reused",
                 "model_check" => "Checking cached video model files",
                 "model_doctor" => "Checking Python packages and Apple GPU",
+                "sync_check" | "sync_review" => "Assessing speech and visible mouth timing locally",
                 operation if operation.starts_with("mflux_") => {
                     "Generating the storyboard image locally"
                 }
@@ -223,6 +232,9 @@ pub fn run(
     let status = loop {
         if cancelled.load(Ordering::Relaxed) {
             return Err("Python inference cancelled because its parent closed.".into());
+        }
+        if timeout.is_some_and(|limit| started.elapsed().as_secs_f64() >= limit) {
+            return Err("Python inference time allowance expired.".into());
         }
         if let Some(status) = child.0.try_wait().map_err(|e| e.to_string())? {
             break status;

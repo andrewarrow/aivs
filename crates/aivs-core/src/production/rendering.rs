@@ -59,6 +59,9 @@ fn shot_update(
                     row[key] = value.clone();
                 }
             }
+            if let Some(review) = report.get("sync_review") {
+                row["sync_review"] = review.clone();
+            }
         } else {
             merge(&mut row, report)?;
         }
@@ -165,9 +168,23 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         } else {
             None
         };
+        let fixed_audio = dialogue_audio::select(
+            ctx,
+            plan,
+            index,
+            &assets[index]["voice"],
+            run,
+            args["resume"] == true,
+        )?;
+        if !fixed_audio.is_null() {
+            ctx.activity(format!(
+                "Shot {}: Reusing the reviewed dialogue performance",
+                index + 1
+            ))?;
+        }
         let prepared = shot_renderer::storage(
             "take_prepare",
-            &json!({"plan":plan,"shot":shot,"index":index,"base_seed":base,"run_dir":run,"width":width,"height":height,"frame_binding":binding,"motion_row":motion_row,"assets":assets.get(index),"previous_summary":summaries.last(),"render_config":config,"automatic_review":automatic,"planned_shot_sha256":planned_hash,"storyboard_acceptance":if requires{&boards["continuity_acceptance"]}else{&Value::Null}}),
+            &json!({"plan":plan,"shot":shot,"index":index,"base_seed":base,"run_dir":run,"width":width,"height":height,"frame_binding":binding,"motion_row":motion_row,"assets":assets.get(index),"previous_summary":summaries.last(),"render_config":config,"automatic_review":automatic,"planned_shot_sha256":planned_hash,"storyboard_acceptance":if requires{&boards["continuity_acceptance"]}else{&Value::Null},"dialogue_audio":fixed_audio}),
             &ctx.cancelled,
         )?;
         let shot_dir = path(&prepared, "shot_dir")?;
@@ -294,7 +311,8 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
                     } else {
                         Value::Null
                     };
-                    let payload = json!({"prompt":report["prompt"],"seed":report["seed"],"frames":duration*24,"output":native,"image_file":image,"hold_image_framing":false,"width":width,"height":height,"profile":profile,"image_anchors":anchors});
+                    let audio_file = dialogue_audio::file(ctx, &fixed_audio)?;
+                    let payload = json!({"prompt":report["prompt"],"seed":report["seed"],"frames":duration*24,"output":native,"image_file":image,"hold_image_framing":false,"width":width,"height":height,"profile":profile,"image_anchors":anchors,"audio_file":audio_file});
                     let shot_started = Instant::now();
                     let take = report["take"].clone();
                     let emitter = &mut ctx.emit;
@@ -405,11 +423,12 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
                 reviews.push(observed);
             }
             remove(&mut report, &["error"]);
-            report["status"] = shot_renderer::render_status(&if automatic {
-                json!([report["visual_review"]])
-            } else {
-                json!([])
-            })?;
+            report["sync_review"] = sync::pending(plan, index)?;
+            let mut assessments = vec![report["sync_review"].clone()];
+            if automatic {
+                assessments.push(report["visual_review"].clone());
+            }
+            report["status"] = shot_renderer::render_status(&json!(assessments))?;
             let mut summary = report.clone();
             summary["index"] = json!(index);
             remove(
@@ -461,6 +480,70 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         &json!({"clip_count":shots.len(),"output":output,"seconds":seconds,"fade_out":validated["fade_out"],"width":delivery_width,"height":delivery_height,"crop":!spec.is_null(),"profile":profile}),
         &ctx.cancelled,
     )?;
+    // Review the delivered soundtrack after conversion, assembly and fades.
+    // A preview pass never certifies newly generated HQ footage.
+    let delivery_hash = artifacts::file_hash(&output)?;
+    let mut sync_reviews = Vec::new();
+    let mut offset = 0_u64;
+    for (index, shot) in shots.iter().enumerate() {
+        ctx.check()?;
+        progress(
+            ctx,
+            &mut last,
+            0.98,
+            format!(
+                "Shot {}/{}: Checking speech and lip sync",
+                index + 1,
+                shots.len()
+            ),
+            None,
+        )?;
+        let observed = sync::shot(ctx, plan, index, &output, &delivery_hash, offset, run)?;
+        ctx.activity(format!(
+            "Shot {}: {}",
+            index + 1,
+            observed["summary"]
+                .as_str()
+                .unwrap_or("Lip sync needs review.")
+        ))?;
+        let receipt = json!({"policy":sync::POLICY,"status":observed["status"],
+            "summary":observed["summary"],"delivery_sha256":delivery_hash,
+            "file":format!("shots/{:03}/sync-review/review.json", index+1)});
+        let mut report = read(
+            &run.join("shots")
+                .join(format!("{:03}/render.json", index + 1)),
+        )?;
+        report["sync_review"] = receipt.clone();
+        match dialogue_audio::publish(
+            ctx,
+            plan,
+            index,
+            &assets[index]["voice"],
+            run,
+            &report,
+            &observed,
+        ) {
+            Ok(value) if !value.is_null() => report["reusable_dialogue"] = value,
+            Ok(_) => {}
+            Err(error) => {
+                ctx.check()?;
+                ctx.activity(format!(
+                    "Shot {}: Could not save reusable dialogue: {error}",
+                    index + 1
+                ))?;
+            }
+        }
+        let mut assessments = vec![observed.clone()];
+        if automatic {
+            assessments.push(report["visual_review"].clone());
+        }
+        report["status"] = shot_renderer::render_status(&json!(assessments))?;
+        shot_update(ctx, plan, index, &report, run)?;
+        summaries[index]["sync_review"] = receipt;
+        summaries[index]["status"] = report["status"].clone();
+        sync_reviews.push(observed);
+        offset += shot["seconds"].as_u64().ok_or("Invalid shot duration.")?;
+    }
     let scene = if automatic {
         progress(
             ctx,
@@ -498,11 +581,23 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
         None,
     )?;
     let mut all = reviews;
+    all.extend(sync_reviews.iter().cloned());
     if let Some(scene) = &scene {
         all.push(scene.clone());
     }
     let status = shot_renderer::render_status(&json!(all))?;
     let mut result = json!({"status":status,"backend":"mlx","pipeline":"directed-shots","output_frames":seconds*24,"elapsed_seconds":(started.elapsed().as_secs_f64()*100.0).round()/100.0,"shots":summaries,"video":video});
+    result["lip_sync_policy"] = json!(sync::POLICY);
+    result["reused_dialogue_shots"] = json!(
+        summaries
+            .iter()
+            .filter(|shot| shot["dialogue_audio"].is_object())
+            .count()
+    );
+    result["sync_review"] = json!({"policy":sync::POLICY,
+        "passed_shots":sync_reviews.iter().filter(|r| r["status"]=="passed").count(),
+        "issue_shots":sync_reviews.iter().filter(|r| r["status"]=="issues_detected").count(),
+        "unassessed_shots":sync_reviews.iter().filter(|r| r["status"]=="unassessed").count()});
     if !config.is_null() {
         result["render_config"] = config.clone();
     }
@@ -511,8 +606,9 @@ pub fn render(ctx: &mut Context<'_>, args: &Value) -> Result<Value> {
     }
     if !assets.is_null() {
         result["character_conditioning"] = json!("saved-character-assets-v1");
-        result["identity_review"] =
-            json!("pending: compare portraits, voices, spoken words, and lip sync");
+        result["identity_review"] = json!(
+            "pending: compare portraits and voice identity; see separate speech sync assessment"
+        );
     }
     if let Some(scene) = scene {
         result["scene_review"] = scene;

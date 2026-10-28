@@ -232,7 +232,8 @@ def pipeline_activity(pipeline, progress, *, profile="distilled"):
     hq = profile == "hq"
     if hq:
         from ltx_pipelines_mlx import ti2vid_two_stages_hq
-        loop_owner, loop_name = ti2vid_two_stages_hq, "res2s_denoise_loop"
+        loop_owner = sys.modules[pipeline.__class__.__module__] if pipeline.__class__.__module__ == "audio_hq" else ti2vid_two_stages_hq
+        loop_name = "res2s_denoise_loop"
     else:
         loop_owner, loop_name = pipeline, "_run_denoise_loop"
     original_loop = getattr(loop_owner, loop_name)

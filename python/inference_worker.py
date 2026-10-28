@@ -51,6 +51,11 @@ def main():
                 import quality_backend
                 result = quality_backend._render_model(**args, on_progress=lambda **data:
                     send(event={"type": "inference_progress", "data": data}))
+            elif operation in ("sync_check", "sync_review"):
+                import sync_review
+                result = (sync_review.check() if operation == "sync_check" else
+                          sync_review.review(**args, on_progress=lambda message:
+                              send(event={"type": "activity", "message": message})))
             elif operation in ("mflux_check", "mflux_generate"):
                 import storyboard_mflux
                 result = (storyboard_mflux._identity() if operation == "mflux_check"

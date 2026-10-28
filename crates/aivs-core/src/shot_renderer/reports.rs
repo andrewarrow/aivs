@@ -52,7 +52,8 @@ pub(super) fn prepare(args: &Value) -> Result<Value> {
         None
     };
     let clip = shot_dir.join("video.mp4");
-    let convert_voice = assets["voice"].get("file").is_some();
+    // Fixed dialogue already contains the final character performance.
+    let convert_voice = assets["voice"].get("file").is_some() && args["dialogue_audio"].is_null();
     let native = if convert_voice {
         shot_dir.join("video.source.mp4")
     } else {
@@ -87,6 +88,9 @@ pub(super) fn prepare(args: &Value) -> Result<Value> {
         "beat_ids": shot["beat_ids"], "scene_id": shot["scene_id"], "continuity": continuity});
     if !assets.is_null() {
         report["character_assets"] = assets.clone();
+    }
+    if !args["dialogue_audio"].is_null() {
+        report["dialogue_audio"] = args["dialogue_audio"].clone();
     }
     if !binding.is_null() {
         report["storyboard"] = binding.clone();

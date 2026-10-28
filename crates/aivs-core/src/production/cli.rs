@@ -34,7 +34,7 @@ fn cancellation() -> Arc<AtomicBool> {
     flag
 }
 fn usage() -> &'static str {
-    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize|compact> [options]\n\nProject: --project-dir PATH (stores new runs and reusable references in an existing project)\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH --parent-revision ID\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nStorage: compact --project-dir PATH [--revision ID]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
+    "AIVS production engine\nUsage: aivs-engine --production <check|download|render|resume|previsualize|compact> [options]\n\nProject: --project-dir PATH (stores new runs and reusable references in an existing project)\nScreenplay: --screenplay-file PATH | --screenplay-json JSON | --script-file PATH --cast ROLE=CHARACTER\nRender: --seed N --profile hq|distilled --render-format landscape|portrait --voice-mode saved|native [--fresh-dialogue]\nPlanning: --planning-budget-seconds N --fresh-preproduction --plan-only --storyboards-only --shooting-script PATH --parent-revision ID\nResume: --output-dir PATH [--storyboards-only | --motion-previs]\nStorage: compact --project-dir PATH [--revision ID]\nPrompt: --prompt TEXT --character NAME --character-text-only --character-references-only"
 }
 fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     let mut args = arguments.into_iter();
@@ -45,6 +45,7 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     let switches = BTreeSet::from([
         "motion-previs",
         "fresh-preproduction",
+        "fresh-dialogue",
         "character-text-only",
         "character-references-only",
         "plan-only",
@@ -95,6 +96,9 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
     }
     let get = |key: &str| flags.get(key).and_then(|v| v.last()).cloned();
     let has = |key: &str| flags.contains_key(key);
+    if has("fresh-dialogue") && command != "render" {
+        return Err("--fresh-dialogue is only used for a new screenplay render.".into());
+    }
     if has("revision") && command != "compact" {
         return Err("--revision is only used with compact.".into());
     }
@@ -232,6 +236,7 @@ fn parse(arguments: Vec<String>) -> Result<(String, Value)> {
                     "profile",
                     "planning-budget-seconds",
                     "fresh-preproduction",
+                    "fresh-dialogue",
                     "render-format",
                     "plan-only",
                     "storyboards-only",

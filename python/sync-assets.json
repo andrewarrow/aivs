@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "syncnet_revision": "907c0b579c2e2d83f0eae1b2ac9e720cde4e5623",
+  "asr": {
+    "repository": "Systran/faster-whisper-base.en",
+    "revision": "3d3d5dee26484f91867d81cb899cfcf72b96be6c"
+  },
+  "files": [
+    {
+      "name": "SyncNetModel.py",
+      "url": "https://raw.githubusercontent.com/joonson/syncnet_python/907c0b579c2e2d83f0eae1b2ac9e720cde4e5623/SyncNetModel.py",
+      "sha256": "41b85aed0006546cb2d6dc9180c5bc3dac737ab80eff643022e397a349c30c22"
+    },
+    {
+      "name": "SyncNet-LICENSE.md",
+      "url": "https://raw.githubusercontent.com/joonson/syncnet_python/907c0b579c2e2d83f0eae1b2ac9e720cde4e5623/LICENSE.md",
+      "sha256": "70155ceb20fb7aae10fc1e9d5c9753de6a10a50a8937e0f5ab3afcdf96c8754d"
+    },
+    {
+      "name": "syncnet_v2.model",
+      "url": "https://www.robots.ox.ac.uk/~vgg/software/lipsync/data/syncnet_v2.model",
+      "sha256": "961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442"
+    },
+    {
+      "name": "face_detection_yunet.onnx",
+      "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+    },
+    {
+      "name": "YuNet-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_zoo/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_detection_yunet/LICENSE",
+      "sha256": "c83b8120c50ccbd4c4f96edf53141bdd566ebb8f8e9227e415326aa1b1aba958"
+    }
+  ]
+}

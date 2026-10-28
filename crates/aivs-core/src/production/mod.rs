@@ -1,6 +1,7 @@
 //! Headless production orchestration. Python supplies model execution and the legacy JSON codec.
 mod boards;
 pub mod cli;
+mod dialogue_audio;
 mod direction;
 mod fidelity;
 mod helpers;
@@ -11,6 +12,7 @@ mod rendering;
 mod review;
 mod revisions;
 mod run;
+mod sync;
 use crate::{
     artifacts,
     continuity::{self, Result},

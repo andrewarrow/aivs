@@ -6,9 +6,6 @@ pub(super) fn prepare(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
         .as_str()
         .filter(|s| matches!(*s, "hq" | "distilled"))
         .ok_or("Local render profile must be distilled or hq.")?;
-    if profile == "hq" && !args["audio_file"].is_null() {
-        return Err("The HQ profile generates native audio; fixed audio is unsupported.".into());
-    }
     let frames = integer(args, "frames")?;
     let width = integer(args, "width")?;
     let height = integer(args, "height")?;
@@ -32,8 +29,8 @@ pub(super) fn prepare(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
         )?
     };
     let hold = args["hold_image_framing"] == true;
-    if !anchors.is_null() && (hold || !args["audio_file"].is_null()) {
-        return Err("Timed image anchors require the text/image video pipeline without held framing or fixed audio.".into());
+    if !anchors.is_null() && hold {
+        return Err("Timed image anchors cannot be combined with held framing.".into());
     }
     if !anchors.is_null()
         && !image.is_null()
@@ -104,6 +101,14 @@ pub(super) fn finish(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
     let partial = path(prepared, "partial")?;
     let output = path(args, "output")?;
     let audio = &prepared["audio"];
+    if !audio.is_null()
+        && crate::artifacts::file_hash(&path(audio, "source_file")?)?
+            != audio["source_sha256"]
+                .as_str()
+                .ok_or("Missing fixed audio hash.")?
+    {
+        return Err("Fixed audio changed while its video was being generated.".into());
+    }
     let mut command = Command::new("ffmpeg");
     command
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-i"])
@@ -157,6 +162,14 @@ pub(super) fn finish(args: &Value, cancelled: &AtomicBool) -> Result<Value> {
     fs::rename(&partial, &output).map_err(|e| e.to_string())?;
     if args["keep_native"] != true {
         fs::remove_file(&native).map_err(|e| e.to_string())?;
+    }
+    // Reconstructible inference padding must not become another per-run copy
+    // of the reusable performance after successful publication.
+    if let Some(conditioning) = prepared["conditioning_audio"].as_str() {
+        if Path::new(conditioning) != output.with_file_name("audio.conditioning.wav") {
+            return Err("Unexpected conditioning audio path.".into());
+        }
+        remove_existing(Path::new(conditioning))?;
     }
     Ok(info)
 }
