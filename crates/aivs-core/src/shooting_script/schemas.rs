@@ -29,6 +29,15 @@ pub(super) fn schema(name: &str) -> Result<Value> {
     let strings = array(text.clone());
     match name {
         "plan" | "director" => {
+            let mut action_coverage = array(object(&[
+                ("beat_id", integer.clone()),
+                ("part", integer.clone()),
+                ("parts", integer.clone()),
+                ("action", text.clone()),
+            ]));
+            action_coverage["description"] = json!(
+                "Exactly one entry for each assigned source beat whose kind is action, in beat_ids order. Never include a dialogue beat, even when it contains a reaction or movement. Mixed action/dialogue shots include only their action beats here; dialogue-only shots use []. Preserve split-action part/parts numbering across the sequence."
+            );
             let mut shot = object(&[
                 ("seconds", integer.clone()),
                 ("beat_ids", array(integer.clone())),
@@ -43,15 +52,7 @@ pub(super) fn schema(name: &str) -> Result<Value> {
                 ),
                 ("dramatic_purpose", text.clone()),
                 ("visual_contract", strings.clone()),
-                (
-                    "action_coverage",
-                    array(object(&[
-                        ("beat_id", integer.clone()),
-                        ("part", integer.clone()),
-                        ("parts", integer),
-                        ("action", text.clone()),
-                    ])),
-                ),
+                ("action_coverage", action_coverage),
             ]);
             if name == "director" {
                 add(&mut shot, "storyboard_prompt", text.clone());

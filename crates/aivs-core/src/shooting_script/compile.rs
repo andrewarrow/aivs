@@ -326,7 +326,14 @@ pub(super) fn compile(
                 .collect::<Vec<_>>();
             if parts.len() != action_ids.len() || parts.iter().any(|part| !part.is_object()) {
                 return Err(format!(
-                    "Shot {index} must describe its part of every assigned action beat."
+                    "Shot {index} action_coverage must contain exactly one entry per assigned source action beat, in order: expected action beat IDs {}; received {}. Dialogue beats must not have action_coverage entries, even when their lines include a reaction or movement. Keep dialogue beat IDs in beat_ids and their line placeholders in prompt_template. Correct action_coverage only; preserve the source actions and exact dialogue.",
+                    json!(action_ids),
+                    json!(
+                        parts
+                            .iter()
+                            .map(|part| &part["beat_id"])
+                            .collect::<Vec<_>>()
+                    )
                 ));
             }
             action_weight = 0.0;
