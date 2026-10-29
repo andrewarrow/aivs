@@ -273,7 +273,12 @@ fn seal(project: &Path, directory: &Path, id: &str, plan: &Value, parent: Value)
     )
 }
 
-fn parent(ctx: &mut Context<'_>, project: &Path, source: &Value) -> Result<Option<PathBuf>> {
+fn parent(
+    ctx: &mut Context<'_>,
+    project: &Path,
+    source: &Value,
+    current: &Path,
+) -> Result<Option<PathBuf>> {
     if let Some(id) = ctx.options["parent_revision"].as_str() {
         let directory = revision_directory(project, id)?;
         let manifest = read(&directory.join("revision.json"))?;
@@ -285,15 +290,9 @@ fn parent(ctx: &mut Context<'_>, project: &Path, source: &Value) -> Result<Optio
     let head = project
         .join("preproduction/heads")
         .join(format!("{}.json", ctx.digest(&scene(source))?));
-    if head.is_file() {
-        let record = read(&head)?;
-        let directory = revision_directory(project, text(&record, "revision")?)?;
-        if directory.join("revision.json").is_file() {
-            return Ok(Some(directory));
-        }
-    }
-    // Projects created before revisions have no head. Seed from their latest
-    // compatible run, including when the editor has just gained stable keys.
+    // A failed motion/review pass still leaves useful direction and images.
+    // Prefer the latest compatible attempt over the last completed head so a
+    // new run does not discard work simply because final acceptance is absent.
     let runs = project.join("runs");
     let mut candidates = if runs.is_dir() {
         fs::read_dir(runs)
@@ -310,16 +309,32 @@ fn parent(ctx: &mut Context<'_>, project: &Path, source: &Value) -> Result<Optio
         let Ok(creative) = crate::project::creative_root(&run) else {
             continue;
         };
-        let Ok(plan) = read(&creative.join("shooting-script.json")) else {
+        if creative == current {
+            continue;
+        }
+        let Ok(plan) = read(&creative.join("storyboard-plan.json")) else {
             continue;
         };
-        if plan["planning_stage"] != "final" || !compatible_scene(&plan["source"], source) {
+        if plan["planning_stage"] != "storyboard" || !compatible_scene(&plan["source"], source) {
             continue;
         }
         if creative != run {
             return Ok(Some(creative));
         }
-        return import(ctx, &run, project).map(Some);
+        // Legacy run-local pixels must be imported before another revision can
+        // reference them. Import requires the old final acceptance records.
+        if run.join("shooting-script.json").is_file()
+            && run.join("storyboard-review.json").is_file()
+        {
+            return import(ctx, &run, project).map(Some);
+        }
+    }
+    if head.is_file() {
+        let record = read(&head)?;
+        let directory = revision_directory(project, text(&record, "revision")?)?;
+        if directory != current && directory.join("revision.json").is_file() {
+            return Ok(Some(directory));
+        }
     }
     Ok(None)
 }
@@ -398,7 +413,7 @@ pub(super) fn prepare(
         } else if ctx.options["fresh"] == true {
             None
         } else {
-            parent(ctx, &project, &source)?
+            parent(ctx, &project, &source, &directory)?
         };
         let report = read(&run.join("render.json"))?;
         let saved = json!({"request":source_request(&source),"source":source,"libraries":report["libraries"],

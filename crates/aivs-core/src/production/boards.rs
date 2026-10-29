@@ -346,6 +346,32 @@ fn image_asset(file: &Path, run: &Path, info: &Value) -> Result<Value> {
     Ok(asset)
 }
 
+/// Revision work files can be superseded on Resume. Shared frames must retain
+/// their pixels even when the attempt that originally rendered them continues.
+pub(super) fn share_frame(file: &Path, image: &Value, run: &Path) -> Result<Value> {
+    let Some(project) = crate::project::for_run(run) else {
+        return Ok(image.clone());
+    };
+    let digest = text(image, "sha256")?;
+    let relative = PathBuf::from("preproduction/assets/storyboards").join(format!("{digest}.png"));
+    let target = project.join(&relative);
+    if target.exists() {
+        if artifacts::file_hash(&target)? != digest {
+            return Err("Shared storyboard image changed.".into());
+        }
+    } else {
+        let bytes = fs::read(file).map_err(|e| e.to_string())?;
+        if artifacts::hash(&bytes) != digest {
+            return Err("Storyboard image changed while sharing it.".into());
+        }
+        artifacts::exclusive_bytes(&target, &bytes)?;
+    }
+    let mut shared = image.clone();
+    shared["file"] = json!(relative);
+    shared["scope"] = json!("project");
+    Ok(shared)
+}
+
 fn reference_key(ctx: &mut Context<'_>, request: &Value) -> Result<String> {
     // Video seeds do not invalidate a reusable design reference.
     let mut identity = request.clone();
@@ -647,7 +673,14 @@ fn render_frame(
         storyboard::resolve_image(&json!({"image":r}), run)?;
     }
     fs::rename(partial, target).map_err(|e| e.to_string())?;
-    Ok(json!({"runtime":runtime,"image":image_asset(target,run,&info)?}))
+    let original = image_asset(target, run, &info)?;
+    let image = share_frame(target, &original, run)?;
+    if image != original {
+        // The normalized frame now has an immutable project home. Keep Codex's
+        // original master and receipts, without another normalized pixel copy.
+        fs::remove_file(target).map_err(|e| e.to_string())?;
+    }
+    Ok(json!({"runtime":runtime,"image":image}))
 }
 pub fn regenerate(
     ctx: &mut Context<'_>,
@@ -792,18 +825,18 @@ pub fn generate(
             remove(&mut manifest, &["continuity_acceptance"]);
         }
         if manifest["shots"].get(index).is_none() {
-            if let Some(mut entry) = incremental::parent_board(ctx, &request, run)? {
+            if let Some(mut entry) = incremental::reusable_board(ctx, &request, run)? {
                 entry["shot"] = json!(number);
                 entry["planned_shot_sha256"] = json!(fingerprint);
                 entry["reuse"] = json!({"input_sha256":incremental::image_key(ctx,&request)?,
-                    "source_generation_sha256":entry["generation_sha256"],"source_revision":ctx.options["parent_preproduction"].as_str().and_then(|p|Path::new(p).file_name()).and_then(|s|s.to_str())});
+                    "source_generation_sha256":entry["generation_sha256"],"source_image":entry["image"]});
                 manifest["shots"]
                     .as_array_mut()
                     .ok_or("Invalid storyboard entries.")?
                     .push(entry);
                 save(&file, &manifest)?;
                 ctx.activity(format!(
-                    "Reusing unchanged storyboard {number} from the parent revision"
+                    "Reusing unchanged storyboard {number} from project history"
                 ))?;
                 continue;
             }

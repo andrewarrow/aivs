@@ -347,9 +347,10 @@ My Film.aivs/
   references/        Reusable generated references and their provenance
   preproduction/
     revisions/       Source snapshots, plans, storyboards, and planning task logs
+    assets/storyboards/  Immutable storyboard images shared across revisions
     objects/         Immutable JSON objects shared by revision manifests
     heads/           Latest completed revision for each scene
-    cache/           Shared reference sheets and maintenance receipts
+    cache/           Storyboard lookup, shared reference sheets, maintenance receipts
   runs/              Render settings, revision bindings, footage, and footage reviews
 ```
 
@@ -379,6 +380,23 @@ of the same revision. Resume continues the selected attempt and never substitute
 the current editor contents. Source blocks and shots retain stable IDs across
 edits, saves, and reordering. A run's `preproduction.json` records its revision
 using a project-relative path. Completed revisions are not edited in place.
+
+New revisions can build on saved director coverage from unfinished attempts,
+including attempts that generated images but failed during motion direction or
+review. An unchanged source reuses that coverage when it passes current planning
+checks; source edits use a bounded patch that preserves unaffected shots and
+reference definitions. A failed final pass no longer forces a fresh design pass.
+
+Storyboard reuse searches project history, including unfinished revisions, using
+the composition, visible-state prompt, reference image hashes, dimensions, and
+backend. Video seed, shot numbering, and unrelated source changes do not invalidate
+matching pixels. The lookup under `preproduction/cache/storyboards/` points to
+current manifests so a superseded image entry is not treated as current. Shared
+frames live at `preproduction/assets/storyboards/<image-sha256>.png`; old frames
+are copied there when reused, while new frames are stored there directly. Resuming
+an older attempt cannot replace these shared pixels. Reuse imports pixels and
+generation provenance; the new revision still requires its own current reviews
+and final acceptance. `--fresh-preproduction` bypasses storyboard reuse.
 
 On the next project generation, compatible legacy preproduction is imported into
 shared revision storage. The old run files remain available for historical
