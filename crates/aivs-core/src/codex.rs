@@ -18,6 +18,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub const MODEL: &str = "gpt-6.1-sol";
+pub const REASONING_EFFORT: &str = "medium";
+
+/// Keep every AIVS Codex session independent of local model defaults.
+pub fn configure_model(command: &mut Command) {
+    command
+        .arg("-c")
+        .arg(format!("model=\"{MODEL}\""))
+        .arg("-c")
+        .arg(format!("model_reasoning_effort=\"{REASONING_EFFORT}\""));
+}
+
 pub enum AppServerOutput {
     Message(Value),
     Invalid(String),
@@ -329,7 +341,9 @@ pub fn run_production(
     let errors_log =
         File::create(&request.errors_path).map_err(|e| Failure::from(e.to_string()))?;
     std::fs::write(&request.response_path, "").map_err(|e| Failure::from(e.to_string()))?;
-    let child = Command::new(&request.command[0])
+    let mut command = Command::new(&request.command[0]);
+    configure_model(&mut command);
+    let child = command
         .args(&request.command[1..])
         .current_dir(&request.bootstrap_cwd)
         .stdin(Stdio::piped())

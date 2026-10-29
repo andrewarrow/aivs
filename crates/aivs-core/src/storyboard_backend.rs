@@ -15,7 +15,8 @@ pub(super) const SETUP: &str =
 
 pub fn configuration() -> Value {
     json!({"backend": "codex", "policy": "codex-imagegen-v2", "transport": "app-server",
-        "image_generation": "built-in", "model": "codex-configured",
+        "image_generation": "built-in", "model": crate::codex::MODEL,
+        "model_reasoning_effort": crate::codex::REASONING_EFFORT,
         "seed_supported": false, "normalization": "lanczos-contain-v1"})
 }
 

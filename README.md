@@ -625,6 +625,8 @@ Follow the main path: **UI → preproduction → storyboard images → motion pl
 
 AIVS launches `codex app-server` and exchanges newline-delimited JSON over
 stdin/stdout using the [official Codex app-server protocol](https://learn.chatgpt.com/docs/app-server).
+AIVS explicitly sets `model = "gpt-6.1-sol"` and
+`model_reasoning_effort = "medium"` for chat and production sessions.
 For each preproduction pass, the Rust production planner requests an isolated
 Codex session. Rust initializes a connection, creates an
 ephemeral read-only thread, and starts a turn with the

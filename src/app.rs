@@ -920,7 +920,7 @@ impl App {
     fn send(&mut self) {
         let Some(client) = &self.client else { return };
         let message = self.draft.trim().to_owned();
-        // Empty overrides leave model and reasoning selection to the user's Codex config.
+        // Empty turn overrides use the model and effort configured at app-server launch.
         match client.send_chat_message(message.clone(), String::new(), String::new()) {
             Ok(()) => {
                 self.messages.push(Message {

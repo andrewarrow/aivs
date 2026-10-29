@@ -548,6 +548,7 @@ fn run_worker_with_executable(
 
 fn start_app_server_at(project_root: &Path, executable: &Path) -> Result<Child, String> {
     let mut command = ProcessCommand::new(executable);
+    aivs_core::codex::configure_model(&mut command);
     command
         .arg("app-server")
         .stdin(Stdio::piped())
