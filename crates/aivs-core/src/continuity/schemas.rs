@@ -143,7 +143,13 @@ pub fn schema(name: &str) -> Result<Value> {
                     ("observed", text.clone()),
                     (
                         "assessment",
-                        choices(&["consistent", "unobservable", "contradiction", "uncertain"]),
+                        choices(&[
+                            "consistent",
+                            "incidental",
+                            "unobservable",
+                            "contradiction",
+                            "uncertain",
+                        ]),
                     ),
                     ("evidence", text.clone()),
                 ])),

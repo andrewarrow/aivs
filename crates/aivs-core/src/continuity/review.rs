@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "lowercase")]
 enum Assessment {
     Consistent,
+    Incidental,
     Unobservable,
     Contradiction,
     Uncertain,
@@ -63,6 +64,12 @@ fn field_assessments<'a>(
         {
             return Err(
                 "A consistent assessment needs observed evidence and exact entity/state IDs."
+                    .into(),
+            );
+        }
+        if row.assessment == Assessment::Incidental && symbolic(&key) {
+            return Err(
+                "Incidental differences cannot override presence, ownership, reveals or relationships."
                     .into(),
             );
         }
@@ -188,7 +195,8 @@ pub(super) fn review_shot_data(
                     uncertainties.push(detail());
                     continue;
                 }
-                Assessment::Consistent => continue,
+                // Retain minor visual differences as observations without repairing them.
+                Assessment::Consistent | Assessment::Incidental => continue,
                 // Symbolic identity, ownership and reveal requirements stay strict.
                 Assessment::Unobservable if !symbolic(key) => continue,
                 Assessment::Unobservable => {}
@@ -339,6 +347,9 @@ pub fn review_sequence(
         let assessments = field_assessments(&fields, &expected, &observed)?;
         for (key, actual) in &observed {
             let actual = match assessments.get(key) {
+                // A tolerated visual difference is not a new canonical fact to enforce
+                // against subsequent frames.
+                Some(finding) if finding.assessment == Assessment::Incidental => continue,
                 Some(finding)
                     if finding.assessment == Assessment::Unobservable && !symbolic(key) =>
                 {

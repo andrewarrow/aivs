@@ -145,12 +145,18 @@ or prompt inputs regenerate dependent frames, preserving superseded images and
 their provenance. The Codex image turn finishes before LTX loads. Rust validates
 source coverage, exact dialogue and timing; Python supplies model token limits.
 The final shooting script and storyboard checksums are bound
-together with an accepted `storyboard-review.json`. The renderer and Resume
+together with an accepted `storyboard-review.json`. Acceptance checks whether the
+images can tell the scene: recognizable cast, essential actions, usable staging,
+and story-critical props and reveals. Minor differences in buttons, uniform trim,
+medals, furniture design, background dressing, gaze or hand posture do not trigger
+repairs unless they change a source-essential fact or prevent an action. Reviews
+record these differences as `incidental`, preserving the actual observations
+without enforcing them across frames. The renderer and Resume
 reject missing, failed, incompatible or stale acceptance, even when image files
 exist. A concrete defect uses the existing two automatic repair rounds, including
 state-contract corrections, reference dependencies and reinspection of pixels.
-Visible canonical props and connections need positive physical evidence;
-unknown details block acceptance. Manually supplied experiment storyboards use
+Source-essential props and connections need positive physical evidence;
+unknown story-critical details block acceptance. Manually supplied experiment storyboards use
 their existing image/provenance checks; declaring the production storyboard
 policy still requires continuity acceptance even with automatic review disabled.
 Exhausted repairs save `storyboard-diagnostic.json` and stop before video.
