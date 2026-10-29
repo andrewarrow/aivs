@@ -1,5 +1,7 @@
 //! Fountain-style source beats and the exact inputs to the legacy JSON digest.
-use super::{STORYBOARD_POLICY, array, bounded, optional_fields, regex, same_keys, unicode};
+use super::{
+    STORYBOARD_POLICY, array, bounded, optional_fields, prompt, regex, same_keys, unicode,
+};
 use crate::continuity::Result;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -51,6 +53,78 @@ impl Parser {
         self.transition = Value::Null;
         Ok(())
     }
+}
+
+/// Split only speech that cannot fit in one generation. Keep exact substrings,
+/// preferring sentence/clause boundaries near a balanced division of the line.
+fn dialogue_parts(mut text: &str) -> Vec<&str> {
+    let words = regex(prompt::WORD_PATTERN);
+    let mut parts = Vec::new();
+    loop {
+        let matches = words.find_iter(text).collect::<Vec<_>>();
+        if matches.len() <= prompt::MAX_DIALOGUE_WORDS {
+            parts.push(text);
+            return parts;
+        }
+        let count = matches.len().div_ceil(prompt::MAX_DIALOGUE_WORDS);
+        let target = matches.len().div_ceil(count);
+        let cut = (target..=prompt::MAX_DIALOGUE_WORDS)
+            .map(|index| {
+                let end = matches[index - 1].end();
+                let next = matches[index].start();
+                let gap = &text[end..next];
+                let cut = gap
+                    .rfind(char::is_whitespace)
+                    .map_or(next, |offset| end + offset);
+                let punctuation = text[..cut]
+                    .trim_end()
+                    .trim_end_matches(['\"', '”', '\'', '’', ')']);
+                let rank = if punctuation.ends_with(['.', '?', '!']) {
+                    0
+                } else if punctuation.ends_with([',', ';', ':', '—', '–']) {
+                    1
+                } else {
+                    2
+                };
+                ((rank, index.abs_diff(target)), cut)
+            })
+            .min_by_key(|(score, _)| *score)
+            .unwrap()
+            .1;
+        parts.push(text[..cut].trim_end());
+        text = text[cut..].trim_start();
+    }
+}
+
+fn segment_dialogue(beats: &mut Vec<Value>) -> bool {
+    let mut segmented = Vec::new();
+    let mut changed = false;
+    for beat in beats.iter() {
+        let parts = if beat["kind"] == "dialogue" {
+            dialogue_parts(beat["text"].as_str().unwrap())
+        } else {
+            vec![beat["text"].as_str().unwrap()]
+        };
+        changed |= parts.len() > 1;
+        for (index, text) in parts.iter().enumerate() {
+            let mut part = beat.clone();
+            part["id"] = json!(segmented.len() + 1);
+            part["text"] = json!(text);
+            if parts.len() > 1 {
+                part["dialogue_part"] = json!(index + 1);
+                part["dialogue_parts"] = json!(parts.len());
+                if let Some(key) = beat["stable_id"].as_str() {
+                    part["stable_id"] = json!(format!("{key}:dialogue:{}", index + 1));
+                }
+                if index > 0 {
+                    part["transition"] = Value::Null;
+                }
+            }
+            segmented.push(part);
+        }
+    }
+    *beats = segmented;
+    changed
 }
 
 pub(super) fn parse(request: &Value, profiles: &Value) -> Result<Value> {
@@ -282,6 +356,12 @@ pub(super) fn parse(request: &Value, profiles: &Value) -> Result<Value> {
         }
         source["beat_keys"] = json!(keys);
         identity["beat_keys"] = json!(keys);
+    }
+    // Editor keys still address original blocks. Derive part keys only after
+    // binding those blocks, and retain the original beat_keys for round trips.
+    if segment_dialogue(source["beats"].as_array_mut().unwrap()) {
+        // Old unsplit coverage must not share source hashes or cached revisions.
+        identity["dialogue_segmentation"] = json!("timed-parts-v1");
     }
     if let Some(key) = request.get("scene_key") {
         bounded(key, "Stable scene key", 128)?;

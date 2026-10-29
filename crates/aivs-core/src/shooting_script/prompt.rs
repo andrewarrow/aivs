@@ -5,10 +5,13 @@ use regex::RegexBuilder;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub(super) const WORD_PATTERN: &str = r"[\p{L}\p{N}_]+(?:['’][\p{L}\p{N}_]+)*";
+
+// At 160 words/minute, 30 words plus 0.5 seconds of settling fit in 12 seconds.
+pub(super) const MAX_DIALOGUE_WORDS: usize = 30;
+
 pub(super) fn word_count(text: &str) -> usize {
-    regex(r"[\p{L}\p{N}_]+(?:['’][\p{L}\p{N}_]+)*")
-        .find_iter(text)
-        .count()
+    regex(WORD_PATTERN).find_iter(text).count()
 }
 
 pub(super) fn estimated_tokens(text: &str) -> usize {
@@ -390,7 +393,8 @@ pub(super) fn instruction_context(source: &Value) -> Value {
         "generation_capabilities": {"planning_policy": PLANNING_POLICY,
             "independent_storyboard_first_frame_per_shot": true, "joint_picture_and_audio": true,
             "audio_moves_between_generations": false, "saved_character_assets": assets},
-        "timing_guidance": {"words_per_minute": 160, "settling_seconds": 0.5},
+        "timing_guidance": {"words_per_minute": 160, "settling_seconds": 0.5,
+            "max_dialogue_words_per_shot": MAX_DIALOGUE_WORDS},
     });
     super::optional_fields(&mut body, source, &["render_format", "set"]);
     if source.get("set").is_some() {

@@ -399,6 +399,11 @@ pub(super) fn compile(
             .ceil()
             .max(4.0) as u64;
         if seconds < minimum {
+            if minimum > 12 {
+                return Err(format!(
+                    "Shot {index} needs at least {minimum} seconds for its dialogue and action, exceeding the 12-second limit. Split this shot into adjacent shots at source beat boundaries, assigning each dialogue beat exactly once in order. Preserve all source words and valid surrounding shots; do not increase the duration or speed up speech."
+                ));
+            }
             return Err(format!(
                 "Shot {index} needs at least {minimum} seconds for its dialogue and action."
             ));
