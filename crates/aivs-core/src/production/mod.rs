@@ -275,12 +275,13 @@ impl Context<'_> {
         &mut self,
         name: &str,
         instruction: String,
-        schema: Value,
+        mut schema: Value,
         source: &Value,
         run: &Path,
         images: Value,
         mut validate: impl FnMut(&mut Self, Value) -> Result<Value>,
     ) -> Result<Value> {
+        shooting_script::bind_cast(&mut schema, source)?;
         let mut submitted = instruction.clone();
         for attempt in 0..2 {
             let args = json!({"name":name,"instruction":submitted,"schema":schema,"source_sha256":source["source_sha256"],

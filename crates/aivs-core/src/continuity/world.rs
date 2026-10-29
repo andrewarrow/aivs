@@ -64,15 +64,13 @@ pub(super) fn canonical_physical(world: &World) -> Facts {
 pub(super) fn validate_world(plan: &Plan) -> Result<BTreeSet<String>> {
     let roles: BTreeSet<_> = plan.source.cast.iter().map(|c| &c.role).collect();
     let world = &plan.world;
-    if world
-        .characters
-        .iter()
-        .map(|c| &c.role)
-        .collect::<BTreeSet<_>>()
-        != roles
-        || world.characters.len() != roles.len()
-    {
-        return Err("Canonical morphology must bind each source role exactly once.".into());
+    let declared: BTreeSet<_> = world.characters.iter().map(|c| &c.role).collect();
+    if declared != roles || world.characters.len() != roles.len() {
+        let missing: Vec<_> = roles.difference(&declared).collect();
+        let extra: Vec<_> = declared.difference(&roles).collect();
+        return Err(format!(
+            "Canonical morphology must bind each source role exactly once. world.characters must contain exactly the source.cast roles {roles:?}; missing roles: {missing:?}; unexpected roles: {extra:?}. Remove duplicate entries. Apply this same roster to characters in EVERY shot's continuity.opening and continuity.ending, not only world.characters. Names merely mentioned in dialogue or explicitly absent from the scene are not additional cast bindings; preserve their narrative significance in source-backed prose or reveals instead. Preserve valid coverage and dialogue."
+        ));
     }
     for character in &world.characters {
         text(&character.role)?;

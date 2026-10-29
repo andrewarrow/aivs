@@ -75,16 +75,13 @@ pub(super) fn validate_plan_data(plan: &Plan) -> Result<()> {
         if index == 0 && !changes(&physical, &opening).is_empty() {
             return Err("The first opening must match canonical physical definitions.".into());
         }
-        for state in [&contract.opening, &contract.ending] {
-            if state
-                .characters
-                .iter()
-                .map(|r| r.role.as_str())
-                .collect::<BTreeSet<_>>()
-                != roles
-            {
+        for (endpoint, state) in [("opening", &contract.opening), ("ending", &contract.ending)] {
+            let declared: BTreeSet<_> = state.characters.iter().map(|r| r.role.as_str()).collect();
+            if declared != roles {
+                let missing: Vec<_> = roles.difference(&declared).collect();
+                let extra: Vec<_> = declared.difference(&roles).collect();
                 return Err(format!(
-                    "Shot {number} must track presence of every source role, including offscreen roles."
+                    "Shot {number} continuity.{endpoint}.characters must contain exactly the source.cast roles {roles:?}, once each, including offscreen roles; missing roles: {missing:?}; unexpected roles: {extra:?}. Correct the roster in BOTH endpoints of EVERY affected shot and in world.characters. People merely mentioned or explicitly absent without a cast binding must remain story information in prose or reveals, not additional character entries. Preserve valid coverage and dialogue."
                 ));
             }
             for prop in &state.props {

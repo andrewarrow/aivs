@@ -9,6 +9,8 @@ mod source;
 mod storage;
 mod unicode;
 
+pub(crate) use schemas::bind_cast;
+
 use crate::continuity::Result;
 use regex::Regex;
 use serde_json::{Value, json};

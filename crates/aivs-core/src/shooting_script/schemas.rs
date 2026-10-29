@@ -22,6 +22,49 @@ fn add(object: &mut Value, name: &str, schema: Value) {
     object["required"].as_array_mut().unwrap().push(json!(name));
 }
 
+/// The prose may mention people who are absent or merely discussed. They are
+/// story information, not additional performers or continuity character rows.
+pub(crate) fn bind_cast(schema: &mut Value, source: &Value) -> Result<()> {
+    let roles = source["cast"]
+        .as_array()
+        .ok_or("Planning schema needs source cast bindings.")?
+        .iter()
+        .map(|binding| binding["role"].as_str().ok_or("Invalid source cast role."))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if roles.is_empty() {
+        return Ok(());
+    }
+    fn bind(schema: &mut Value, roles: &Value) {
+        match schema {
+            Value::Object(fields) => {
+                if let Some(properties) =
+                    fields.get_mut("properties").and_then(Value::as_object_mut)
+                {
+                    if let Some(role) = properties.get_mut("role") {
+                        role["enum"] = roles.clone();
+                    }
+                    for name in ["visible_roles", "opening_visible_roles"] {
+                        if let Some(list) = properties.get_mut(name) {
+                            list["items"]["enum"] = roles.clone();
+                        }
+                    }
+                }
+                for value in fields.values_mut() {
+                    bind(value, roles);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    bind(item, roles);
+                }
+            }
+            _ => {}
+        }
+    }
+    bind(schema, &json!(roles));
+    Ok(())
+}
+
 pub(super) fn schema(name: &str) -> Result<Value> {
     let text = json!({"type": "string"});
     let integer = json!({"type": "integer"});
