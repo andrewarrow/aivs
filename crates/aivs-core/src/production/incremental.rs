@@ -547,6 +547,37 @@ pub(super) fn motion_input(
     references: &Value,
     policy: &str,
 ) -> Result<Value> {
+    let mut input = legacy_motion_input(plan, images, number, references, policy)?;
+    fn normalize_images(value: &mut Value) {
+        match value {
+            Value::Object(fields) => {
+                if fields.contains_key("sha256") {
+                    // Moving identical pixels to immutable project storage is
+                    // not a new image inspection or motion-direction task.
+                    fields.remove("file");
+                    fields.remove("scope");
+                }
+                for child in fields.values_mut() {
+                    normalize_images(child);
+                }
+            }
+            Value::Array(values) => values.iter_mut().for_each(normalize_images),
+            _ => {}
+        }
+    }
+    normalize_images(&mut input);
+    Ok(input)
+}
+
+/// Retained only to recognize receipts written before review identities and
+/// image locations were separated. No Codex call is needed to migrate them.
+pub(super) fn legacy_motion_input(
+    plan: &Value,
+    images: &[Value],
+    number: usize,
+    references: &Value,
+    policy: &str,
+) -> Result<Value> {
     let shots = rows(&plan["shots"])?;
     let indices = number.saturating_sub(2)..(number + 1).min(shots.len());
     let mut context = Vec::new();
@@ -680,35 +711,9 @@ pub(super) fn parent_motion(
     let old = read(&parent.join("storyboard-plan.json"))?;
     let old_boards = read(&parent.join("storyboards.json"))?;
     let cache = read(&file)?;
-    if let Some(previous_policy) = cache.get("review_policy_sha256") {
-        if previous_policy != policy {
-            return Ok(None);
-        }
-    } else {
-        // Legacy caches recorded the exact submitted instruction instead of
-        // a separate instruction identity. Import those observations only
-        // when that instruction still matches; current structural checks
-        // below independently validate the row against the new contracts.
-        let instruction = fs::read_to_string(
-            ctx.root
-                .join("python/shooting-script-review-instructions.txt"),
-        )
-        .map_err(|e| e.to_string())?;
-        let matches = fs::read_dir(&parent)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("shooting-script-request-motion-")
-            })
-            .any(|e| {
-                fs::read_to_string(e.path()).is_ok_and(|s| s.starts_with(instruction.trim_end()))
-            });
-        if !matches {
-            return Ok(None);
-        }
-    }
+    // A positive pixel observation survives unrelated implementation changes.
+    // Match the full local task below, then apply today's deterministic rules;
+    // never require another Codex call solely to refresh an implementation hash.
     let id = plan["shots"][number - 1]["stable_id"]
         .as_str()
         .ok_or("Missing stable shot ID.")?;
@@ -723,6 +728,28 @@ pub(super) fn parent_motion(
         .iter()
         .map(|s| json!({"shot":s["shot"],"image":s["image"]}))
         .collect::<Vec<_>>();
+    let saved = &cache["shots"][(index + 1).to_string()];
+    if let Some(previous_policy) = cache["review_policy_sha256"].as_str() {
+        let prior_input = motion_input(
+            &old,
+            &old_images,
+            index + 1,
+            &old_boards["references"],
+            previous_policy,
+        )?;
+        if saved["input_sha256"] != ctx.digest(&prior_input)? {
+            let legacy = legacy_motion_input(
+                &old,
+                &old_images,
+                index + 1,
+                &old_boards["references"],
+                previous_policy,
+            )?;
+            if saved["input_sha256"] != ctx.digest(&legacy)? {
+                return Ok(None);
+            }
+        }
+    }
     let wanted = motion_input(plan, images, number, references, policy)?;
     let prior = motion_input(
         &old,
@@ -734,7 +761,7 @@ pub(super) fn parent_motion(
     if wanted != prior {
         return Ok(None);
     }
-    let mut row = cache["shots"][(index + 1).to_string()]["row"].clone();
+    let mut row = saved["row"].clone();
     if !row.is_object() || row["continuity_review"]["decision"] != "pass" {
         return Ok(None);
     }
@@ -746,6 +773,10 @@ pub(super) fn parent_motion(
             .and_then(|s| s.get("prompt_template"))
     {
         row["prompt_template"] = template.clone();
+    } else if let Some(template) =
+        fidelity::saved_template(ctx, &parent, &old, &old_boards, index + 1)?
+    {
+        row["prompt_template"] = template;
     }
     remap(&mut row, &beat_mapping(&old["source"], &plan["source"])?)?;
     row["shot"] = json!(number);

@@ -162,6 +162,15 @@ policy still requires continuity acceptance even with automatic review disabled.
 Exhausted repairs save `storyboard-diagnostic.json` and stop before video.
 The former five-pass planner remains removed.
 
+The image-based motion pass is the default creative review. There is no separate
+Codex source-fidelity audit or wording-repair loop before rendering. A still's
+visible facts do not have to be repeated as a checklist in the motion prose.
+Existing fidelity repairs are reused; existing audit findings remain advisory
+and cannot veto an otherwise accepted motion plan. The shooting script records
+whether this additional audit was run, rather than claiming a pass when it was
+skipped. Set `AIVS_STRICT_SOURCE_FIDELITY=1` when launching AIVS to request the
+extra blocking audit when finalizing a plan.
+
 Both Codex passes share a **10-minute planning budget** by default. Change
 **File → Settings… → Planning budget** to allow 1–60 minutes, or use
 `--planning-budget-seconds` from the CLI. The budget measures Codex planning time,
@@ -175,12 +184,16 @@ allowance stays charged conservatively; increase the budget to continue.
 Project runs pin creative revisions in `preproduction/revisions/`. Video seed and
 quality selection are independent of the revision, so a preview and a final
 render share their plan and images. Editing a scene derives a new revision from
-its latest completed revision. Codex receives the source delta and existing
+its latest compatible saved direction, including unfinished attempts. Codex
+receives the source delta and existing
 direction and returns changed world definitions and shots, rather than rewriting
 the complete shooting script. Unchanged reference images, storyboard pixels,
 image inspections, and motion directions are reused when their dependencies match.
-The merged revision still passes complete source coverage, timing, continuity,
-and independent source-fidelity checks. A broad change can require broader review.
+The merged revision still passes source coverage, timing and material continuity
+checks. Cached positive image observations are revalidated locally and survive
+unrelated code changes or relocation of identical image bytes. The review cache
+identifies its actual instruction/schema, rather than the entire application.
+A broad source change can require broader image review.
 Use `--fresh-preproduction` for new direction and storyboards; reusable physical
 design references remain available. Standalone CLI runs retain the existing
 `.cache/preproduction/` workflow. Reuse does not establish image or acting quality.
@@ -795,7 +808,7 @@ full-resolution renderer or `--profile distilled` for preview. Repeating
 the same scene with a different video profile or seed automatically reuses its
 matching completed preproduction.
 With `--project-dir`, edited scenes automatically derive from their latest
-completed revision. Use `--parent-revision REVISION_ID` to choose another base
+compatible saved direction. Use `--parent-revision REVISION_ID` to choose another base
 explicitly. The ID is recorded in a project's run binding and revision manifest.
 
 Every screenplay render also checks speech sync on the assembled delivery,
@@ -830,7 +843,7 @@ modified or imported into the dialogue cache automatically.
 
 To inspect actual generated first frames and motion directions before video
 inference, use `--storyboards-only`. This completes both planning passes, image
-generation, bounded image repairs, and the source-fidelity check, then saves
+generation and bounded image repairs, then saves
 `storyboards.json`, its images, and `shooting-script.json`. It does not require
 LTX weights or Seed-VC, but needs the cached LTX tokenizer, Codex image generation,
 and cast portraits. Saved voice samples and the converter are

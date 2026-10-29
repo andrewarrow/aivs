@@ -282,7 +282,10 @@ pub(super) fn compile(
 pub(super) fn display(plan: &Value) -> Result<String> {
     let mut lines = Vec::new();
     if plan["planner_version"] == PLANNER_VERSION {
-        lines.extend(["Planning: storyboard direction, image-based motion direction and source-fidelity check completed.".into(), String::new()]);
+        lines.extend([
+            "Planning: storyboard direction and image-based motion review completed.".into(),
+            String::new(),
+        ]);
     }
     if plan.get("preproduction_review").is_some() {
         let stages = if plan["planning_policy"] == PLANNING_POLICY {

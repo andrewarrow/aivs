@@ -220,15 +220,14 @@ pub fn references(
     storyboard::dispatch("storyboard_prepare_references", &args)
 }
 pub fn review_policy(ctx: &mut Context<'_>) -> Result<String> {
-    let mut identity = json!({});
-    for name in [
-        "storyboard.py",
-        "shooting_script.py",
-        "shooting-script-review-instructions.txt",
-    ] {
-        identity[name] = json!(ctx.implementation(name)?);
-    }
-    ctx.digest(&identity)
+    // Cache the actual review task, not the entire Rust/Python application.
+    // Current deterministic checks independently revalidate saved observations.
+    let instruction = fs::read_to_string(
+        ctx.root
+            .join("python/shooting-script-review-instructions.txt"),
+    )
+    .map_err(|e| e.to_string())?;
+    ctx.digest(&json!({"instruction":instruction,"schema":schema("motion")?}))
 }
 pub fn review_binding(ctx: &mut Context<'_>, plan: &Value, boards: &Value) -> Result<Value> {
     let policy = review_policy(ctx)?;

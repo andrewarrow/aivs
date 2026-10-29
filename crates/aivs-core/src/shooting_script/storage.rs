@@ -9,7 +9,17 @@ fn fidelity(receipt: &Value, plan: &Value, fingerprint: &Value) -> Result<()> {
         || receipt["version"].as_u64() != Some(1)
         || receipt["plan_sha256"] != *fingerprint
     {
-        return Err("This motion plan has no matching independent source-fidelity approval. Start a new render with fresh preproduction.".into());
+        return Err("This motion plan has no matching source-fidelity record.".into());
+    }
+    if receipt["policy"] == "motion-review-v1" {
+        match receipt["status"].as_str() {
+            Some("not-run") if receipt.get("report").is_none() => return Ok(()),
+            Some("advisory") => {
+                approval::fidelity(&receipt["report"], plan, false)?;
+                return Ok(());
+            }
+            _ => return Err("Invalid advisory source-fidelity record.".into()),
+        }
     }
     approval::fidelity(&receipt["report"], plan, true)?;
     Ok(())

@@ -76,6 +76,70 @@ fn calls(run: &Path, kind: &str) -> Result<Vec<(u64, PathBuf)>> {
     found.sort_by_key(|(n, _)| *n);
     Ok(found)
 }
+
+/// Keep useful prompt repairs even when the old attempt never reached final
+/// publication. The checkpoint must belong to these exact director/image inputs.
+pub(super) fn saved_template(
+    ctx: &mut Context<'_>,
+    run: &Path,
+    director: &Value,
+    boards: &Value,
+    number: usize,
+) -> Result<Option<Value>> {
+    let file = run.join("source-fidelity-repair.json");
+    let Ok(repair) = read(&file) else {
+        return Ok(None);
+    };
+    if repair["status"] != "complete" {
+        return Ok(None);
+    }
+    let images = rows(&boards["shots"])?
+        .iter()
+        .map(|s| json!({"shot":s["shot"],"image":s["image"]}))
+        .collect::<Vec<_>>();
+    let director_hash = ctx.plan_hash(director)?;
+    let image_hash = ctx.digest(&json!(images))?;
+    let context = ctx.digest(&json!({
+        "director_plan_sha256":director_hash,"storyboard_sha256":image_hash,
+    }))?;
+    if repair["context_sha256"] != context {
+        return Ok(None);
+    }
+    Ok(repair["response"]["shots"]
+        .as_array()
+        .and_then(|shots| shots.iter().find(|s| s["shot"] == number))
+        .and_then(|s| s["prompt_template"].as_str())
+        .filter(|s| !s.trim().is_empty() && s.chars().count() <= 1600 && !s.contains('\0'))
+        .map(|s| json!(s)))
+}
+
+fn advisory(ctx: &mut Context<'_>, mut plan: Value, run: &Path) -> Result<Value> {
+    let hash = ctx.plan_hash(&plan)?;
+    let mut receipt = json!({"version":1,"plan_sha256":hash,
+        "policy":"motion-review-v1","status":"not-run"});
+    // Preserve an existing audit honestly, including negative findings. Missing
+    // wording in a second textual audit must not veto the passed image/motion
+    // review or start another Codex review/repair cycle.
+    if let Ok(saved) = read(&run.join("source-fidelity-review.json"))
+        && saved["plan_sha256"] == hash
+        && let Ok(report) = validate(saved["report"].clone(), &plan, false)
+    {
+        let warnings = rows(&report["checks"])?
+            .iter()
+            .filter(|c| c["preserved"] == false)
+            .count();
+        receipt["status"] = json!("advisory");
+        receipt["report"] = report;
+        if warnings > 0 {
+            ctx.activity(format!(
+                "Continuing with {warnings} saved source-fidelity note(s); image and motion review passed"
+            ))?;
+        }
+    }
+    plan["source_fidelity"] = receipt;
+    Ok(plan)
+}
+
 pub fn ensure(ctx: &mut Context<'_>, mut plan: Value, run: &Path) -> Result<Value> {
     let source = plan["source"].clone();
     let context=ctx.digest(&json!({"director_plan_sha256":plan["motion_plan"]["director_plan_sha256"],"storyboard_sha256":plan["motion_plan"]["storyboard_sha256"]}))?;
@@ -141,6 +205,10 @@ pub fn ensure(ctx: &mut Context<'_>, mut plan: Value, run: &Path) -> Result<Valu
             }
         }
     }
+    if std::env::var("AIVS_STRICT_SOURCE_FIDELITY").as_deref() != Ok("1") {
+        return advisory(ctx, plan, run);
+    }
+    ctx.activity("Checking final motion prompts with the optional strict source-fidelity audit")?;
     loop {
         ctx.check()?;
         let hash = ctx.plan_hash(&plan)?;

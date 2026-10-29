@@ -224,8 +224,18 @@ pub fn finalize(
             &references,
             &review_policy,
         )?)?;
-        if cached[n.to_string()].is_object()
-            && cached[n.to_string()]["input_sha256"] == hash
+        let entry = &cached[n.to_string()];
+        let mut matches = entry["input_sha256"] == hash;
+        if entry.is_object()
+            && !matches
+            && let Some(previous_policy) = saved["review_policy_sha256"].as_str()
+        {
+            let legacy =
+                incremental::legacy_motion_input(&plan, &images, n, &references, previous_policy)?;
+            matches = entry["input_sha256"] == ctx.digest(&legacy)?;
+        }
+        if entry.is_object()
+            && matches
             && incremental::valid_motion_row(&plan, n, &cached[n.to_string()]["row"])
         {
             directed[n.to_string()] = cached[n.to_string()]["row"].clone();
@@ -382,7 +392,6 @@ pub fn finalize(
         .map(|n| directed[n.to_string()]["image_observations"].clone())
         .collect::<Vec<_>>();
     final_plan["motion_plan"] = json!({"version":1,"director_plan_sha256":director_hash,"storyboard_sha256":board_hash,"images":images,"image_observations":observations,"plan_sha256":fingerprint});
-    ctx.activity("Checking final motion prompts against essential source actions and reveals.")?;
     final_plan = fidelity::ensure(ctx, final_plan, run)?;
     report["status"] = json!("accepted");
     report["binding"] = boards::review_binding(ctx, &final_plan, boards)?;
