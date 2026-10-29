@@ -64,6 +64,12 @@ fn creative_name(name: &str) -> bool {
         )
 }
 
+fn artifact_json(name: &str) -> bool {
+    // Raw planner responses may be empty or incomplete after a failed attempt.
+    // Preserve their original bytes, even when a later attempt succeeds.
+    name.ends_with(".json") && !name.starts_with("shooting-script-response-")
+}
+
 fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
@@ -121,7 +127,7 @@ fn import(ctx: &mut Context<'_>, legacy: &Path, project: &Path) -> Result<PathBu
         if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
             copy_tree(&entry.path(), &directory.join(&name))?;
         } else {
-            if entry.path().extension().is_some_and(|s| s == "json") {
+            if artifact_json(&name) {
                 save(
                     &directory.join(&name),
                     &artifacts::read_json(&entry.path())?,
@@ -244,12 +250,13 @@ fn import(ctx: &mut Context<'_>, legacy: &Path, project: &Path) -> Result<PathBu
 }
 
 fn seal(project: &Path, directory: &Path, id: &str, plan: &Value, parent: Value) -> Result<()> {
-    // Resolve all JSON before replacing any manifest; publishing is restartable.
+    // Resolve structured artifacts before replacing any manifest; raw planner
+    // responses remain untouched and publishing is restartable.
     let mut files = Vec::new();
     for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_type().map_err(|e| e.to_string())?.is_file()
-            && entry.path().extension().is_some_and(|s| s == "json")
+            && artifact_json(&entry.file_name().to_string_lossy())
             && entry.file_name() != "revision.json"
         {
             files.push((entry.path(), artifacts::read_json(&entry.path())?));
